@@ -12,6 +12,7 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from project_sandbox_tui.history import PromptHistory
+from project_sandbox_tui.widgets import KeyHints
 
 PREVIEW_CHARS = 110
 
@@ -62,7 +63,9 @@ class HistorySearchScreen(ModalScreen[str | None]):
             )
             yield OptionList(id="matches")
             yield Static("", id="count", classes="hint")
-            yield Static("type to filter · ↑/↓ choose · enter use · esc cancel", classes="hint")
+            yield Static(
+                KeyHints("type to filter · ↑/↓ choose · enter use · esc cancel"), classes="hint"
+            )
 
     def on_mount(self) -> None:
         self.query_one("#query", Input).focus()

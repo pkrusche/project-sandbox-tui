@@ -108,12 +108,29 @@ def test_launch_inputs_remain_visible_when_focused(
         for field in inputs:
             field.focus()
             await pilot.pause()
+            # no select-all on focus: its highlight would hide the value
+            assert field.selection.is_empty
             await pilot.press("end", "1")
             assert field.value.endswith("1")
             assert field.content_size.height == 1
             assert field.value in field.render_line(0).text
         # Focus changes must leave the other one-line fields readable too.
         assert all(field.content_size.height == 1 for field in inputs)
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("mode", ["r", "i"])
+def test_launch_form_shows_base_branch(
+    git_repo: Path, fake_cfg: Callable[..., Config], mode: str
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")
+        selected = app.selected_branch_name()
+        await pilot.press(mode)
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        assert str(form.query_one("#start-branch", Static).render()) == selected
 
     run_app(git_repo, fake_cfg(), scenario)
 
@@ -424,7 +441,7 @@ def test_prompt_history_completion_browse_and_search(
         form = app.screen
         assert isinstance(form, LaunchScreen)
         area = form.query_one("#prompt", PromptArea)
-        assert "3 prompts in history" in str(form.query_one("#prompt-hint").render())
+        assert "3 prompts in history" in str(form.query_one("#prompt-hint", Static).content)
 
         # fish-style autosuggestion: newest entry extending the typed text
         await pilot.press("f", "i", "x")
@@ -451,6 +468,12 @@ def test_prompt_history_completion_browse_and_search(
         assert isinstance(app.screen, HistorySearchScreen)
         await pilot.press("d", "o", "c", "s", "enter")
         assert app.screen is form and area.text == "write docs for config"
+
+        # ctrl+l clears the prompt, ctrl+z brings it back
+        await pilot.press("ctrl+l")
+        assert area.text == ""
+        await pilot.press("ctrl+z")
+        assert area.text == "write docs for config"
 
         # launching records the prompt as the newest entry
         area.replace_text("sleep:0.1 brand new prompt")
@@ -599,21 +622,21 @@ def test_reload_config(git_repo: Path, tmp_path: Path) -> None:
 def test_modifier_hints(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("left_control")
-        assert "ctrl+r reload" in str(app.main.query_one("#cheatsheet", Static).render())
+        assert "ctrl+r reload" in str(app.main.query_one("#cheatsheet", Static).content)
         await pilot.press("right_shift")
-        assert "G bottom" in str(app.main.query_one("#cheatsheet", Static).render())
+        assert "G bottom" in str(app.main.query_one("#cheatsheet", Static).content)
         await pilot.press("left_alt")
-        assert "no shortcuts" in str(app.main.query_one("#footer", Static).render())
+        assert "no shortcuts" in str(app.main.query_one("#footer", Static).content)
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         await pilot.press("right_control")
-        hint = str(form.query_one("#launch-hint", Static).render())
+        hint = str(form.query_one("#launch-hint", Static).content)
         assert "ctrl+enter launch" in hint and "ctrl+r search" in hint
         await pilot.press("left_shift")
-        assert "shift+tab" in str(form.query_one("#launch-hint", Static).render())
+        assert "shift+tab" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("a")
-        assert "ctrl+enter launch" in str(form.query_one("#launch-hint", Static).render())
+        assert "ctrl+enter launch" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("escape", "question_mark", "left_control")
         assert isinstance(app.screen, HelpScreen)
         await pilot.press("q")
@@ -897,6 +920,10 @@ def test_cleanup_force_delete(git_repo: Path, fake_cfg: Callable[..., Config]) -
         await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         assert isinstance(app.screen, ConfirmScreen)
         assert "uncommitted or untracked files" in app.screen.body
+        assert f"Delete directory and all contents: {dirty}" in app.screen.body
+        assert "  untracked" in app.screen.body
+        assert "  a.txt" in app.screen.body
+        assert "Unregister worktree:" in app.screen.body
         await pilot.press("n")  # cancelled: nothing happens
         await pilot.pause(0.2)
         assert dirty.exists()

@@ -1,6 +1,8 @@
 import shutil
 from pathlib import Path
 
+import pytest
+
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
@@ -319,3 +321,66 @@ def test_force_remove_jj_refuses_foreign_directory(jj_repo: Path) -> None:
     result = force_remove_workspace(detect(jj_repo), Config(), ws)
     assert "not a workspace of this repository" in result
     assert (path / "precious").exists()
+
+
+@pytest.mark.parametrize("empty_revisions", [0, 1, 3])
+def test_jj_merged_latest_nonempty_revision(jj_repo: Path, empty_revisions: int) -> None:
+    path = jj_repo.parent / "finished"
+    run("jj", "workspace", "add", str(path), "--name", "finished", "-r", "main", cwd=jj_repo)
+    (path / "done.txt").write_text("done\n")
+    run("jj", "describe", "-m", "finished work", cwd=path)
+    run("jj", "bookmark", "set", "main", "-r", "finished@", cwd=jj_repo)
+    for i in range(empty_revisions):
+        run("jj", "new", "-m", f"empty revision {i}", cwd=path)
+    ws = _scan(jj_repo)["finished"]
+    assert ws.removable and "merged into main" in ws.status
+    assert remove_workspaces(detect(jj_repo), Config(), [ws]) == [f"removed finished: {path}"]
+    assert not path.exists()
+
+
+def test_jj_empty_revisions_do_not_hide_unmerged_work(jj_repo: Path) -> None:
+    path = jj_repo.parent / "unfinished"
+    run("jj", "workspace", "add", str(path), "--name", "unfinished", "-r", "main", cwd=jj_repo)
+    (path / "work.txt").write_text("work\n")
+    run("jj", "commit", "-m", "unmerged work", cwd=path)
+    (path / ".gitignore").write_text("cache/\n")
+    run("jj", "commit", "-m", "ignore cache", cwd=path)
+    run("jj", "describe", "-m", "empty but described", cwd=path)
+    (path / "cache").mkdir()
+    (path / "cache" / "data").write_text("keep")
+    assert not _scan(jj_repo)["unfinished"].removable
+    assert path.exists()
+
+
+def test_force_removal_details_lists_contents_without_following_symlinks(tmp_path: Path) -> None:
+    from project_sandbox_tui.cleanup import force_removal_details
+
+    path = tmp_path / "workspace"
+    path.mkdir()
+    (path / "nested").mkdir()
+    (path / "nested" / "ignored.txt").write_text("lost")
+    (path / "empty").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("kept")
+    (path / "link").symlink_to(outside, target_is_directory=True)
+    details = force_removal_details(Workspace("work", path, "dirty"), "jj")
+    assert "Unregister workspace: work" in details
+    assert f"Delete directory and all contents: {path}" in details
+    assert "nested/ignored.txt" in details and "empty/" in details
+    assert f"link -> {outside} (symlink)" in details
+    assert "precious.txt" not in details
+
+
+def test_jj_new_changes_after_merge_are_kept(jj_repo: Path) -> None:
+    path = jj_repo.parent / "changed"
+    run("jj", "workspace", "add", str(path), "--name", "changed", "-r", "main", cwd=jj_repo)
+    (path / "done.txt").write_text("done\n")
+    run("jj", "describe", "-m", "finished work", cwd=path)
+    run("jj", "bookmark", "set", "main", "-r", "changed@", cwd=jj_repo)
+    run("jj", "new", cwd=path)
+    (path / "done.txt").write_text("unsnapshotted changes\n")
+    ws = _scan(jj_repo)["changed"]
+    assert not ws.removable and "uncommitted" in ws.status
+    assert remove_workspaces(detect(jj_repo), Config(), [ws])[0].startswith("skipped")
+    assert (path / "done.txt").read_text() == "unsnapshotted changes\n"

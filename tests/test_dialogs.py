@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 from textual.app import App
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.geometry import Region
-from textual.widgets import Input, OptionList
+from textual.widgets import Input, OptionList, Static
 
 from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.screens.dialogs import CleanupScreen, NewBranchScreen
@@ -104,10 +104,8 @@ def test_cleanup_toggles_only_removable_rows() -> None:
 
 
 def test_help_fits_a_small_terminal() -> None:
-    """Every help line must be visible on 80x24; the last one used to be cut off."""
-    from project_sandbox_tui.screens.dialogs import HELP_TEXT, HelpScreen
-
-    assert max(len(line) for line in HELP_TEXT.splitlines()) <= 76
+    """Every help entry must be visible on 80x24; the last one used to be cut off."""
+    from project_sandbox_tui.screens.dialogs import HELP, HelpScreen
 
     async def scenario() -> None:
         app: App[None] = App()
@@ -115,7 +113,66 @@ def test_help_fits_a_small_terminal() -> None:
             app.push_screen(HelpScreen())
             await pilot.pause()
             shot = app.export_screenshot().replace("&#160;", " ")
-            for needle in ("this help", "show / hide cheat-sheet", "any key to close"):
-                assert needle in shot, needle
+            for column in HELP:
+                for title, keys in column:
+                    assert title in shot, title
+                    for _key, what in keys:
+                        # Long descriptions wrap; their first word must still be there.
+                        assert what.split()[0] in shot, what
+            assert "any key to close" in shot
+
+    asyncio.run(scenario())
+
+
+def test_help_wraps_under_its_own_column_when_narrow() -> None:
+    """Narrow terminals stack the columns and scroll; wrapped text keeps its indent."""
+    from project_sandbox_tui.screens.dialogs import HelpScreen
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(40, 20)) as pilot:
+            app.push_screen(HelpScreen())
+            await pilot.pause()
+            body = app.screen.query_one(VerticalScroll)
+            assert body.max_scroll_y > 0
+            hint = app.screen.query_one(".hint")
+            assert hint.region.bottom <= app.screen.region.bottom
+            text = body.query_one(Static)
+            lines = [line.text for line in text.render_lines(Region(0, 0, *text.size))]
+            # The v / space description wraps: the continuation starts in the
+            # description column, not back at the left edge.
+            index = next(i for i, line in enumerate(lines) if "select a range" in line)
+            continuation = lines[index + 1]
+            assert continuation.strip()
+            assert continuation.index(continuation.strip()) == lines[index].index("select")
+
+            await pilot.press("j")
+            assert isinstance(app.screen, HelpScreen)  # scrolls instead of closing
+            assert body.scroll_y == 1
+            await pilot.press("x")
+            assert not isinstance(app.screen, HelpScreen)
+
+    asyncio.run(scenario())
+
+
+def test_confirmation_contents_scroll_without_dismissing() -> None:
+    from textual.containers import VerticalScroll
+
+    from project_sandbox_tui.screens.dialogs import ConfirmScreen
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ConfirmScreen("delete?", "\n".join(f"file-{i}" for i in range(100)), "delete")
+            app.push_screen(screen)
+            await pilot.pause()
+            scroll = screen.query_one(VerticalScroll)
+            assert scroll.max_scroll_y > 0
+            assert screen.query_one(".hint").region.bottom <= screen.region.bottom
+            await pilot.press("end")
+            await pilot.pause()
+            assert app.screen is screen and scroll.scroll_y > 0
+            await pilot.press("n")
+            assert app.screen is not screen
 
     asyncio.run(scenario())

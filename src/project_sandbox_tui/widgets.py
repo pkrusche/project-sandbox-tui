@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rich.cells import cell_len
+from rich.console import Console, ConsoleOptions, RenderResult
+from rich.measure import Measurement
 from rich.text import Text
 from textual.binding import Binding
 from textual.message import Message
@@ -95,6 +98,8 @@ class PromptArea(TextArea):
     - ``ctrl+p`` / ``ctrl+n`` walk back / forward through entries that start
       with the text typed before browsing began (zsh history-beginning-search).
     - ``ctrl+r`` asks the screen to open the history search.
+    - ``ctrl+l`` clears the prompt (e.g. one pre-filled from the last run);
+      ``ctrl+z`` brings it back.
     """
 
     BINDINGS = [
@@ -102,6 +107,7 @@ class PromptArea(TextArea):
         Binding("ctrl+n", "history(-1)", "newer prompt", show=False),
         Binding("ctrl+f", "accept_suggestion", "accept suggestion", show=False),
         Binding("ctrl+r", "search_history", "search history", show=False),
+        Binding("ctrl+l", "clear_prompt", "clear prompt", show=False),
     ]
 
     class SearchRequested(Message):
@@ -187,6 +193,11 @@ class PromptArea(TextArea):
         if self.suggestion:
             self.insert(self.suggestion)
 
+    def action_clear_prompt(self) -> None:
+        self._browse = None  # also ends a history walk
+        self._browse_index = -1
+        self.clear()  # an edit, so ctrl+z undoes it
+
     def action_search_history(self) -> None:
         self.post_message(self.SearchRequested(self))
 
@@ -196,3 +207,30 @@ def modifier_key(key: str) -> str | None:
     key = key.removeprefix("left_").removeprefix("right_")
     key = {"control": "ctrl"}.get(key, key)
     return key if key in {"ctrl", "shift", "alt", "super", "meta", "hyper"} else None
+
+
+class KeyHints:
+    """``a · b · c`` key hints that wrap between items, never inside one."""
+
+    SEPARATOR = " · "
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.items = text.split(self.SEPARATOR)
+
+    def __str__(self) -> str:
+        return self.text
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        lines: list[str] = []
+        for item in self.items:
+            joined = f"{lines[-1]}{self.SEPARATOR}{item}" if lines else item
+            if lines and cell_len(joined) <= options.max_width:
+                lines[-1] = joined
+            else:
+                lines.append(item)
+        # An item wider than the whole line still wraps at its own spaces.
+        yield Text("\n".join(lines))
+
+    def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
+        return Measurement(max(map(cell_len, self.items)), cell_len(self.text))
