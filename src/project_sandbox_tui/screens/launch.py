@@ -8,7 +8,7 @@ from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Input, Static, TextArea
@@ -16,8 +16,9 @@ from textual.widgets import Input, Static, TextArea
 from project_sandbox_tui.config import AGENTS, EFFORTS, Config, LastUsed, LaunchDefaults
 from project_sandbox_tui.config import resolve_model as _resolve_model
 from project_sandbox_tui.history import PromptHistory
-from project_sandbox_tui.sandbox import LaunchSpec, Mode
+from project_sandbox_tui.sandbox import CheckoutConflict, LaunchSpec, Mode
 from project_sandbox_tui.screens.history import HistorySearchScreen
+from project_sandbox_tui.vcs import validate_branch_name
 from project_sandbox_tui.widgets import CycleField, PromptArea, modifier_key
 
 
@@ -25,7 +26,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     DEFAULT_CSS = """
     LaunchScreen { align: center middle; }
     LaunchScreen > Vertical {
-        width: 90; max-width: 100%; height: auto; max-height: 100%;
+        width: 90; max-width: 100%; height: auto; max-height: 100%; overflow-y: auto;
         background: $panel; padding: 1 2; border: none;
     }
     LaunchScreen .title { text-style: bold; margin-bottom: 1; }
@@ -40,7 +41,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen TextArea:focus { background: $boost; border: none; }
     LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
     LaunchScreen .prompt-hint { color: $text-disabled; height: 1; padding: 0 1; }
-    LaunchScreen .preview { color: $text-muted; margin-top: 1; height: auto; }
+    LaunchScreen #command-scroll { height: 3; margin-top: 1; }
+    LaunchScreen .preview { color: $text-muted; height: auto; }
     LaunchScreen .hint { color: $text-disabled; margin-top: 1; }
     """
 
@@ -63,6 +65,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         branch_label: str | None = None,
         prompt_history: PromptHistory | None = None,
         opens_in: str = "",
+        branches: list[str] | None = None,
+        main_checkout_for: Callable[[str], bool] | None = None,
     ) -> None:
         super().__init__()
         self.branch = branch
@@ -76,17 +80,28 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.branch_label = branch_label or branch
         self.prompt_history = prompt_history
         self.opens_in = opens_in
+        self.branches = branches or [branch]
+        self.main_checkout_for = main_checkout_for
 
     def compose(self) -> ComposeResult:
         what = "interactive session" if self.mode == "interactive" else "unsupervised run"
         with Vertical():
-            title = Text(f"{what} on ")
-            title.append(self.branch_label, style="bold")
-            if self.main_checkout and self.branch_label == self.branch:
-                title.append("  (in the main checkout)", style="dim")
+            title = Text(what)
             if self.opens_in:
                 title.append(f"  · {self.opens_in}", style="dim")
             yield Static(title, classes="title")
+            with Horizontal(classes="field"):
+                yield Static("branch", classes="field-label")
+                yield Input(
+                    value=self.branch,
+                    placeholder="select an existing branch or enter a new name",
+                    suggester=SuggestFromList(self.branches, case_sensitive=True),
+                    id="branch",
+                )
+            yield Static(
+                "existing name selects · new name creates from " + self.branch_label,
+                classes="prompt-hint",
+            )
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
             with Horizontal(classes="field"):
                 yield Static("model", classes="field-label")
@@ -111,7 +126,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                     self.initial_prompt, prompt_history=self.prompt_history, id="prompt"
                 )
                 yield Static("", id="prompt-hint", classes="prompt-hint")
-            yield Static("", classes="preview", id="preview")
+            with VerticalScroll(id="command-scroll"):
+                yield Static("", classes="preview", id="preview")
             keys = "tab/j/k fields · h/l change · enter launch · esc cancel"
             if self.mode == "background":
                 keys = "tab fields · h/l change · ctrl+enter launch · esc cancel"
@@ -167,15 +183,21 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             timeout = int(raw) if raw.isdigit() else 0
         prompt = self.query_one("#prompt", TextArea).text if self.mode == "background" else ""
         agent = self.query_one("#agent", CycleField).value
+        branch = self.query_one("#branch", Input).value.strip()
+        main_checkout = (
+            self.main_checkout_for(branch)
+            if self.main_checkout_for
+            else self.main_checkout and branch == self.branch
+        )
         return LaunchSpec(
-            branch=self.branch,
+            branch=branch,
             agent=agent,
             model=self.query_one("#model", Input).value.strip(),
             effort=self.query_one("#effort", CycleField).value,
             mode=self.mode,
             prompt_text=prompt,
             timeout=timeout,
-            main_checkout=self.main_checkout,
+            main_checkout=main_checkout,
         )
 
     def _update_preview(self) -> None:
@@ -238,7 +260,16 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             self.focus_next()
 
     def action_launch(self) -> None:
-        spec = self.current_spec()
+        branch = self.query_one("#branch", Input).value.strip()
+        if branch not in self.branches and (error := validate_branch_name(branch)):
+            self.notify(error, severity="warning")
+            self.query_one("#branch").focus()
+            return
+        try:
+            spec = self.current_spec()
+        except CheckoutConflict as exc:
+            self.notify(str(exc), severity="error")
+            return
         if spec.mode == "background" and not spec.prompt_text.strip():
             self.notify("an unsupervised run needs a prompt", severity="warning")
             self.query_one("#prompt").focus()

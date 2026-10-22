@@ -552,22 +552,36 @@ class SandboxTUI(App[None]):
             if mode == "interactive"
             else "",
             prompt_history=self.prompt_history,
+            branches=[b.name for b in self.branches],
+            main_checkout_for=self._main_checkout,
         )
-        self.push_screen(screen, self._launch_chosen)
+        known_branches = {b.name for b in self.branches}
 
-    def _launch_chosen(self, spec: LaunchSpec | None) -> None:
+        def chosen(spec: LaunchSpec | None) -> None:
+            start = name if spec is not None and spec.branch not in known_branches else None
+            self._launch_chosen(spec, new_branch_start=start)
+
+        self.push_screen(screen, chosen)
+
+    def _launch_chosen(
+        self, spec: LaunchSpec | None, *, new_branch_start: str | None = None
+    ) -> None:
         if spec is None:
             return
         # Start only once the form is gone and its key event is fully processed:
         # dismiss() runs this callback before the screen has been popped, and an
         # interactive session blocks the event loop until the agent exits.
-        self.call_after_refresh(self._start_launch, spec)
+        self.call_after_refresh(self._start_launch, spec, new_branch_start=new_branch_start)
 
-    def _start_launch(self, spec: LaunchSpec) -> None:
+    def _start_launch(self, spec: LaunchSpec, *, new_branch_start: str | None = None) -> None:
         try:
             # The checkout and external sessions may have changed while the
             # launch form was open. Recheck immediately before starting.
             self.branches = sort_branches(self.backend.list_branches())
+            if new_branch_start is not None:
+                self.backend.create_branch(spec.branch, new_branch_start)
+                self.branches = sort_branches(self.backend.list_branches())
+                self._pending_select = spec.branch
             if self.branch(spec.branch) is None:
                 raise VcsError(f"{spec.branch} no longer exists")
             spec.main_checkout = self._main_checkout(spec.branch)

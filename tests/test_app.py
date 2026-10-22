@@ -339,7 +339,7 @@ def test_jj_repo_without_bookmarks_runs_in_working_copy(
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.main_checkout
-        assert "@ working copy" in str(form.query_one(".title").render())
+        assert form.query_one("#branch", Input).value == "@"
         form.query_one("#prompt", TextArea).text = "sleep:3"
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
@@ -592,5 +592,49 @@ def test_modifier_hints(git_repo: Path, fake_cfg: Callable[..., Config]) -> None
         assert isinstance(app.screen, HelpScreen)
         await pilot.press("q")
         assert app.screen is app.main
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("target", ["main", "topic/from-form"])
+def test_launch_branch_field(git_repo: Path, fake_cfg: Callable[..., Config], target: str) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        field = form.query_one("#branch", Input)
+        assert field.value == "feature/x"
+        field.value = target
+        form.query_one("#prompt", TextArea).text = "exit:0"
+        await pilot.pause()
+        assert form.current_spec().branch == target
+        assert form.current_spec().main_checkout == (target == "main")
+        await pilot.press("ctrl+enter")
+        await wait_until(pilot, lambda: target in app.jobs.jobs)
+        assert app.jobs.jobs[target].spec.branch == target
+        if target != "main":
+            branches = {b.name: b for b in detect(git_repo).list_branches()}
+            assert branches[target].head == branches["feature/x"].head
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_launch_command_preview_scrolls(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        panel = form.query_one("Vertical")
+        height = panel.size.height
+        form.query_one("#prompt", TextArea).text = "long prompt " * 1000
+        await pilot.pause()
+        scroll = form.query_one("#command-scroll")
+        assert panel.size.height == height
+        assert scroll.size.height == 3
+        assert scroll.max_scroll_y > 0
+        scroll.scroll_end(animate=False)
+        await pilot.pause()
+        assert scroll.scroll_y > 0
+        await pilot.press("escape")
 
     run_app(git_repo, fake_cfg(), scenario)
