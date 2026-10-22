@@ -113,6 +113,20 @@ bookmarks yet, `n` offers `@` as the start revision; otherwise it prefers
 Background runs are detached from the TUI: quitting leaves them running, and the
 next start re-adopts them and notifies about any that finished meanwhile.
 
+## Cleaning up workspaces
+
+```sh
+sbx-tui --cleanup-workspaces --dry-run   # preview
+sbx-tui --cleanup-workspaces             # remove idle, clean workspaces
+```
+
+This checks the configured workspace paths for existing branches / bookmarks.
+A branch is active while it has a running TUI job or project-sandbox session.
+Cleanup skips active branches, the repository's own checkout, unrelated
+worktrees, and workspaces with uncommitted, untracked or ignored files. It
+unregisters removed git worktrees / jj workspaces and keeps branches, bookmarks,
+and job history. Workspaces for deleted branches are left alone.
+
 ## Interactive sessions
 
 `ui.terminal` decides where `i` runs the agent:

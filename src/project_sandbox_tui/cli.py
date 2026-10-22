@@ -36,9 +36,14 @@ def build_parser() -> ArgumentParser:
         "branch, then exit",
     )
     p.add_argument(
+        "--cleanup-workspaces",
+        action="store_true",
+        help="remove clean branch workspaces with no running session, then exit",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
-        help="append --dry-run to every project-sandbox invocation (try the TUI safely)",
+        help="preview workspace cleanup, or append --dry-run to project-sandbox invocations",
     )
     return p
 
@@ -79,6 +84,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.dry_run:
         cfg.sandbox.extra_args.append("--dry-run")
+
+    if args.cleanup_workspaces:
+        from project_sandbox_tui.cleanup import cleanup_workspaces
+
+        try:
+            results = cleanup_workspaces(backend, cfg, dry_run=args.dry_run)
+        except (VcsError, OSError) as exc:
+            print(f"sbx-tui: {exc}", file=sys.stderr)
+            return 2
+        print("\n".join(results) or "No branch workspaces to clean up.")
+        return 0
 
     if args.print_config:
         return _print_config(repo, backend, cfg)
