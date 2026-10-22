@@ -423,7 +423,7 @@ def test_prompt_history_completion_browse_and_search(
         form = app.screen
         assert isinstance(form, LaunchScreen)
         area = form.query_one("#prompt", PromptArea)
-        assert "3 prompts in history" in str(form.query_one("#prompt-hint").render())
+        assert "3 prompts in history" in str(form.query_one("#prompt-hint", Static).content)
 
         # fish-style autosuggestion: newest entry extending the typed text
         await pilot.press("f", "i", "x")
@@ -598,21 +598,21 @@ def test_reload_config(git_repo: Path, tmp_path: Path) -> None:
 def test_modifier_hints(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("left_control")
-        assert "ctrl+r reload" in str(app.main.query_one("#cheatsheet", Static).render())
+        assert "ctrl+r reload" in str(app.main.query_one("#cheatsheet", Static).content)
         await pilot.press("right_shift")
-        assert "G bottom" in str(app.main.query_one("#cheatsheet", Static).render())
+        assert "G bottom" in str(app.main.query_one("#cheatsheet", Static).content)
         await pilot.press("left_alt")
-        assert "no shortcuts" in str(app.main.query_one("#footer", Static).render())
+        assert "no shortcuts" in str(app.main.query_one("#footer", Static).content)
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         await pilot.press("right_control")
-        hint = str(form.query_one("#launch-hint", Static).render())
+        hint = str(form.query_one("#launch-hint", Static).content)
         assert "ctrl+enter launch" in hint and "ctrl+r search" in hint
         await pilot.press("left_shift")
-        assert "shift+tab" in str(form.query_one("#launch-hint", Static).render())
+        assert "shift+tab" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("a")
-        assert "ctrl+enter launch" in str(form.query_one("#launch-hint", Static).render())
+        assert "ctrl+enter launch" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("escape", "question_mark", "left_control")
         assert isinstance(app.screen, HelpScreen)
         await pilot.press("q")

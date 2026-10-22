@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from rich.cells import cell_len
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
@@ -69,7 +71,7 @@ from project_sandbox_tui.vcs import (
     sort_branches,
     workspace_path,
 )
-from project_sandbox_tui.widgets import modifier_key
+from project_sandbox_tui.widgets import KeyHints, modifier_key
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
 
@@ -188,16 +190,25 @@ MAIN_BINDINGS: list[BindingType] = [
 
 CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
-        "move",
-        (("j k", "down / up"), ("gg G", "top / bottom"), ("^d ^u", "half page"), ("/", "filter")),
+        "general",
+        (
+            ("j k", "down / up"),
+            ("gg G", "top / bottom"),
+            ("^d ^u", "half page"),
+            ("/", "filter"),
+            ("?", "full help"),
+            ("H", "hide sheet"),
+            ("q", "quit"),
+        ),
     ),
     (
         "sessions",
         (
             ("i", "interactive"),
             ("r", "unsupervised run"),
-            ("x", "stop (again: escalate)"),
+            ("x", "stop (again: force)"),
             ("l ⏎", "log / transcript"),
+            ("c C", "clear / forget"),
         ),
     ),
     (
@@ -209,38 +220,47 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("P", "show command"),
             ("W", "clean workspaces"),
             ("R", "refresh"),
-        ),
-    ),
-    (
-        "other",
-        (
-            ("c C", "clear / forget"),
             ("^r", "reload config"),
-            ("H", "hide this sheet"),
-            ("?", "full help"),
-            ("q", "quit"),
         ),
     ),
 )
 
+FOOTER = "j/k move · i interactive · r run · n new · l log · x stop · o open · ? help · q quit"
 
-def cheatsheet() -> Table:
-    """The key cheat-sheet shown under the branch list."""
-    grid = Table.grid(padding=(0, 3), expand=False)
-    for _ in CHEATSHEET:
-        grid.add_column(no_wrap=True)
-    grid.add_row(*(Text(title, style="bold") for title, _keys in CHEATSHEET))
-    for i in range(max(len(keys) for _title, keys in CHEATSHEET)):
-        cells = []
-        for _title, keys in CHEATSHEET:
-            cell = Text()
-            if i < len(keys):
-                key, what = keys[i]
-                cell.append(f"{key:<6}", style="bold")
-                cell.append(what, style="dim")
-            cells.append(cell)
-        grid.add_row(*cells)
-    return grid
+
+def _cheatsheet_section(title: str, keys: tuple[tuple[str, str], ...]) -> Text:
+    key_width = max(cell_len(key) for key, _what in keys) + 2
+    section = Text(title, style="bold")
+    for key, what in keys:
+        section.append("\n")
+        section.append(key + " " * (key_width - cell_len(key)), style="bold")
+        section.append(what, style="dim")
+    return section
+
+
+class Cheatsheet:
+    """The key cheat-sheet under the branch list.
+
+    Sections sit side by side and flow onto more rows when the terminal is too
+    narrow for all of them, instead of cutting their descriptions off.
+    """
+
+    GAP = 3
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        sections = [_cheatsheet_section(title, keys) for title, keys in CHEATSHEET]
+        widths = [max(cell_len(line) for line in s.plain.splitlines()) for s in sections]
+        per_row = len(sections)
+        while per_row > 1 and sum(widths[:per_row]) + self.GAP * (per_row - 1) > options.max_width:
+            per_row -= 1
+        grid = Table.grid(padding=(0, self.GAP))
+        for _ in range(per_row):
+            grid.add_column(no_wrap=True)
+        for start in range(0, len(sections), per_row):
+            if start:
+                grid.add_row()  # blank line between rows of sections
+            grid.add_row(*sections[start : start + per_row])
+        yield grid
 
 
 class MainScreen(Screen[None]):
@@ -252,12 +272,9 @@ class MainScreen(Screen[None]):
         yield Static("", id="header")
         table: DataTable[Text] = DataTable(cursor_type="row", zebra_stripes=False)
         yield table
-        yield Static(cheatsheet(), id="cheatsheet")
+        yield Static(Cheatsheet(), id="cheatsheet")
         yield Input(placeholder="filter", id="filter")
-        yield Static(
-            "j/k move · i interactive · r run · n new · l log · x stop · o open · ? help · q quit",
-            id="footer",
-        )
+        yield Static(KeyHints(FOOTER), id="footer")
 
     def on_key(self, event: events.Key) -> None:
         modifier = modifier_key(event.key)
@@ -267,15 +284,12 @@ class MainScreen(Screen[None]):
                 "shift": "G bottom · P preview · R refresh · C force-forget · H toggle sheet",
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the branch list")
-            self.query_one("#cheatsheet", Static).update(hint)
-            self.query_one("#footer", Static).update(hint)
+            self.query_one("#cheatsheet", Static).update(KeyHints(hint))
+            self.query_one("#footer", Static).update(KeyHints(hint))
             event.stop()
         else:
-            self.query_one("#cheatsheet", Static).update(cheatsheet())
-            self.query_one("#footer", Static).update(
-                "j/k move · i interactive · r run · n new · l log · "
-                "x stop · o open · ? help · q quit"
-            )
+            self.query_one("#cheatsheet", Static).update(Cheatsheet())
+            self.query_one("#footer", Static).update(KeyHints(FOOTER))
 
 
 class SandboxTUI(App[None]):
@@ -288,7 +302,7 @@ class SandboxTUI(App[None]):
     MainScreen DataTable > .datatable--header { background: $background; color: $text-muted; }
     #filter { height: 1; border: none; padding: 0 1; display: none; }
     #filter.visible { display: block; }
-    #footer { height: 1; color: $text-disabled; padding: 0 1; }
+    #footer { height: auto; color: $text-disabled; padding: 0 1; }
     #cheatsheet { height: auto; padding: 1 2; border-top: solid $panel; }
     #cheatsheet.hidden { display: none; }
     MainScreen.with-cheatsheet #footer { display: none; }

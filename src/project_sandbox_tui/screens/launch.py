@@ -21,7 +21,7 @@ from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import CheckoutConflict, LaunchSpec, Mode
 from project_sandbox_tui.screens.history import HistorySearchScreen
 from project_sandbox_tui.vcs import validate_branch_name
-from project_sandbox_tui.widgets import CycleField, PromptArea, modifier_key
+from project_sandbox_tui.widgets import CycleField, KeyHints, PromptArea, modifier_key
 
 
 @dataclass
@@ -56,7 +56,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen TextArea:focus { background: $boost; border: none; }
     LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
     LaunchScreen .inputs { color: $text-muted; padding: 0 1; margin-bottom: 1; }
-    LaunchScreen .prompt-hint { color: $text-disabled; height: 1; padding: 0 1; }
+    LaunchScreen .prompt-hint { color: $text-disabled; height: auto; padding: 0 1; }
     LaunchScreen #command-scroll { height: 3; margin-top: 1; }
     LaunchScreen .preview { color: $text-muted; height: auto; }
     LaunchScreen .hint { color: $text-disabled; margin-top: 1; }
@@ -137,7 +137,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                         id="branch",
                     )
                 yield Static(
-                    "existing name selects · new name creates from " + self.branch_label,
+                    KeyHints("existing name selects · new name creates from " + self.branch_label),
                     classes="prompt-hint",
                 )
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
@@ -170,7 +170,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             if self.mode == "background":
                 keys = "tab fields · h/l change · ctrl+enter launch · esc cancel"
             self.default_hint = keys
-            yield Static(keys, classes="hint", id="launch-hint")
+            yield Static(KeyHints(keys), classes="hint", id="launch-hint")
 
     def on_key(self, event: events.Key) -> None:
         modifier = modifier_key(event.key)
@@ -185,7 +185,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             else:
                 hint = f"{modifier}: no form shortcuts"
             event.stop()
-        self.query_one("#launch-hint", Static).update(hint)
+        self.query_one("#launch-hint", Static).update(KeyHints(hint))
 
     def _title(self) -> Text:
         what = "interactive session" if self.mode == "interactive" else "unsupervised run"
@@ -259,7 +259,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             hint = "→ or ctrl+f: complete from history · ctrl+p/n browse · ctrl+r search"
         else:
             hint = f"{count} prompts in history · ctrl+p/n browse · ctrl+r search"
-        self.query_one("#prompt-hint", Static).update(hint)
+        self.query_one("#prompt-hint", Static).update(KeyHints(hint))
 
     def _suggester(self, agent: str) -> SuggestFromList | None:
         models = self.cfg.models.get(agent) or []
@@ -330,7 +330,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     @on(Input.Changed)
     @on(TextArea.Changed)
     def _changed(self) -> None:
-        self.query_one("#launch-hint", Static).update(self.default_hint)
+        self.query_one("#launch-hint", Static).update(KeyHints(self.default_hint))
         self._update_preview()
         # after PromptArea has processed the same Changed (browse state, suggestion)
         self.call_after_refresh(self._update_prompt_hint)

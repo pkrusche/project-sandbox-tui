@@ -4,17 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rich.cells import cell_len
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.table import Table
 from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 
 from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.vcs import validate_branch_name
-from project_sandbox_tui.widgets import modifier_key
+from project_sandbox_tui.widgets import KeyHints, modifier_key
 
 _MODAL_CSS = """
 {name} {{ align: center middle; }}
@@ -50,7 +53,7 @@ class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
             yield Static("start at", classes="row-label")
             yield Input(value=self.default_start, id="start")
             yield Static("", id="error")
-            yield Static("tab fields · enter create · esc cancel", classes="hint")
+            yield Static(KeyHints("tab fields · enter create · esc cancel"), classes="hint")
 
     def on_mount(self) -> None:
         self.query_one("#name").focus()
@@ -109,7 +112,7 @@ class ConfirmScreen(ModalScreen[bool]):
         with Vertical():
             yield Static(self.title_text, classes="title")
             yield Static(Text(self.body))
-            yield Static(f"y {self.action_text} · any other key cancels", classes="hint")
+            yield Static(KeyHints(f"y {self.action_text} · any other key cancels"), classes="hint")
 
     def on_key(self, event: events.Key) -> None:
         # Consume the key so it cannot also trigger a binding on the screen below.
@@ -167,7 +170,9 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
             # Not a SelectionList: its options are one line each, which cut long reasons off.
             yield OptionList(*(self._label(i) for i in range(len(self.workspaces))))
             yield Static(
-                "space toggle · a all/none · enter remove · D force-delete kept · esc cancel",
+                KeyHints(
+                    "space toggle · a all/none · enter remove · D force-delete kept · esc cancel"
+                ),
                 classes="hint",
             )
 
@@ -234,27 +239,136 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
         self.dismiss(None)
 
 
-HELP_TEXT = """\
-navigation
-  j / k  gg / G  ctrl+d / u   down / up · top / bottom · half page
-  /      filter (esc clears)  ?  this help   q  quit (runs continue)
-sessions (one sandbox per branch)
-  i          interactive (inline, or tmux / zellij / screen: ui.terminal)
-  r          unsupervised run with a prompt (background)
-  x          stop a run; again: SIGINT → SIGTERM → SIGKILL + container
-  l / enter  log / transcript     c / C  clear status / forget stuck run
-prompt box (unsupervised runs)
-  ctrl+enter  launch (enter = newline)  → / ctrl+f  take the suggestion
-  ctrl+p / n  older / newer prompt      ctrl+r      search prompt history
-branches
-  n          new branch / bookmark      W  clean up workspaces
-  v / space  select a range / mark branches (esc clears), then r or i
-             merges or rebases them into a new branch
-  o  open the worktree in your editor   P  show the project-sandbox command
-  R  refresh   ctrl+r  reload configuration   H  show / hide cheat-sheet
-"""
+HelpSection = tuple[str, tuple[tuple[str, str], ...]]
+
+# Two columns of sections, side by side when the terminal is wide enough.
+HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
+    (
+        (
+            "navigation",
+            (
+                ("j / k", "down / up"),
+                ("gg / G", "top / bottom"),
+                ("ctrl+d / u", "half page down / up"),
+                ("/", "filter (esc clears)"),
+                ("R", "refresh"),
+                ("ctrl+r", "reload configuration"),
+                ("H", "show / hide cheat-sheet"),
+                ("?", "this help"),
+                ("q", "quit (runs continue)"),
+            ),
+        ),
+        (
+            "prompt box (unsupervised runs)",
+            (
+                ("ctrl+enter", "launch (enter = newline)"),
+                ("→ / ctrl+f", "take the suggestion"),
+                ("ctrl+p / n", "older / newer prompt"),
+                ("ctrl+r", "search prompt history"),
+            ),
+        ),
+    ),
+    (
+        (
+            "sessions (one sandbox per branch)",
+            (
+                ("i", "interactive (ui.terminal)"),
+                ("r", "unsupervised run"),
+                ("x", "stop; again: SIGTERM, SIGKILL + container"),
+                ("l / enter", "log / transcript"),
+                ("c / C", "clear status / forget run"),
+            ),
+        ),
+        (
+            "branches",
+            (
+                ("n", "new branch / bookmark"),
+                (
+                    "v / space",
+                    "select a range / mark (esc clears); r or i then merges or rebases them",
+                ),
+                ("o", "open in your editor"),
+                ("P", "show the sandbox command"),
+                ("W", "clean up workspaces"),
+            ),
+        ),
+    ),
+)
+
+
+class HelpBody:
+    """The key reference: two columns when they fit, else one; long descriptions wrap in place."""
+
+    GAP = 4
+    MIN_DESCRIPTION = 10  # half the narrowest description column before the columns stack
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        left, right = HELP
+        side_by_side = (
+            self._width(left) + self.GAP + self._width(right) + 4 * self.MIN_DESCRIPTION
+        ) <= options.max_width
+        if side_by_side:
+            # Fixed equal widths: ratios would favour the column with longer words.
+            width = (options.max_width - self.GAP) // 2
+            grid = Table.grid(padding=(0, self.GAP))
+            grid.add_column(width=width)
+            grid.add_column(width=width)
+            grid.add_row(self._column(left), self._column(right))
+            yield grid
+        else:
+            yield self._column(left + right)
+
+    @staticmethod
+    def _width(sections: tuple[HelpSection, ...]) -> int:
+        """Width of the key column plus its gap."""
+        return max(cell_len(key) for _title, keys in sections for key, _what in keys) + 2
+
+    @classmethod
+    def _column(cls, sections: tuple[HelpSection, ...]) -> Group:
+        parts: list[RenderableType] = []
+        for title, keys in sections:
+            if parts:
+                parts.append(Text())
+            parts.append(Text(title, style="bold"))
+            table = Table.grid(padding=(0, 2))
+            table.add_column(width=cls._width(sections) - 2, no_wrap=True, style="bold")
+            table.add_column(style="dim")
+            for key, what in keys:
+                table.add_row(key, what)
+            parts.append(table)
+        return Group(*parts)
 
 
 class HelpScreen(MessageScreen):
+    """The full key reference; scrolls when the terminal is too short for it."""
+
+    DEFAULT_CSS = """
+    HelpScreen > Vertical { width: 84; }
+    HelpScreen VerticalScroll { height: auto; scrollbar-size-vertical: 1; }
+    """
+
+    SCROLL_KEYS = {"j": 1, "down": 1, "k": -1, "up": -1}
+
     def __init__(self) -> None:
-        super().__init__("sbx-tui keys", HELP_TEXT)
+        super().__init__("sbx-tui keys", "")
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self.title_text, classes="title")
+            with VerticalScroll():
+                yield Static(HelpBody())
+            yield Static("any key to close", classes="hint")
+
+    def on_resize(self, event: events.Resize) -> None:
+        chrome = 6  # padding, title + margin, hint + margin
+        self.query_one(VerticalScroll).styles.max_height = max(3, event.size.height - chrome)
+
+    def on_key(self, event: events.Key) -> None:
+        body = self.query_one(VerticalScroll)
+        step = self.SCROLL_KEYS.get(event.key)
+        if step and body.max_scroll_y:
+            event.stop()
+            event.prevent_default()
+            body.scroll_relative(y=step, animate=False)
+            return
+        super().on_key(event)

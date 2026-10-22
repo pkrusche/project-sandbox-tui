@@ -12,6 +12,7 @@ from textual.screen import Screen
 from textual.widgets import Log, Static
 
 from project_sandbox_tui.jobs import JobRecord
+from project_sandbox_tui.widgets import KeyHints
 
 INITIAL_TAIL_BYTES = 256 * 1024
 
@@ -20,7 +21,7 @@ class LogScreen(Screen[None]):
     DEFAULT_CSS = """
     LogScreen #log-title { height: 1; background: $panel; padding: 0 1; }
     LogScreen Log { height: 1fr; border: none; }
-    LogScreen #log-hint { height: 1; color: $text-disabled; padding: 0 1; }
+    LogScreen #log-hint { height: auto; color: $text-disabled; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -52,7 +53,8 @@ class LogScreen(Screen[None]):
         yield Static("", id="log-title")
         yield Log(highlight=False, auto_scroll=True, max_lines=10_000)
         yield Static(
-            "q back · tab next file · j/k scroll · gg/G top/bottom · f follow", id="log-hint"
+            KeyHints("q back · tab next file · j/k scroll · gg/G top/bottom · f follow"),
+            id="log-hint",
         )
 
     def on_mount(self) -> None:

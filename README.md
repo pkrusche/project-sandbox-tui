@@ -14,15 +14,18 @@ background with a prompt, and notifies you when background work is done.
  ✓ fix/flaky-tests   8643f47   Stabilise integration tests   completed    codex/gpt-5.4      2m ago
  ✗ spike/tui         a1e2e23   Try a ranger-style layout     failed (1)   claude/sonnet      1h ago
 
-   move               sessions                       branches            other
-   j k   down / up    i    interactive               n  new branch       c C  clear / forget
-   gg G  top / bottom r    unsupervised run          o  open in editor   H    hide this sheet
-   ^d ^u half page    x    stop (again: escalate)    P  show command     ?    full help
-   /     filter       l ⏎  log / transcript          R  refresh          q    quit
+   general               sessions                   branches
+   j k    down / up      i    interactive           n    new branch
+   gg G   top / bottom   r    unsupervised run      v ␣  select → merge/rebase
+   ^d ^u  half page      x    stop (again: force)   o    open in editor
+   /      filter         l ⏎  log / transcript      P    show command
+   ?      full help      c C  clear / forget        W    clean workspaces
+   H      hide sheet                                R    refresh
+   q      quit                                      ^r   reload config
 ```
 
 The welcome screen shows a key cheat-sheet under the list; `H` hides it (the
-one-line key footer takes its place), and `ui.cheatsheet = false` starts with it
+key footer takes its place), and `ui.cheatsheet = false` starts with it
 hidden.
 
 The TUI only ever shells out to the `project-sandbox` CLI (`--branch`,

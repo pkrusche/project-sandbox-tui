@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rich.cells import cell_len
+from rich.console import Console, ConsoleOptions, RenderResult
+from rich.measure import Measurement
 from rich.text import Text
 from textual.binding import Binding
 from textual.message import Message
@@ -196,3 +199,30 @@ def modifier_key(key: str) -> str | None:
     key = key.removeprefix("left_").removeprefix("right_")
     key = {"control": "ctrl"}.get(key, key)
     return key if key in {"ctrl", "shift", "alt", "super", "meta", "hyper"} else None
+
+
+class KeyHints:
+    """``a · b · c`` key hints that wrap between items, never inside one."""
+
+    SEPARATOR = " · "
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.items = text.split(self.SEPARATOR)
+
+    def __str__(self) -> str:
+        return self.text
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        lines: list[str] = []
+        for item in self.items:
+            joined = f"{lines[-1]}{self.SEPARATOR}{item}" if lines else item
+            if lines and cell_len(joined) <= options.max_width:
+                lines[-1] = joined
+            else:
+                lines.append(item)
+        # An item wider than the whole line still wraps at its own spaces.
+        yield Text("\n".join(lines))
+
+    def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
+        return Measurement(max(map(cell_len, self.items)), cell_len(self.text))
