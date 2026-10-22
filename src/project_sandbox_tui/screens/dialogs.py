@@ -21,7 +21,7 @@ _MODAL_CSS = """
 {name} .title {{ text-style: bold; margin-bottom: 1; }}
 {name} .row-label {{ color: $text-muted; height: 1; padding: 0 1; }}
 {name} .hint {{ color: $text-disabled; margin-top: 1; }}
-{name} Input {{ border: none; height: 1; padding: 0 1; }}
+{name} Input, {name} Input:focus {{ border: none; height: 1; padding: 0 1; }}
 {name} Input:focus {{ background: $boost; }}
 """
 
