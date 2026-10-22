@@ -38,7 +38,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--cleanup-workspaces",
         action="store_true",
-        help="remove clean branch workspaces with no running session, then exit",
+        help="remove clean worktrees / workspaces with no running session, then exit",
     )
     p.add_argument(
         "--dry-run",
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         except (VcsError, OSError) as exc:
             print(f"sbx-tui: {exc}", file=sys.stderr)
             return 2
-        print("\n".join(results) or "No branch workspaces to clean up.")
+        print("\n".join(results) or f"No workspaces found besides {backend.root}.")
         return 0
 
     if args.print_config:

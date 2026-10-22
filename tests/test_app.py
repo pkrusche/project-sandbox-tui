@@ -638,3 +638,55 @@ def test_launch_command_preview_scrolls(git_repo: Path, fake_cfg: Callable[..., 
         await pilot.press("escape")
 
     run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_cleanup_workspaces_key(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from textual.widgets import SelectionList
+
+    from project_sandbox_tui.screens.dialogs import CleanupScreen, MessageScreen
+    from project_sandbox_tui.vcs import workspace_path
+    from tests.conftest import run
+
+    path = workspace_path(git_repo, "git", "feature/x", None)
+    run("git", "worktree", "add", str(path), "feature/x", cwd=git_repo)
+    dirty = git_repo.parent / "dirty"
+    run("git", "worktree", "add", "--detach", str(dirty), "main", cwd=git_repo)
+    (dirty / "untracked").write_text("keep")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("W")
+        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        assert [(ws.name, ws.removable) for ws in app.screen.workspaces] == [
+            ("feature/x", True),
+            ("dirty (detached)", False),
+        ]
+        assert app.screen.query_one(SelectionList).selected == [0]
+        await pilot.press("escape")
+        assert not isinstance(app.screen, CleanupScreen)
+        await pilot.pause(0.2)
+        assert path.exists()
+
+        await pilot.press("W")
+        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await pilot.press("a")  # deselect all
+        await pilot.press("enter")  # nothing selected: nothing happens
+        await pilot.pause(0.2)
+        assert path.exists()
+
+        await pilot.press("W")
+        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: not path.exists())
+        assert dirty.exists()
+        assert app.is_running
+
+        (dirty / "untracked").unlink()
+        run("git", "worktree", "remove", str(dirty), cwd=git_repo)
+        await pilot.press("W")  # nothing left: just a message
+        await wait_until(pilot, lambda: isinstance(app.screen, MessageScreen))
+        assert "No worktrees found" in app.screen.body
+        await pilot.press("q")
+        assert app.is_running
+
+    run_app(git_repo, fake_cfg(), scenario)
+    assert "feature/x" in run("git", "branch", cwd=git_repo)

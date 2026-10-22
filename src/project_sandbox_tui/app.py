@@ -24,6 +24,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
 from project_sandbox_tui import launchers, notify, terminal
+from project_sandbox_tui.cleanup import find_workspaces, remove_workspaces
 from project_sandbox_tui.config import (
     Config,
     ConfigError,
@@ -44,7 +45,12 @@ from project_sandbox_tui.sandbox import (
     running_by_branch,
     uses_main_checkout,
 )
-from project_sandbox_tui.screens.dialogs import HelpScreen, MessageScreen, NewBranchScreen
+from project_sandbox_tui.screens.dialogs import (
+    CleanupScreen,
+    HelpScreen,
+    MessageScreen,
+    NewBranchScreen,
+)
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import (
@@ -146,6 +152,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("l", "app.open_log", show=False),
     Binding("o", "app.open_editor", show=False),
     Binding("P", "app.preview", show=False),
+    Binding("W", "app.cleanup_workspaces", show=False),
     Binding("x", "app.stop", show=False),
     Binding("c", "app.clear_status", show=False),
     Binding("C", "app.clear_status(True)", show=False),
@@ -173,7 +180,13 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
     (
         "branches",
-        (("n", "new branch"), ("o", "open in editor"), ("P", "show command"), ("R", "refresh")),
+        (
+            ("n", "new branch"),
+            ("o", "open in editor"),
+            ("P", "show command"),
+            ("W", "clean workspaces"),
+            ("R", "refresh"),
+        ),
     ),
     (
         "other",
@@ -770,6 +783,49 @@ class SandboxTUI(App[None]):
         except (ConfigError, CheckoutConflict) as exc:
             body = f"! {exc}"
         self.push_screen(MessageScreen(f"interactive command for {name}", body))
+
+    def action_cleanup_workspaces(self) -> None:
+        self._cleanup_workspaces()
+
+    @work(exclusive=True, group="cleanup")
+    async def _cleanup_workspaces(self) -> None:
+        """List every workspace, let the user pick, then remove; removal re-checks each one."""
+        try:
+            found = await asyncio.to_thread(
+                find_workspaces,
+                self.backend,
+                self.cfg,
+                state_dir=self.jobs.state_dir,
+                sessions_dir=self.sessions_dir,
+            )
+        except (VcsError, OSError) as exc:
+            self.notify(f"cleanup failed: {exc}", severity="error", timeout=8)
+            return
+        if not found:
+            noun = "worktrees" if self.backend.kind == "git" else "workspaces"
+            body = f"No {noun} found besides {self.repo}."
+            self.push_screen(MessageScreen("nothing to clean up", body))
+            return
+        chosen = await self.push_screen_wait(CleanupScreen(found))
+        if not chosen:
+            return
+        try:
+            results = await asyncio.to_thread(
+                remove_workspaces,
+                self.backend,
+                self.cfg,
+                [ws.path for ws in chosen],
+                state_dir=self.jobs.state_dir,
+                sessions_dir=self.sessions_dir,
+            )
+        except (VcsError, OSError) as exc:
+            self.notify(f"cleanup failed: {exc}", severity="error", timeout=8)
+            return
+        removed = sum(line.startswith("removed") for line in results)
+        self.notify(f"removed {removed} workspace{'' if removed == 1 else 's'}")
+        if removed != len(results):
+            self.push_screen(MessageScreen("workspace cleanup", "\n".join(results)))
+        await self.refresh_data()
 
     def action_stop(self) -> None:
         name = self._require_branch()

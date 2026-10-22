@@ -120,12 +120,20 @@ sbx-tui --cleanup-workspaces --dry-run   # preview
 sbx-tui --cleanup-workspaces             # remove idle, clean workspaces
 ```
 
-This checks the configured workspace paths for existing branches / bookmarks.
-A branch is active while it has a running TUI job or project-sandbox session.
-Cleanup skips active branches, the repository's own checkout, unrelated
-worktrees, and workspaces with uncommitted, untracked or ignored files. It
-unregisters removed git worktrees / jj workspaces and keeps branches, bookmarks,
-and job history. Workspaces for deleted branches are left alone.
+In the TUI, `W` lists every workspace it found with its path and status.
+Removable ones are preselected; the others are shown greyed out with the reason
+they are kept. Toggle with `space` (`a` selects all / none), press `enter` to
+remove the selection, `esc` to cancel. The CLI prints the same list: `removed` /
+`would remove` lines, plus a `kept` line with the reason for each of the rest.
+
+Workspaces come from the VCS itself (`git worktree list` / `jj workspace list`),
+so worktrees of deleted branches, detached worktrees and jj workspaces in any
+location or with any name are included. The workspace the TUI runs in is never
+listed. Workspaces are kept when they have a running TUI job or project-sandbox
+session, uncommitted, untracked or ignored files, are locked, are missing on disk,
+or hold the repository itself (jj's `default` workspace). Removal re-checks each
+selected workspace, unregisters it (`git worktree remove` / `jj workspace forget`)
+and keeps branches, bookmarks and job history.
 
 ## Interactive sessions
 

@@ -8,8 +8,10 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, SelectionList, Static
+from textual.widgets.selection_list import Selection
 
+from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.vcs import validate_branch_name
 from project_sandbox_tui.widgets import modifier_key
 
@@ -91,6 +93,101 @@ class MessageScreen(ModalScreen[None]):
             self.dismiss(None)
 
 
+class ConfirmScreen(ModalScreen[bool]):
+    """Show a block of plain text; y confirms, any other key cancels."""
+
+    DEFAULT_CSS = _MODAL_CSS.format(name="ConfirmScreen")
+
+    def __init__(self, title: str, body: str, action: str) -> None:
+        super().__init__()
+        self.title_text = title
+        self.body = body
+        self.action_text = action
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self.title_text, classes="title")
+            yield Static(Text(self.body))
+            yield Static(f"y {self.action_text} · any other key cancels", classes="hint")
+
+    def on_key(self, event: events.Key) -> None:
+        # Consume the key so it cannot also trigger a binding on the screen below.
+        event.stop()
+        event.prevent_default()
+        if not modifier_key(event.key):
+            self.dismiss(event.key == "y")
+
+
+class CleanupScreen(ModalScreen[list[Workspace] | None]):
+    """List every workspace found; clean ones are preselected, the rest say why they stay."""
+
+    DEFAULT_CSS = (
+        _MODAL_CSS.format(name="CleanupScreen")
+        + """
+    CleanupScreen > Vertical { width: 110; }
+    CleanupScreen SelectionList { border: none; height: auto; max-height: 20; padding: 0; }
+    """
+    )
+    BINDINGS = [
+        Binding("escape,q", "cancel", show=False),
+        Binding("enter", "confirm", show=False, priority=True),
+        Binding("j", "move(1)", show=False),
+        Binding("k", "move(-1)", show=False),
+        Binding("a", "toggle_all", show=False),
+    ]
+
+    def __init__(self, workspaces: list[Workspace]) -> None:
+        super().__init__()
+        self.workspaces = workspaces
+
+    def compose(self) -> ComposeResult:
+        removable = sum(ws.removable for ws in self.workspaces)
+        kept = len(self.workspaces) - removable
+        summary = f"{len(self.workspaces)} found · {removable} can be removed"
+        if kept:
+            summary += f" · {kept} kept (reason shown)"
+        with Vertical():
+            yield Static("clean up workspaces", classes="title")
+            yield Static(summary)
+            yield SelectionList[int](
+                *(
+                    Selection(self._label(ws), i, ws.removable, disabled=not ws.removable)
+                    for i, ws in enumerate(self.workspaces)
+                )
+            )
+            yield Static(
+                "space toggle · a all/none · enter remove selected · esc cancel", classes="hint"
+            )
+
+    @staticmethod
+    def _label(ws: Workspace) -> Text:
+        label = Text(ws.name, style="bold")
+        label.append(f"  {ws.path}", style="dim")
+        label.append(f"  {ws.status}", style="green" if ws.removable else "yellow")
+        return label
+
+    def on_mount(self) -> None:
+        self.query_one(SelectionList).focus()
+
+    def action_move(self, step: int) -> None:
+        options = self.query_one(SelectionList)
+        options.action_cursor_down() if step > 0 else options.action_cursor_up()
+
+    def action_toggle_all(self) -> None:
+        options = self.query_one(SelectionList)
+        if options.selected:
+            options.deselect_all()
+        else:
+            options.select_all()
+
+    def action_confirm(self) -> None:
+        selected = self.query_one(SelectionList).selected
+        self.dismiss([self.workspaces[i] for i in sorted(selected)])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 HELP_TEXT = """\
 navigation
   j / k          down / up            gg / G      top / bottom
@@ -111,7 +208,7 @@ prompt box (unsupervised runs)
   ctrl+r         search the prompt history
 
 branches
-  n              new branch / bookmark
+  n              new branch/bookmark  W           clean up workspaces
   o              open the branch worktree in your editor
   P              preview the project-sandbox command
   R              refresh now          ctrl+r      reload configuration
