@@ -248,7 +248,7 @@ Keybindings (vim/ranger):
 Launch form fields: agent (cycle with `h`/`l`), model (text, with per-agent
 suggestions), effort (cycle), prompt (textarea, `r` only), timeout. `Enter`
 launches an interactive session; in the unsupervised form `Enter` moves to the
-next field and `ctrl+s` launches. `Esc` cancels. Pre-filled from last-used.
+next field and `ctrl+enter` launches. `Esc` cancels. Pre-filled from last-used.
 
 Status glyphs: `●` (after the name) current, `▶` running, `✓` completed,
 `✗` failed, `⏱` timeout, `⚠` rate-limited/interrupted/orphaned, `◆` busy with a

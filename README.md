@@ -69,8 +69,8 @@ sbx-tui                  # the real thing
 
 In the launch form: `tab` (or `j`/`k` on choice fields) moves between fields,
 `h`/`l` cycles agent and effort, `enter` launches an interactive session,
-`ctrl+s` launches an unsupervised run (there `enter` just moves to the next
-field), `esc` cancels.
+`ctrl+enter` launches an unsupervised run. In that form, `enter` inserts a newline
+in the prompt or moves to the next field elsewhere. `esc` cancels.
 
 ### Prompt history
 
@@ -221,3 +221,6 @@ Tests use `tests/fake_project_sandbox.py`, a stand-in CLI that writes session
 records, logs, a transcript and a JSON summary the way project-sandbox does.
 
 See [PLAN.md](PLAN.md) for the design and remaining phases.
+
+Press Ctrl, Shift, or Alt to see contextual shortcut hints when your terminal
+reports standalone modifier keys.

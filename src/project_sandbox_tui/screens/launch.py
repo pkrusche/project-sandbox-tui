@@ -18,7 +18,7 @@ from project_sandbox_tui.config import resolve_model as _resolve_model
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import LaunchSpec, Mode
 from project_sandbox_tui.screens.history import HistorySearchScreen
-from project_sandbox_tui.widgets import CycleField, PromptArea
+from project_sandbox_tui.widgets import CycleField, PromptArea, modifier_key
 
 
 class LaunchScreen(ModalScreen[LaunchSpec | None]):
@@ -46,7 +46,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", "cancel", show=False),
-        Binding("ctrl+s", "launch", "launch", show=False, priority=True),
+        Binding("ctrl+enter", "launch", "launch", show=False, priority=True),
     ]
 
     def __init__(
@@ -114,8 +114,24 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             yield Static("", classes="preview", id="preview")
             keys = "tab/j/k fields · h/l change · enter launch · esc cancel"
             if self.mode == "background":
-                keys = "tab fields · h/l change · ctrl+s launch · esc cancel"
-            yield Static(keys, classes="hint")
+                keys = "tab fields · h/l change · ctrl+enter launch · esc cancel"
+            self.default_hint = keys
+            yield Static(keys, classes="hint", id="launch-hint")
+
+    def on_key(self, event: events.Key) -> None:
+        modifier = modifier_key(event.key)
+        hint = self.default_hint
+        if modifier:
+            if modifier == "ctrl":
+                hint = "ctrl+enter launch"
+                if isinstance(self.focused, PromptArea):
+                    hint += " · ctrl+p/n history · ctrl+r search · ctrl+f complete"
+            elif modifier == "shift":
+                hint = "shift+tab previous field"
+            else:
+                hint = f"{modifier}: no form shortcuts"
+            event.stop()
+        self.query_one("#launch-hint", Static).update(hint)
 
     def on_mount(self) -> None:
         target = "#prompt" if self.mode == "background" else "#agent"
@@ -182,6 +198,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     @on(Input.Changed)
     @on(TextArea.Changed)
     def _changed(self) -> None:
+        self.query_one("#launch-hint", Static).update(self.default_hint)
         self._update_preview()
         # after PromptArea has processed the same Changed (browse state, suggestion)
         self.call_after_refresh(self._update_prompt_hint)
@@ -214,7 +231,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     def _enter(self) -> None:
         """Enter launches an interactive session; in the unsupervised form, where
-        the prompt is the main field, it only moves on (ctrl+s launches)."""
+        the prompt is the main field, it only moves on (ctrl+enter launches)."""
         if self.mode == "interactive":
             self.action_launch()
         else:

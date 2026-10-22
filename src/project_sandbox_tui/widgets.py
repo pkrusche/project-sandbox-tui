@@ -189,3 +189,10 @@ class PromptArea(TextArea):
 
     def action_search_history(self) -> None:
         self.post_message(self.SearchRequested(self))
+
+
+def modifier_key(key: str) -> str | None:
+    """Normalize standalone modifier events reported by extended-key terminals."""
+    key = key.removeprefix("left_").removeprefix("right_")
+    key = {"control": "ctrl"}.get(key, key)
+    return key if key in {"ctrl", "shift", "alt", "super", "meta", "hyper"} else None

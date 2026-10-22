@@ -11,6 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from project_sandbox_tui.vcs import validate_branch_name
+from project_sandbox_tui.widgets import modifier_key
 
 _MODAL_CSS = """
 {name} {{ align: center middle; }}
@@ -86,7 +87,8 @@ class MessageScreen(ModalScreen[None]):
         # Consume the key so it cannot also trigger a binding on the screen below.
         event.stop()
         event.prevent_default()
-        self.dismiss(None)
+        if not modifier_key(event.key):
+            self.dismiss(None)
 
 
 HELP_TEXT = """\
@@ -103,6 +105,7 @@ sessions (one sandbox per branch)
   c / C          clear a finished status / force-forget a stuck record
 
 prompt box (unsupervised runs)
+  ctrl+enter     submit prompt and launch (enter inserts a newline)
   → / ctrl+f     take the history suggestion shown as ghost text
   ctrl+p / n     older / newer prompt starting with what you typed
   ctrl+r         search the prompt history
@@ -113,7 +116,6 @@ branches
   P              preview the project-sandbox command
   R              refresh now          ctrl+r      reload configuration
   H              show / hide the cheat-sheet
-
   ?              this help            q           quit (background runs continue)
 """
 

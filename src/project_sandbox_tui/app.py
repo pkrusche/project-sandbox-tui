@@ -16,7 +16,7 @@ from typing import ClassVar
 
 from rich.table import Table
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.notifications import SeverityLevel
@@ -54,6 +54,7 @@ from project_sandbox_tui.vcs import (
     sort_branches,
     workspace_path,
 )
+from project_sandbox_tui.widgets import modifier_key
 
 GLYPHS = {
     "running": ("▶", "green"),
@@ -221,6 +222,24 @@ class MainScreen(Screen[None]):
             "j/k move · i interactive · r run · n new · l log · x stop · o open · ? help · q quit",
             id="footer",
         )
+
+    def on_key(self, event: events.Key) -> None:
+        modifier = modifier_key(event.key)
+        if modifier:
+            hints = {
+                "ctrl": "ctrl+d/u half page down/up · ctrl+r reload configuration",
+                "shift": "G bottom · P preview · R refresh · C force-forget · H toggle sheet",
+            }
+            hint = hints.get(modifier, f"{modifier}: no shortcuts on the branch list")
+            self.query_one("#cheatsheet", Static).update(hint)
+            self.query_one("#footer", Static).update(hint)
+            event.stop()
+        else:
+            self.query_one("#cheatsheet", Static).update(cheatsheet())
+            self.query_one("#footer", Static).update(
+                "j/k move · i interactive · r run · n new · l log · "
+                "x stop · o open · ? help · q quit"
+            )
 
 
 class SandboxTUI(App[None]):

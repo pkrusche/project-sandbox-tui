@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import Input, TextArea
+from textual.widgets import Input, Static, TextArea
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
@@ -104,7 +104,7 @@ def test_background_run_notifies_and_shows_log(
         assert isinstance(form, LaunchScreen)
         assert isinstance(app.focused, TextArea)
         # empty prompt is refused
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         assert app.screen is form
         form.query_one("#prompt", TextArea).text = "sleep:0.6 exit:0"
         await pilot.press("shift+tab", "shift+tab", "shift+tab", "shift+tab", "l")  # agent → codex
@@ -113,7 +113,7 @@ def test_background_run_notifies_and_shows_log(
         form.query_one("#model", Input).value = "gpt-x"
         preview = str(form.query_one("#preview").render())
         assert "--agent codex" in preview and "--prompt-text" in preview
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         assert not isinstance(app.screen, LaunchScreen)
 
         await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
@@ -163,7 +163,7 @@ def test_missing_image_config_is_reported(git_repo: Path) -> None:
         assert isinstance(form, LaunchScreen)
         assert "no image configured" in str(form.query_one("#preview").render())
         form.query_one("#prompt", TextArea).text = "go"
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         await pilot.pause(0.1)
         assert "main" not in app.jobs.jobs
 
@@ -203,7 +203,7 @@ def test_run_on_current_git_branch_uses_main_checkout(
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.main_checkout
         form.query_one("#prompt", TextArea).text = "sleep:3"
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
         argv = app.jobs.jobs["main"].argv
         assert "--branch" not in argv and "--keep-workspace" not in argv
@@ -223,6 +223,9 @@ def test_enter_does_not_launch_unsupervised_run(
         form = app.screen
         assert isinstance(form, LaunchScreen)
         form.query_one("#prompt", TextArea).text = "sleep:0.1"
+        await pilot.press("ctrl+s")
+        assert app.screen is form
+        assert form.query_one("#prompt", TextArea).text == "sleep:0.1"
         form.query_one("#timeout", Input).focus()
         await pilot.press("enter")
         assert app.screen is form  # still in the form; focus moved on
@@ -243,7 +246,7 @@ def test_launch_rechecks_checkout_after_form_opens(
         # Another terminal switches the checkout while the form is open.
         run("git", "checkout", "-q", "feature/x", cwd=git_repo)
         form.query_one("#prompt", TextArea).text = "sleep:0.1"
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
         assert "--branch" in app.jobs.jobs["main"].argv
         await wait_until(pilot, lambda: not app.jobs.jobs["main"].running)
@@ -338,7 +341,7 @@ def test_jj_repo_without_bookmarks_runs_in_working_copy(
         assert isinstance(form, LaunchScreen) and form.main_checkout
         assert "@ working copy" in str(form.query_one(".title").render())
         form.query_one("#prompt", TextArea).text = "sleep:3"
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
         assert "--branch" not in app.jobs.jobs["@"].argv
         await wait_until(pilot, lambda: "@" in app.sessions)  # session in the repo itself
@@ -358,7 +361,7 @@ def test_jj_working_copy_alongside_bookmarks(
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.main_checkout
         form.query_one("#prompt", TextArea).text = "sleep:3"
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
         assert "--branch" not in app.jobs.jobs["@"].argv
         await wait_until(pilot, lambda: "@" in app.sessions)
@@ -368,7 +371,7 @@ def test_jj_working_copy_alongside_bookmarks(
         form = app.screen
         assert isinstance(form, LaunchScreen) and not form.main_checkout
         form.query_one("#prompt", TextArea).text = "sleep:0.1"
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
         argv = app.jobs.jobs["main"].argv
         assert argv[argv.index("--branch") + 1] == "main"
@@ -425,7 +428,7 @@ def test_prompt_history_completion_browse_and_search(
 
         # launching records the prompt as the newest entry
         area.replace_text("sleep:0.1 brand new prompt")
-        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
 
     run_app(git_repo, fake_cfg(), scenario)
@@ -565,3 +568,29 @@ def test_reload_config(git_repo: Path, tmp_path: Path) -> None:
             assert any("Config reload failed" in str(n.message) for n in app._notifications)
 
     asyncio.run(scenario())
+
+
+def test_modifier_hints(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("left_control")
+        assert "ctrl+r reload" in str(app.main.query_one("#cheatsheet", Static).render())
+        await pilot.press("right_shift")
+        assert "G bottom" in str(app.main.query_one("#cheatsheet", Static).render())
+        await pilot.press("left_alt")
+        assert "no shortcuts" in str(app.main.query_one("#footer", Static).render())
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        await pilot.press("right_control")
+        hint = str(form.query_one("#launch-hint", Static).render())
+        assert "ctrl+enter launch" in hint and "ctrl+r search" in hint
+        await pilot.press("left_shift")
+        assert "shift+tab" in str(form.query_one("#launch-hint", Static).render())
+        await pilot.press("a")
+        assert "ctrl+enter launch" in str(form.query_one("#launch-hint", Static).render())
+        await pilot.press("escape", "question_mark", "left_control")
+        assert isinstance(app.screen, HelpScreen)
+        await pilot.press("q")
+        assert app.screen is app.main
+
+    run_app(git_repo, fake_cfg(), scenario)
