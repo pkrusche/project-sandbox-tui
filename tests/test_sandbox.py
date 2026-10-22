@@ -208,3 +208,13 @@ def test_main_checkout_sessions_map_to_current_branch(tmp_path: Path) -> None:
     assert list(running_by_branch(records, repo, "git", ["main"], None, main_branch="main")) == [
         "main"
     ]
+
+
+def test_jj_working_copy_runs_in_main_checkout(tmp_path: Path) -> None:
+    from project_sandbox_tui.sandbox import uses_main_checkout
+    from project_sandbox_tui.vcs import WORKING_COPY, Branch
+
+    wc = Branch(WORKING_COPY, "jj", "abc", "wip", 0, is_current=True, working_copy=True)
+    assert uses_main_checkout(tmp_path, wc, None)
+    bookmark = Branch("feature", "jj", "def", "x", 0)
+    assert not uses_main_checkout(tmp_path, bookmark, None)

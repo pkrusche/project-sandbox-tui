@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Peter Krusche" }]
 dependencies = [
-    "textual>=1.0",
+    "textual>=6.0",  # TextArea.suggestion (prompt history completion)
 ]
 
 # project-sandbox itself is a separate tool: `uv tool install project-sandbox`,

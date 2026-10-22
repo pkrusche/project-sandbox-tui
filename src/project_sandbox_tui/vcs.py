@@ -26,6 +26,13 @@ class Branch:
     is_current: bool = False
     # git only: where the branch is checked out (main checkout or a worktree)
     checkout_path: Path | None = None
+    # jj only: the pseudo-branch for the working copy, listed when the repo has
+    # no bookmarks; sessions on it run in the repository's own workspace.
+    working_copy: bool = False
+
+    @property
+    def label(self) -> str:
+        return "@ working copy" if self.working_copy else self.name
 
 
 def _run(args: list[str], cwd: Path) -> str:
@@ -48,9 +55,7 @@ def _run(args: list[str], cwd: Path) -> str:
     return proc.stdout
 
 
-_INVALID_NAME = re.compile(
-    r"[\s\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.lock(?:/|$)|/\.|//"
-)
+_INVALID_NAME = re.compile(r"[\s\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.lock(?:/|$)|/\.|//")
 
 
 def validate_branch_name(name: str) -> str | None:
@@ -156,6 +161,14 @@ _JJ_TEMPLATE = (
 )
 
 
+WORKING_COPY = "@"
+
+_JJ_WORKING_COPY_TEMPLATE = (
+    'change_id.shortest(8) ++ "\\x00" ++ description.first_line() ++ "\\x00" ++ '
+    'committer.timestamp().format("%s") ++ "\\n"'
+)
+
+
 class JjBackend:
     kind: Kind = "jj"
 
@@ -186,7 +199,23 @@ class JjBackend:
                     is_current=current == "1",
                 )
             )
+        if not branches:
+            branches.append(self._working_copy())
         return branches
+
+    def _working_copy(self) -> Branch:
+        """A repo without bookmarks still has a working copy to run a session in."""
+        out = self._jj("log", "--no-graph", "-r", "@", "-T", _JJ_WORKING_COPY_TEMPLATE)
+        head, subject, ts = ([*out.rstrip("\n").split("\0"), "", ""])[:3]
+        return Branch(
+            name=WORKING_COPY,
+            kind="jj",
+            head=head,
+            subject=subject or "(no description set)",
+            timestamp=int(ts) if ts.isdigit() else 0,
+            is_current=True,
+            working_copy=True,
+        )
 
     def create_branch(self, name: str, start: str) -> None:
         # Not --ignore-working-copy: creating a bookmark is a write and should
@@ -197,11 +226,13 @@ class JjBackend:
         )
 
     def default_start(self) -> str:
-        names = {b.name for b in self.list_branches()}
+        branches = self.list_branches()
+        names = {b.name for b in branches}
         for candidate in ("main", "master", "trunk"):
             if candidate in names:
                 return candidate
-        return "@-"
+        # With no bookmarks, sessions have been working in @: bookmark that.
+        return "@" if any(b.working_copy for b in branches) else "@-"
 
 
 def detect(path: Path) -> Backend:

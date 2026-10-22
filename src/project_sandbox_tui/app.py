@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -28,6 +29,7 @@ from project_sandbox_tui.config import (
     remember,
     resolve_launch_defaults,
 )
+from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.sandbox import (
     CheckoutConflict,
@@ -42,7 +44,14 @@ from project_sandbox_tui.sandbox import (
 from project_sandbox_tui.screens.dialogs import HelpScreen, MessageScreen, NewBranchScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
-from project_sandbox_tui.vcs import Backend, Branch, VcsError, sort_branches, workspace_path
+from project_sandbox_tui.vcs import (
+    WORKING_COPY,
+    Backend,
+    Branch,
+    VcsError,
+    sort_branches,
+    workspace_path,
+)
 
 GLYPHS = {
     "running": ("▶", "green"),
@@ -65,6 +74,14 @@ def human_age(seconds: float) -> str:
     if seconds < 86400:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
+
+
+def count_label(count: int, kind: str) -> str:
+    """'1 branch', '3 bookmarks', 'no bookmarks' (the working-copy row is not counted)."""
+    singular, plural = ("bookmark", "bookmarks") if kind == "jj" else ("branch", "branches")
+    if count == 0:
+        return f"no {plural}"
+    return f"{count} {singular if count == 1 else plural}"
 
 
 def _ts(value: str) -> float:
@@ -97,7 +114,7 @@ class Row:
             glyph, colour = GLYPHS["external"]
             status, agent = "busy (other)", sess.agent
             when = human_age(now - _ts(sess.started_at))
-        name = Text(b.name, style="bold" if b.is_current else "")
+        name = Text(b.label, style="bold" if b.is_current else "")
         if b.is_current:
             name.append(" ●", style="green")
         return (
@@ -131,8 +148,53 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("C", "app.clear_status(True)", show=False),
     Binding("R", "app.refresh", show=False),
     Binding("question_mark", "app.help", show=False),
+    Binding("H", "app.toggle_cheatsheet", show=False),
     Binding("q", "app.quit", show=False),
 ]
+
+
+CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "move",
+        (("j k", "down / up"), ("gg G", "top / bottom"), ("^d ^u", "half page"), ("/", "filter")),
+    ),
+    (
+        "sessions",
+        (
+            ("i", "interactive"),
+            ("r", "unsupervised run"),
+            ("x", "stop (again: escalate)"),
+            ("l ⏎", "log / transcript"),
+        ),
+    ),
+    (
+        "branches",
+        (("n", "new branch"), ("o", "open in editor"), ("P", "show command"), ("R", "refresh")),
+    ),
+    (
+        "other",
+        (("c C", "clear / forget"), ("H", "hide this sheet"), ("?", "full help"), ("q", "quit")),
+    ),
+)
+
+
+def cheatsheet() -> Table:
+    """The key cheat-sheet shown under the branch list."""
+    grid = Table.grid(padding=(0, 3), expand=False)
+    for _ in CHEATSHEET:
+        grid.add_column(no_wrap=True)
+    grid.add_row(*(Text(title, style="bold") for title, _keys in CHEATSHEET))
+    for i in range(max(len(keys) for _title, keys in CHEATSHEET)):
+        cells = []
+        for _title, keys in CHEATSHEET:
+            cell = Text()
+            if i < len(keys):
+                key, what = keys[i]
+                cell.append(f"{key:<6}", style="bold")
+                cell.append(what, style="dim")
+            cells.append(cell)
+        grid.add_row(*cells)
+    return grid
 
 
 class MainScreen(Screen[None]):
@@ -144,6 +206,7 @@ class MainScreen(Screen[None]):
         yield Static("", id="header")
         table: DataTable[Text] = DataTable(cursor_type="row", zebra_stripes=False)
         yield table
+        yield Static(cheatsheet(), id="cheatsheet")
         yield Input(placeholder="filter", id="filter")
         yield Static(
             "j/k move · i interactive · r run · n new · l log · x stop · o open · ? help · q quit",
@@ -162,6 +225,9 @@ class SandboxTUI(App[None]):
     #filter { height: 1; border: none; padding: 0 1; display: none; }
     #filter.visible { display: block; }
     #footer { height: 1; color: $text-disabled; padding: 0 1; }
+    #cheatsheet { height: auto; padding: 1 2; border-top: solid $panel; }
+    #cheatsheet.hidden { display: none; }
+    MainScreen.with-cheatsheet #footer { display: none; }
     """
 
     def __init__(
@@ -187,6 +253,8 @@ class SandboxTUI(App[None]):
         self._pending_select: str | None = None
         self.default_start = cfg.project.default_branch_start
         self.main = MainScreen()
+        self.cheatsheet_visible = cfg.ui.cheatsheet
+        self.prompt_history = PromptHistory.for_repo(repo)
 
     # ------------------------------------------------------------ layout
 
@@ -196,6 +264,7 @@ class SandboxTUI(App[None]):
 
     async def on_mount(self) -> None:
         await self.push_screen(self.main)
+        self.show_cheatsheet(self.cheatsheet_visible)
         table = self.table
         for label, width in (
             ("", 1),
@@ -299,7 +368,8 @@ class SandboxTUI(App[None]):
         header.append(" sbx-tui ", style="bold reverse")
         header.append(f"  {self.repo}", style="bold")
         header.append(f"  ({self.backend.kind})", style="dim")
-        stats = f"{len(self.branches)} branches · {running} running"
+        count = sum(1 for b in self.branches if not b.working_copy)
+        stats = f"{count_label(count, self.backend.kind)} · {running} running"
         if busy_other:
             stats += f" · {busy_other} external"
         if self.filter_text:
@@ -308,7 +378,14 @@ class SandboxTUI(App[None]):
         self.main.query_one("#header", Static).update(header)
 
     def main_checkout_branch(self) -> str | None:
-        """The git branch checked out in the repository itself, if any."""
+        """The branch whose sessions run in the repository itself, if any.
+
+        git: the branch checked out there. jj: the working-copy row of a repo
+        without bookmarks.
+        """
+        for b in self.branches:
+            if b.working_copy:
+                return b.name
         if self.backend.kind != "git":
             return None
         repo = self.repo.resolve()
@@ -428,6 +505,7 @@ class SandboxTUI(App[None]):
         defaults = resolve_launch_defaults(self.cfg, last)
         previous = self.jobs.jobs.get(name)
         prompt = previous.spec.prompt_text if previous is not None else ""
+        branch = self.branch(name)
         screen = LaunchScreen(
             name,
             mode,
@@ -437,6 +515,8 @@ class SandboxTUI(App[None]):
             self._form_preview,
             prompt,
             main_checkout=main_checkout,
+            branch_label=branch.label if branch is not None else name,
+            prompt_history=self.prompt_history,
         )
         self.push_screen(screen, self._launch_chosen)
 
@@ -448,6 +528,8 @@ class SandboxTUI(App[None]):
             # launch form was open. Recheck immediately before starting.
             self.branches = sort_branches(self.backend.list_branches())
             if self.branch(spec.branch) is None:
+                if spec.branch == WORKING_COPY:
+                    raise VcsError("the repo has bookmarks now; pick one in the list")
                 raise VcsError(f"{spec.branch} no longer exists")
             spec.main_checkout = self._main_checkout(spec.branch)
             self.sessions = running_by_branch(
@@ -470,6 +552,8 @@ class SandboxTUI(App[None]):
         except OSError as exc:
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
         else:
+            if spec.mode == "background":
+                self.prompt_history.add(spec.prompt_text)
             # Only a launch that actually started becomes the new default.
             remember(
                 self.repo,
@@ -641,6 +725,15 @@ class SandboxTUI(App[None]):
 
     async def action_refresh(self) -> None:
         await self.refresh_data()
+
+    def action_toggle_cheatsheet(self) -> None:
+        self.show_cheatsheet(not self.cheatsheet_visible)
+
+    def show_cheatsheet(self, visible: bool) -> None:
+        """The sheet replaces the one-line footer while it is shown."""
+        self.cheatsheet_visible = visible
+        self.main.query_one("#cheatsheet").set_class(not visible, "hidden")
+        self.main.set_class(visible, "with-cheatsheet")
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

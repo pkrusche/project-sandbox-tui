@@ -116,3 +116,13 @@ def test_branch_names_are_unambiguous_with_matching_tags(git_repo: Path) -> None
 @pytest.mark.parametrize("name", ["topic/.hidden", "topic.lock/child", "a\x00b", "a\x7fb"])
 def test_invalid_branch_components(name: str) -> None:
     assert vcs.validate_branch_name(name)
+
+
+def test_jj_without_bookmarks_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
+    backend = vcs.detect(jj_repo_no_bookmarks)
+    [wc] = backend.list_branches()
+    assert wc.working_copy and wc.is_current and wc.name == vcs.WORKING_COPY
+    assert wc.subject == "work in progress" and wc.label == "@ working copy"
+    assert backend.default_start() == "@"  # bookmark the work done in the working copy
+    backend.create_branch("feature", backend.default_start())
+    assert [b.name for b in backend.list_branches()] == ["feature"]  # row is gone now

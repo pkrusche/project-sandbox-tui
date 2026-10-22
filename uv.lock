@@ -351,7 +351,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "textual", specifier = ">=1.0" }]
+requires-dist = [{ name = "textual", specifier = ">=6.0" }]
 
 [package.metadata.requires-dev]
 dev = [

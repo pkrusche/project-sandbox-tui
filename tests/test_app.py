@@ -173,10 +173,19 @@ def test_filter_box_is_visible_above_footer(
     git_repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("slash", "m")
-        await pilot.pause()
+        sheet = app.main.query_one("#cheatsheet")
         box = app.main.query_one("#filter")
         footer = app.main.query_one("#footer")
+        await pilot.press("slash", "m")
+        await pilot.pause()
+        # with the cheat-sheet: the sheet replaces the footer, filter sits below it
+        assert sheet.region.height > 1 and footer.region.height == 0
+        assert box.region.height == 1 and box.region.y >= sheet.region.bottom
+        await pilot.press("enter", "H")
+        await pilot.press("slash")
+        await pilot.pause()
+        # without it: footer is back and the filter is stacked above it
+        assert sheet.region.height == 0
         assert box.region.height == 1 and footer.region.height == 1
         assert box.region.y < footer.region.y  # stacked, not drawn on top of each other
 
@@ -315,3 +324,101 @@ def test_log_follows_partial_utf8_and_truncation(
         await pilot.press("q")
 
     run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_jj_repo_without_bookmarks_runs_in_working_copy(
+    jj_repo_no_bookmarks: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        assert [r[1] for r in row_texts(app)] == ["@ working copy ●"]
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.main_checkout
+        assert "@ working copy" in str(form.query_one(".title").render())
+        form.query_one("#prompt", TextArea).text = "sleep:3"
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "@" in app.jobs.jobs)
+        assert "--branch" not in app.jobs.jobs["@"].argv
+        await wait_until(pilot, lambda: "@" in app.sessions)  # session in the repo itself
+        app.jobs.stop("@", app.sessions)
+        await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
+
+    run_app(jj_repo_no_bookmarks, fake_cfg(), scenario)
+
+
+def test_prompt_history_completion_browse_and_search(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.history import PromptHistory
+    from project_sandbox_tui.screens.history import HistorySearchScreen
+    from project_sandbox_tui.widgets import PromptArea
+
+    history = PromptHistory.for_repo(git_repo)
+    for p in ("fix the flaky parser test", "write docs for config", "fix lint warnings"):
+        history.add(p)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "r")  # feature/x: no previous run, empty prompt
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        area = form.query_one("#prompt", PromptArea)
+        assert "3 prompts in history" in str(form.query_one("#prompt-hint").render())
+
+        # fish-style autosuggestion: newest entry extending the typed text
+        await pilot.press("f", "i", "x")
+        assert area.suggestion == " lint warnings"
+        await pilot.press("space", "t")
+        assert area.suggestion == "he flaky parser test"
+        await pilot.press("right")  # accept
+        assert area.text == "fix the flaky parser test" and area.suggestion == ""
+
+        # ctrl+p / ctrl+n: walk entries starting with what was typed
+        area.replace_text("fix")
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        assert area.text == "fix lint warnings" and area.browse_position == (1, 2)
+        await pilot.press("ctrl+p")
+        assert area.text == "fix the flaky parser test"
+        await pilot.press("ctrl+n", "ctrl+n")  # past the newest: back to the typed text
+        assert area.text == "fix" and area.browse_position is None
+
+        # ctrl+r: search modal, filtered by the words typed so far
+        area.replace_text("")
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        assert isinstance(app.screen, HistorySearchScreen)
+        await pilot.press("d", "o", "c", "s", "enter")
+        assert app.screen is form and area.text == "write docs for config"
+
+        # launching records the prompt as the newest entry
+        area.replace_text("sleep:0.1 brand new prompt")
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+
+    run_app(git_repo, fake_cfg(), scenario)
+    assert PromptHistory.for_repo(git_repo).newest_first()[0] == "sleep:0.1 brand new prompt"
+
+
+def test_cheatsheet_shown_on_start_and_toggles(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        sheet = app.main.query_one("#cheatsheet")
+        assert sheet.region.height > 0
+        assert "unsupervised" in app.export_screenshot()  # drawn on the welcome screen
+        await pilot.press("H")
+        await pilot.pause()
+        assert sheet.region.height == 0 and app.main.query_one("#footer").region.height == 1
+        await pilot.press("H")
+        await pilot.pause()
+        assert sheet.region.height > 0
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+    cfg = fake_cfg()
+    cfg.ui.cheatsheet = False
+
+    async def hidden(app: SandboxTUI, pilot: Any) -> None:
+        assert app.main.query_one("#cheatsheet").region.height == 0
+
+    run_app(git_repo, cfg, hidden)

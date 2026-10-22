@@ -95,6 +95,8 @@ def uses_main_checkout(repo: Path, branch: Branch, worktree_dir: Path | None) ->
     ``--branch``. A branch checked out in project-sandbox's own worktree is
     reused as usual. Any other worktree is a conflict the user has to resolve.
     """
+    if branch.working_copy:
+        return True  # jj repo without bookmarks: run in the working copy itself
     if branch.kind != "git" or branch.checkout_path is None:
         return False
     where = branch.checkout_path.resolve()

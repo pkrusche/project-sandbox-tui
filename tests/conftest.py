@@ -62,6 +62,18 @@ def jj_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def jj_repo_no_bookmarks(tmp_path: Path) -> Path:
+    if shutil.which("jj") is None:
+        pytest.skip("jj not installed")
+    repo = tmp_path / "jjbare"
+    repo.mkdir()
+    run("jj", "git", "init", "--quiet", cwd=repo)
+    (repo / "a.txt").write_text("a\n")
+    run("jj", "describe", "--quiet", "-m", "work in progress", cwd=repo)
+    return repo
+
+
+@pytest.fixture
 def fake_cfg() -> Callable[..., Config]:
     def make(**project: object) -> Config:
         cfg = Config()

@@ -102,11 +102,17 @@ sessions (one sandbox per branch)
   l / enter      log / transcript of the last run
   c / C          clear a finished status / force-forget a stuck record
 
+prompt box (unsupervised runs)
+  → / ctrl+f     take the history suggestion shown as ghost text
+  ctrl+p / n     older / newer prompt starting with what you typed
+  ctrl+r         search the prompt history
+
 branches
   n              new branch / bookmark
   o              open the branch worktree in your editor
   P              preview the project-sandbox command
   R              refresh now
+  H              show / hide the cheat-sheet
 
   ?              this help            q           quit (background runs continue)
 """

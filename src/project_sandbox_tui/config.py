@@ -85,6 +85,7 @@ class UI:
     editor_command: str = ""  # "" = $EDITOR; tokens may use {path}
     refresh_seconds: float = 3.0
     bell: bool = True
+    cheatsheet: bool = True  # key cheat-sheet under the branch list (toggle with H)
 
 
 @dataclass
@@ -423,6 +424,7 @@ runtime = "auto"              # auto | apple-container | docker | podman
 # editor_command = ""         # e.g. 'code {path}'
 refresh_seconds = 3
 bell = true
+cheatsheet = true             # key cheat-sheet under the branch list (H toggles)
 
 [models]
 claude = ["opus", "sonnet", "haiku"]

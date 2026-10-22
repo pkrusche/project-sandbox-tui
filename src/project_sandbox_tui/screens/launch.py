@@ -15,8 +15,10 @@ from textual.widgets import Input, Static, TextArea
 
 from project_sandbox_tui.config import AGENTS, EFFORTS, Config, LastUsed, LaunchDefaults
 from project_sandbox_tui.config import resolve_model as _resolve_model
+from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import LaunchSpec, Mode
-from project_sandbox_tui.widgets import CycleField
+from project_sandbox_tui.screens.history import HistorySearchScreen
+from project_sandbox_tui.widgets import CycleField, PromptArea
 
 
 class LaunchScreen(ModalScreen[LaunchSpec | None]):
@@ -36,6 +38,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen .field Input { width: 1fr; padding: 0; }
     LaunchScreen TextArea { height: 8; border: none; margin: 0; }
     LaunchScreen TextArea:focus { background: $boost; border: none; }
+    LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
+    LaunchScreen .prompt-hint { color: $text-disabled; height: 1; padding: 0 1; }
     LaunchScreen .preview { color: $text-muted; margin-top: 1; height: auto; }
     LaunchScreen .hint { color: $text-disabled; margin-top: 1; }
     """
@@ -56,6 +60,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         prompt_text: str = "",
         *,
         main_checkout: bool = False,
+        branch_label: str | None = None,
+        prompt_history: PromptHistory | None = None,
     ) -> None:
         super().__init__()
         self.branch = branch
@@ -66,13 +72,15 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.preview_fn = preview
         self.initial_prompt = prompt_text
         self.main_checkout = main_checkout
+        self.branch_label = branch_label or branch
+        self.prompt_history = prompt_history
 
     def compose(self) -> ComposeResult:
         what = "interactive session" if self.mode == "interactive" else "unsupervised run"
         with Vertical():
             title = Text(f"{what} on ")
-            title.append(self.branch, style="bold")
-            if self.main_checkout:
+            title.append(self.branch_label, style="bold")
+            if self.main_checkout and self.branch_label == self.branch:
                 title.append("  (in the main checkout)", style="dim")
             yield Static(title, classes="title")
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
@@ -95,7 +103,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                         id="timeout",
                     )
                 yield Static("prompt", classes="row-label")
-                yield TextArea(self.initial_prompt, id="prompt", soft_wrap=True)
+                yield PromptArea(
+                    self.initial_prompt, prompt_history=self.prompt_history, id="prompt"
+                )
+                yield Static("", id="prompt-hint", classes="prompt-hint")
             yield Static("", classes="preview", id="preview")
             keys = "tab/j/k fields · h/l change · enter launch · esc cancel"
             if self.mode == "background":
@@ -106,6 +117,22 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         target = "#prompt" if self.mode == "background" else "#agent"
         self.query_one(target).focus()
         self._update_preview()
+        self._update_prompt_hint()
+
+    def _update_prompt_hint(self) -> None:
+        if self.mode != "background":
+            return
+        area = self.query_one("#prompt", PromptArea)
+        count = len(self.prompt_history.entries) if self.prompt_history else 0
+        if not count:
+            hint = "no prompt history yet"
+        elif (pos := area.browse_position) is not None:
+            hint = f"history {pos[0]}/{pos[1]} · ctrl+p older · ctrl+n newer · ctrl+r search"
+        elif area.suggestion:
+            hint = "→ or ctrl+f: complete from history · ctrl+p/n browse · ctrl+r search"
+        else:
+            hint = f"{count} prompts in history · ctrl+p/n browse · ctrl+r search"
+        self.query_one("#prompt-hint", Static).update(hint)
 
     def _suggester(self, agent: str) -> SuggestFromList | None:
         models = self.cfg.models.get(agent) or []
@@ -152,6 +179,21 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     @on(TextArea.Changed)
     def _changed(self) -> None:
         self._update_preview()
+        # after PromptArea has processed the same Changed (browse state, suggestion)
+        self.call_after_refresh(self._update_prompt_hint)
+
+    @on(PromptArea.SearchRequested)
+    def _search_history(self, event: PromptArea.SearchRequested) -> None:
+        if self.prompt_history is None:
+            return
+        area = event.area
+
+        def chosen(prompt: str | None) -> None:
+            if prompt is not None:
+                area.replace_text(prompt)
+            area.focus()
+
+        self.app.push_screen(HistorySearchScreen(self.prompt_history, area.text), chosen)
 
     @on(Input.Submitted)
     def _submitted(self) -> None:

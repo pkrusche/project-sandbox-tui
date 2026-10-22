@@ -13,8 +13,17 @@ background with a prompt, and notifies you when background work is done.
  ▶ feature/parser    c692d0c   Add streaming parser          running      claude/opus/high   12m
  ✓ fix/flaky-tests   8643f47   Stabilise integration tests   completed    codex/gpt-5.4      2m ago
  ✗ spike/tui         a1e2e23   Try a ranger-style layout     failed (1)   claude/sonnet      1h ago
- j/k move · i interactive · r run · n new · l log · x stop · o open · ? help · q quit
+
+   move               sessions                       branches            other
+   j k   down / up    i    interactive               n  new branch       c C  clear / forget
+   gg G  top / bottom r    unsupervised run          o  open in editor   H    hide this sheet
+   ^d ^u half page    x    stop (again: escalate)    P  show command     ?    full help
+   /     filter       l ⏎  log / transcript          R  refresh          q    quit
 ```
+
+The welcome screen shows a key cheat-sheet under the list; `H` hides it (the
+one-line key footer takes its place), and `ui.cheatsheet = false` starts with it
+hidden.
 
 The TUI only ever shells out to the `project-sandbox` CLI (`--branch`,
 `--agent/--model/--effort`, `--prompt-text --log --json-summary`). Isolation,
@@ -55,11 +64,25 @@ sbx-tui                  # the real thing
 | `P` | preview the full `project-sandbox` command |
 | `c` · `C` | clear a finished status · force-forget a record stuck as running (signals nothing) |
 | `R` · `?` · `q` | refresh · help · quit |
+| `H` | show / hide the cheat-sheet |
 
 In the launch form: `tab` (or `j`/`k` on choice fields) moves between fields,
 `h`/`l` cycles agent and effort, `enter` launches an interactive session,
 `ctrl+s` launches an unsupervised run (there `enter` just moves to the next
 field), `esc` cancels.
+
+### Prompt history
+
+Prompts of unsupervised runs that started are remembered per repository
+(`~/.local/state/project-sandbox-tui/<repo>-<hash>/prompt_history.json`, newest
+500, duplicates collapsed). In the prompt box:
+
+| key | action |
+|---|---|
+| typing | the newest earlier prompt that starts with what you typed appears as dim ghost text |
+| `→` (at the end) · `ctrl+f` | take the suggestion |
+| `ctrl+p` · `ctrl+n` | step to older / newer prompts starting with what you had typed; past the newest you're back to your text |
+| `ctrl+r` | search the history: type words to filter (all must match, any case), `↑`/`↓` choose, `enter` use |
 
 ## One sandbox per branch
 
@@ -78,6 +101,11 @@ check a branch out twice, so the branch checked out in your main checkout runs
 there instead, without `--branch` (the launch form says "in the main
 checkout"). A branch checked out in some other worktree is refused until you
 switch that worktree away from it. jj workspaces have no such restriction.
+
+A jj repository without any (local) bookmarks shows a single `@ working copy`
+row. Sessions on it run in the repository's own workspace, on the working-copy
+commit, without `--branch`. Once you create a bookmark (`n`, which then offers
+`@` as the start revision) the list shows bookmarks instead.
 
 Background runs are detached from the TUI: quitting leaves them running, and the
 next start re-adopts them and notifies about any that finished meanwhile.
@@ -135,6 +163,7 @@ terminal_command = ""   # run interactive sessions elsewhere, e.g. 'tmux new-win
 editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this terminal
 refresh_seconds = 3
 bell = true
+cheatsheet = true       # key cheat-sheet on the welcome screen (H toggles)
 
 [models]                # autocomplete suggestions in the launch form
 claude = ["opus", "sonnet", "haiku"]

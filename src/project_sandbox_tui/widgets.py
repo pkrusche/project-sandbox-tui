@@ -9,6 +9,9 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
+from textual.widgets import TextArea
+
+from project_sandbox_tui.history import PromptHistory
 
 
 class CycleField(Widget, can_focus=True):
@@ -81,3 +84,108 @@ class CycleField(Widget, can_focus=True):
         text.append(shown, style="bold" if self.value else "italic")
         text.append(" ›", style="dim")
         return text
+
+
+class PromptArea(TextArea):
+    """Prompt editor with shell-style history.
+
+    - fish-style autosuggestion: the rest of the newest history entry that
+      extends what you typed is shown as ghost text; ``→`` (Textual's own
+      TextArea suggestion) or ``ctrl+f`` takes it.
+    - ``ctrl+p`` / ``ctrl+n`` walk back / forward through entries that start
+      with the text typed before browsing began (zsh history-beginning-search).
+    - ``ctrl+r`` asks the screen to open the history search.
+    """
+
+    BINDINGS = [
+        Binding("ctrl+p", "history(1)", "older prompt", show=False),
+        Binding("ctrl+n", "history(-1)", "newer prompt", show=False),
+        Binding("ctrl+f", "accept_suggestion", "accept suggestion", show=False),
+        Binding("ctrl+r", "search_history", "search history", show=False),
+    ]
+
+    class SearchRequested(Message):
+        def __init__(self, area: PromptArea) -> None:
+            super().__init__()
+            self.area = area
+
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        prompt_history: PromptHistory | None = None,
+        id: str | None = None,
+    ) -> None:
+        # Set before TextArea.__init__, which may already call update_suggestion().
+        # (Not "history": TextArea uses that name for its undo stack.)
+        self.prompt_history = prompt_history
+        self._browse: list[str] | None = None  # matches while walking history
+        self._browse_index = -1
+        self._browse_origin = ""  # text before browsing, restored past the newest
+        self._programmatic = False
+        super().__init__(text, id=id, soft_wrap=True)
+
+    # ------------------------------------------------------------ state
+
+    def update_suggestion(self) -> None:
+        """Offer the remainder of the newest history entry extending the text."""
+        history = getattr(self, "prompt_history", None)
+        entry = None
+        if history is not None and getattr(self, "_browse", None) is None:
+            entry = history.suggest(self.text)
+        self.suggestion = entry[len(self.text) :] if entry else ""
+
+    @property
+    def browse_position(self) -> tuple[int, int] | None:
+        """(1-based position, count) while walking history, else None."""
+        if self._browse is None or self._browse_index < 0:
+            return None
+        return self._browse_index + 1, len(self._browse)
+
+    def replace_text(self, text: str) -> None:
+        """Set the prompt (e.g. from history) and put the cursor at the end."""
+        self._programmatic = True
+        self.text = text
+        self.move_cursor(self.document.end)
+
+    def _on_text_area_changed(self, _event: TextArea.Changed) -> None:
+        if self._programmatic:
+            self._programmatic = False
+        elif self._browse is not None:
+            self._browse = None  # typing ends a history walk
+            self._browse_index = -1
+            self.update_suggestion()
+
+    # ------------------------------------------------------------ actions
+
+    def action_history(self, step: int) -> None:
+        if self.prompt_history is None:
+            return
+        if self._browse is None:
+            self._browse_origin = self.text
+            self._browse = [e for e in self.prompt_history.with_prefix(self.text) if e != self.text]
+            self._browse_index = -1
+            self.suggestion = ""
+        if not self._browse:
+            self._browse = None
+            self.update_suggestion()
+            self.app.bell()
+            return
+        index = self._browse_index + step
+        if index >= len(self._browse):
+            self.app.bell()  # already at the oldest match
+            return
+        if index < 0:
+            # walked past the newest match: back to what was typed, walk over
+            self._browse = None
+            self.replace_text(self._browse_origin)
+            return
+        self._browse_index = index
+        self.replace_text(self._browse[index])
+
+    def action_accept_suggestion(self) -> None:
+        if self.suggestion:
+            self.insert(self.suggestion)
+
+    def action_search_history(self) -> None:
+        self.post_message(self.SearchRequested(self))
