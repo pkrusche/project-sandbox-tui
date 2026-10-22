@@ -34,6 +34,11 @@ class LaunchSpec:
     # used when the branch is the one checked out there, which git cannot
     # check out a second time.
     main_checkout: bool = False
+    # Octopus integration: the result branch is ``branch``; ``inputs`` were merged
+    # (or stacked onto ``base``) by sbx-tui before the session (see octopus.py).
+    operation: str = ""  # "" | "merge" | "rebase"
+    inputs: list[str] = field(default_factory=list)
+    base: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +50,9 @@ class LaunchSpec:
             "prompt_text": self.prompt_text,
             "timeout": self.timeout,
             "main_checkout": self.main_checkout,
+            "operation": self.operation,
+            "inputs": list(self.inputs),
+            "base": self.base,
         }
 
     @classmethod
@@ -58,6 +66,9 @@ class LaunchSpec:
             prompt_text=str(raw.get("prompt_text", "")),
             timeout=int(raw.get("timeout") or 0),
             main_checkout=bool(raw.get("main_checkout")),
+            operation=str(raw.get("operation") or ""),
+            inputs=[str(i) for i in raw.get("inputs") or [] if isinstance(i, str)],
+            base=str(raw.get("base") or ""),
         )
 
     def label(self) -> str:

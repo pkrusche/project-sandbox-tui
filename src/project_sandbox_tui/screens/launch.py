@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from rich.text import Text
 from textual import events, on
@@ -13,6 +14,7 @@ from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Input, Static, TextArea
 
+from project_sandbox_tui import octopus as octopus_mod
 from project_sandbox_tui.config import AGENTS, EFFORTS, Config, LastUsed, LaunchDefaults
 from project_sandbox_tui.config import resolve_model as _resolve_model
 from project_sandbox_tui.history import PromptHistory
@@ -20,6 +22,17 @@ from project_sandbox_tui.sandbox import CheckoutConflict, LaunchSpec, Mode
 from project_sandbox_tui.screens.history import HistorySearchScreen
 from project_sandbox_tui.vcs import validate_branch_name
 from project_sandbox_tui.widgets import CycleField, PromptArea, modifier_key
+
+
+@dataclass
+class OctopusSetup:
+    """Extra launch-form state for integrating several branches (see octopus.py)."""
+
+    inputs: list[str]  # merge / stacking order
+    kind: str  # "git" | "jj"
+    existing: set[str]  # branch names, for validating the result name
+    default_base: str
+    templates: dict[str, str]  # operation -> prompt template
 
 
 class LaunchScreen(ModalScreen[LaunchSpec | None]):
@@ -40,6 +53,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen TextArea { height: 8; border: none; margin: 0; }
     LaunchScreen TextArea:focus { background: $boost; border: none; }
     LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
+    LaunchScreen .inputs { color: $text-muted; padding: 0 1; margin-bottom: 1; }
     LaunchScreen .prompt-hint { color: $text-disabled; height: 1; padding: 0 1; }
     LaunchScreen #command-scroll { height: 3; margin-top: 1; }
     LaunchScreen .preview { color: $text-muted; height: auto; }
@@ -67,6 +81,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         opens_in: str = "",
         branches: list[str] | None = None,
         main_checkout_for: Callable[[str], bool] | None = None,
+        octopus: OctopusSetup | None = None,
     ) -> None:
         super().__init__()
         self.branch = branch
@@ -82,26 +97,47 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.opens_in = opens_in
         self.branches = branches or [branch]
         self.main_checkout_for = main_checkout_for
+        self.octopus = octopus
+        self._auto_prompt = ""  # last template-rendered prompt (octopus only)
+        self._auto_result = ""  # last generated result name (octopus only)
+        if octopus is not None:
+            self.branch = octopus_mod.default_result_name("merge", octopus.inputs)
+            self._auto_result = self.branch
+            self.initial_prompt = self._render_template("merge", self.branch, octopus.default_base)
+            self._auto_prompt = self.initial_prompt
 
     def compose(self) -> ComposeResult:
-        what = "interactive session" if self.mode == "interactive" else "unsupervised run"
         with Vertical():
-            title = Text(what)
-            if self.opens_in:
-                title.append(f"  · {self.opens_in}", style="dim")
-            yield Static(title, classes="title")
-            with Horizontal(classes="field"):
-                yield Static("branch", classes="field-label")
-                yield Input(
-                    value=self.branch,
-                    placeholder="select an existing branch or enter a new name",
-                    suggester=SuggestFromList(self.branches, case_sensitive=True),
-                    id="branch",
+            yield Static(self._title(), classes="title", id="title")
+            if self.octopus is not None:
+                yield Static(
+                    Text("inputs   " + " → ".join(self.octopus.inputs), overflow="ellipsis"),
+                    classes="inputs",
                 )
-            yield Static(
-                "existing name selects · new name creates from " + self.branch_label,
-                classes="prompt-hint",
-            )
+                yield CycleField("action", octopus_mod.OPERATIONS, "merge", id="operation")
+                with Horizontal(classes="field"):
+                    yield Static("result", classes="field-label")
+                    yield Input(value=self.branch, id="result")
+                with Horizontal(classes="field"):
+                    yield Static("base", classes="field-label")
+                    yield Input(
+                        value=self.octopus.default_base,
+                        placeholder="rebase onto (rebase only)",
+                        id="base",
+                    )
+            else:
+                with Horizontal(classes="field"):
+                    yield Static("branch", classes="field-label")
+                    yield Input(
+                        value=self.branch,
+                        placeholder="select an existing branch or enter a new name",
+                        suggester=SuggestFromList(self.branches, case_sensitive=True),
+                        id="branch",
+                    )
+                yield Static(
+                    "existing name selects · new name creates from " + self.branch_label,
+                    classes="prompt-hint",
+                )
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
             with Horizontal(classes="field"):
                 yield Static("model", classes="field-label")
@@ -149,6 +185,59 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             event.stop()
         self.query_one("#launch-hint", Static).update(hint)
 
+    def _title(self) -> Text:
+        what = "interactive session" if self.mode == "interactive" else "unsupervised run"
+        title = Text(what)
+        if self.octopus is not None:
+            op = self._value("#operation", "merge") or "merge"
+            title.append(f" · {op} {len(self.octopus.inputs)} branches into ")
+            title.append(self._value("#result", self.branch) or "…", style="bold")
+        if self.opens_in:
+            title.append(f"  · {self.opens_in}", style="dim")
+        return title
+
+    def _value(self, selector: str, default: str) -> str:
+        """Current value of an Input / CycleField, or ``default`` before mount."""
+        try:
+            widget = self.query_one(selector)
+        except Exception:
+            return default
+        if isinstance(widget, (Input, CycleField)):
+            return widget.value.strip()
+        return default
+
+    def _render_template(self, operation: str, result: str, base: str) -> str:
+        assert self.octopus is not None
+        plan = octopus_mod.OctopusPlan(
+            "rebase" if operation == "rebase" else "merge",
+            self.octopus.inputs,
+            result,
+            base if operation == "rebase" else "",
+        )
+        return octopus_mod.render_prompt(self.octopus.templates[operation], plan)
+
+    def _octopus_changed(self) -> None:
+        """Keep title, default result name and (untouched) prompt in step."""
+        if self.octopus is None:
+            return
+        op = self._value("#operation", "merge")
+        result_input = self.query_one("#result", Input)
+        if result_input.value == self._auto_result:  # not typed by the user
+            fresh_name = octopus_mod.default_result_name(op, self.octopus.inputs)
+            if fresh_name != result_input.value:
+                self._auto_result = fresh_name
+                result_input.value = fresh_name  # posts Changed, which lands back here
+                return
+        self.query_one("#title", Static).update(self._title())
+        if self.mode != "background":
+            return
+        area = self.query_one("#prompt", PromptArea)
+        if area.text == self._auto_prompt:  # the user has not edited it
+            fresh = self._render_template(op, self._value("#result", ""), self._value("#base", ""))
+            if fresh != area.text:
+                self._auto_prompt = fresh
+                area.replace_text(fresh)
+
     def on_mount(self) -> None:
         target = "#prompt" if self.mode == "background" else "#agent"
         self.query_one(target).focus()
@@ -183,12 +272,22 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             timeout = int(raw) if raw.isdigit() else 0
         prompt = self.query_one("#prompt", TextArea).text if self.mode == "background" else ""
         agent = self.query_one("#agent", CycleField).value
-        branch = self.query_one("#branch", Input).value.strip()
-        main_checkout = (
-            self.main_checkout_for(branch)
-            if self.main_checkout_for
-            else self.main_checkout and branch == self.branch
-        )
+        operation, base = "", ""
+        inputs: list[str] = []
+        if self.octopus is not None:
+            # the result branch is created by the TUI; it never is the main checkout
+            operation = self._value("#operation", "merge")
+            inputs = list(self.octopus.inputs)
+            branch = self._value("#result", self.branch)
+            base = self._value("#base", "") if operation == "rebase" else ""
+            main_checkout = False
+        else:
+            branch = self.query_one("#branch", Input).value.strip()
+            main_checkout = (
+                self.main_checkout_for(branch)
+                if self.main_checkout_for
+                else self.main_checkout and branch == self.branch
+            )
         return LaunchSpec(
             branch=branch,
             agent=agent,
@@ -198,6 +297,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             prompt_text=prompt,
             timeout=timeout,
             main_checkout=main_checkout,
+            operation=operation,
+            inputs=inputs,
+            base=base,
         )
 
     def _update_preview(self) -> None:
@@ -215,6 +317,12 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         model.suggester = self._suggester(event.value)
         model.value = _resolve_model(self.cfg, self.last, event.value)
         self._update_preview()
+
+    @on(CycleField.Changed, "#operation")
+    @on(Input.Changed, "#result")
+    @on(Input.Changed, "#base")
+    def _octopus_field_changed(self) -> None:
+        self._octopus_changed()
 
     @on(CycleField.Changed, "#effort")
     @on(Input.Changed)
@@ -260,11 +368,26 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             self.focus_next()
 
     def action_launch(self) -> None:
-        branch = self.query_one("#branch", Input).value.strip()
-        if branch not in self.branches and (error := validate_branch_name(branch)):
-            self.notify(error, severity="warning")
-            self.query_one("#branch").focus()
-            return
+        if self.octopus is not None:
+            operation = self._value("#operation", "merge")
+            plan = octopus_mod.OctopusPlan(
+                "rebase" if operation == "rebase" else "merge",
+                list(self.octopus.inputs),
+                self._value("#result", ""),
+                self._value("#base", "") if operation == "rebase" else "",
+            )
+            try:
+                octopus_mod.validate(plan, self.octopus.existing)
+            except octopus_mod.OctopusError as exc:
+                self.notify(str(exc), severity="warning")
+                self.query_one("#base" if "base" in str(exc) else "#result").focus()
+                return
+        else:
+            branch = self.query_one("#branch", Input).value.strip()
+            if branch not in self.branches and (error := validate_branch_name(branch)):
+                self.notify(error, severity="warning")
+                self.query_one("#branch").focus()
+                return
         try:
             spec = self.current_spec()
         except CheckoutConflict as exc:

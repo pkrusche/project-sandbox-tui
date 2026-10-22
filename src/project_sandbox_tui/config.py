@@ -78,6 +78,7 @@ class Project:
     worktree_dir: str = ""  # --worktree-dir
     keep_workspace: bool = True  # --keep-workspace
     default_branch_start: str = ""  # start revision for new branches ("" = main/trunk)
+    main_branch: str = ""  # cleanup removes work fully merged into it ("" = main/master/trunk)
 
 
 @dataclass
@@ -100,12 +101,25 @@ class UI:
 
 
 @dataclass
+class Prompts:
+    """Prompt templates for integrating selected branches ("" = built-in default).
+
+    Placeholders: {inputs} {inputs_plain} {result} {base} {first} {rest}.
+    sbx-tui appends a "Current state" section describing what it prepared.
+    """
+
+    octopus_merge: str = ""
+    octopus_rebase: str = ""
+
+
+@dataclass
 class Config:
     defaults: Defaults = field(default_factory=Defaults)
     network: Network = field(default_factory=Network)
     sandbox: Sandbox = field(default_factory=Sandbox)
     project: Project = field(default_factory=Project)
     ui: UI = field(default_factory=UI)
+    prompts: Prompts = field(default_factory=Prompts)
     models: dict[str, list[str]] = field(default_factory=dict)  # per-agent suggestions
     sources: list[Path] = field(default_factory=list)  # files that were loaded
 
@@ -185,6 +199,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "sandbox": Sandbox,
     "project": Project,
     "ui": UI,
+    "prompts": Prompts,
 }
 
 
@@ -405,6 +420,7 @@ base_image = "python:3.12-slim"
 # worktree_dir = ""                    # -> --worktree-dir (default: sibling <repo>-worktrees)
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new branches
+# main_branch = "main"                 # cleanup offers workspaces/branches fully merged into this
 
 # [defaults]
 # agent = "claude"                     # claude | codex | opencode | pi | bash
@@ -451,6 +467,11 @@ cheatsheet = true             # key cheat-sheet under the branch list (H toggles
 [models]
 claude = ["opus", "sonnet", "haiku"]
 codex = ["gpt-5.4", "gpt-5.4-mini"]
+
+# [prompts]                   # templates for merging / rebasing selected branches (v / space,
+#                             # then r); placeholders {inputs} {result} {base} {first} {rest}
+# octopus_merge = '''...'''
+# octopus_rebase = '''...'''
 """
 
 

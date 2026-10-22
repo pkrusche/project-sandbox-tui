@@ -19,12 +19,19 @@ from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
+from textual.css.query import NoMatches
 from textual.notifications import SeverityLevel
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
+from textual.widgets.data_table import ColumnKey
 
-from project_sandbox_tui import launchers, notify, terminal
-from project_sandbox_tui.cleanup import find_workspaces, remove_workspaces
+from project_sandbox_tui import launchers, notify, octopus, terminal
+from project_sandbox_tui.cleanup import (
+    Workspace,
+    find_workspaces,
+    force_remove_workspace,
+    remove_workspaces,
+)
 from project_sandbox_tui.config import (
     Config,
     ConfigError,
@@ -47,11 +54,13 @@ from project_sandbox_tui.sandbox import (
 )
 from project_sandbox_tui.screens.dialogs import (
     CleanupScreen,
+    ConfirmScreen,
+    ForceRemove,
     HelpScreen,
     MessageScreen,
     NewBranchScreen,
 )
-from project_sandbox_tui.screens.launch import LaunchScreen
+from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import (
     Backend,
@@ -61,6 +70,8 @@ from project_sandbox_tui.vcs import (
     workspace_path,
 )
 from project_sandbox_tui.widgets import modifier_key
+
+STATE_HEADING = "## Current state"  # octopus state report appended to prompts
 
 GLYPHS = {
     "running": ("▶", "green"),
@@ -103,7 +114,16 @@ class Row:
     job: JobRecord | None
     session: SessionRecord | None
 
-    def cells(self, now: float) -> tuple[Text, ...]:
+    def name_cell(self, selected: bool = False) -> Text:
+        b = self.branch
+        if selected:
+            return Text(f"+ {b.label}", style="bold magenta")
+        name = Text(b.label, style="bold" if b.is_current else "")
+        if b.is_current:
+            name.append(" ●", style="green")
+        return name
+
+    def cells(self, now: float, selected: bool = False) -> tuple[Text, ...]:
         b, job, sess = self.branch, self.job, self.session
         glyph, colour, status, agent, when = " ", "", "", "", ""
         if job is not None:
@@ -113,6 +133,9 @@ class Row:
                 status = "interactive" if job.mode == "interactive" else "running"
                 if job.external:
                     status = "interactive (ext)"
+                if job.spec.operation:  # an integration of several branches
+                    verb = "merging" if job.spec.operation == "merge" else "rebasing"
+                    status = verb if job.mode == "background" else f"{verb} ({status})"
                 when = human_age(now - _ts(job.started_at))
             else:
                 status = job.status.replace("_", " ")
@@ -123,12 +146,9 @@ class Row:
             glyph, colour = GLYPHS["external"]
             status, agent = "busy (other)", sess.agent
             when = human_age(now - _ts(sess.started_at))
-        name = Text(b.label, style="bold" if b.is_current else "")
-        if b.is_current:
-            name.append(" ●", style="green")
         return (
             Text(glyph, style=colour),
-            name,
+            self.name_cell(selected),
             Text(b.head, style="dim"),
             Text(b.subject, overflow="ellipsis", no_wrap=True),
             Text(status, style=colour),
@@ -145,6 +165,8 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("G", "app.bottom", show=False),
     Binding("g", "app.g_prefix", show=False),
     Binding("slash", "app.filter", show=False),
+    Binding("v", "app.visual", show=False),
+    Binding("space", "app.toggle_mark", show=False),
     Binding("escape", "app.clear_filter", show=False),
     Binding("i", "app.launch('interactive')", show=False),
     Binding("r", "app.launch('background')", show=False),
@@ -182,6 +204,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         "branches",
         (
             ("n", "new branch"),
+            ("v ␣", "select → merge/rebase"),
             ("o", "open in editor"),
             ("P", "show command"),
             ("W", "clean workspaces"),
@@ -301,6 +324,10 @@ class SandboxTUI(App[None]):
         self.main = MainScreen()
         self.cheatsheet_visible = cfg.ui.cheatsheet
         self.prompt_history = PromptHistory.for_repo(repo)
+        # Branch selection for merging / rebasing several branches: space marks
+        # rows (kept in marking order), v starts a visual range at the cursor.
+        self.marked: list[str] = []
+        self._visual_anchor: str | None = None
 
     # ------------------------------------------------------------ layout
 
@@ -364,7 +391,9 @@ class SandboxTUI(App[None]):
         )
         for job in self.jobs.refresh(self.sessions):
             self._announce(job)
-        self._render_table()
+        # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
+        with contextlib.suppress(NoMatches):
+            self._render_table()
 
     def _announce(self, job: JobRecord) -> None:
         if not self.jobs.mark_notified(job):
@@ -397,15 +426,25 @@ class SandboxTUI(App[None]):
         selected = self._pending_select or self.selected_branch_name()
         rows = self.visible_rows()
         now = time.time()
+        chosen = set(self.selection())  # before clear(): the visual range follows the cursor
+        # Fixed width with room for the "+ " / " ●" markers, so marking a row in
+        # place (update_cell) never has to widen the column.
+        name_col = table.columns.get(ColumnKey("branch"))
+        if name_col is not None:
+            name_col.auto_width = False
+            name_col.width = max([len("branch"), *(len(r.branch.label) + 2 for r in rows)])
         table.clear()
         for row in rows:
-            table.add_row(*row.cells(now), key=row.branch.name)
+            table.add_row(*row.cells(now, row.branch.name in chosen), key=row.branch.name)
         if selected is not None:
             names = [r.branch.name for r in rows]
             if selected in names:
                 table.move_cursor(row=names.index(selected), animate=False)
                 if selected == self._pending_select:
                     self._pending_select = None
+        self._render_header(chosen)
+
+    def _render_header(self, chosen: set[str]) -> None:
         running = self.jobs.running_count()
         busy_other = sum(
             1 for n in self.sessions if not (n in self.jobs.jobs and self.jobs.jobs[n].running)
@@ -420,6 +459,10 @@ class SandboxTUI(App[None]):
             stats += f" · {busy_other} external"
         if self.filter_text:
             stats += f" · filter: {self.filter_text}"
+        if self._visual_anchor is not None:
+            stats += " · VISUAL"
+        if chosen:
+            stats += f" · {len(chosen)} selected"
         header.append(f"   {stats}", style="dim")
         self.main.query_one("#header", Static).update(header)
 
@@ -458,6 +501,72 @@ class SandboxTUI(App[None]):
         except Exception:
             return None
         return str(key.value) if key.value is not None else None
+
+    # ------------------------------------------------------------ selection
+
+    def selection(self) -> list[str]:
+        """Selected branches in merge / stacking order: marks in the order they
+        were made, then the visual range in list order. The jj working-copy row
+        cannot take part."""
+        names = [r.branch.name for r in self.visible_rows()]
+        chosen = [n for n in self.marked]
+        cursor = self.selected_branch_name()
+        if self._visual_anchor in names and cursor in names:
+            i, j = sorted((names.index(self._visual_anchor), names.index(cursor)))
+            chosen += [n for n in names[i : j + 1] if n not in chosen]
+        excluded = {b.name for b in self.branches if b.working_copy}
+        known = {b.name for b in self.branches}
+        return [n for n in chosen if n not in excluded and n in known]
+
+    def _refresh_marks(self) -> None:
+        """Redraw the name cells and header after the selection changed."""
+        table = self.table
+        chosen = set(self.selection())
+        for row in self.visible_rows():
+            try:
+                table.update_cell(
+                    row.branch.name, "branch", row.name_cell(row.branch.name in chosen)
+                )
+            except Exception:
+                return  # table being rebuilt; the next render shows the marks
+        self._render_header(chosen)
+
+    def action_visual(self) -> None:
+        """v: start a range at the cursor; v again keeps the range as marks."""
+        if self._visual_anchor is None:
+            self._visual_anchor = self.selected_branch_name()
+        else:
+            self.marked = self.selection()
+            self._visual_anchor = None
+        self._refresh_marks()
+
+    def action_toggle_mark(self) -> None:
+        name = self.selected_branch_name()
+        if name is None:
+            return
+        branch = self.branch(name)
+        if branch is not None and branch.working_copy:
+            self.notify("the working copy cannot be merged; select bookmarks", severity="warning")
+            return
+        if name in self.marked:
+            self.marked.remove(name)
+        else:
+            self.marked.append(name)
+        self.action_cursor(1)  # like ranger: mark and move on
+        self._refresh_marks()
+
+    def clear_branch_selection(self) -> bool:
+        had = bool(self.marked) or self._visual_anchor is not None
+        self.marked = []
+        self._visual_anchor = None
+        if had:
+            self._refresh_marks()
+        return had
+
+    @on(DataTable.RowHighlighted)
+    def _cursor_moved(self) -> None:
+        if self._visual_anchor is not None:
+            self._refresh_marks()
 
     # ------------------------------------------------------------ navigation
 
@@ -510,6 +619,8 @@ class SandboxTUI(App[None]):
             self.filter_text = ""
             box.value = ""
             self._render_table()
+        else:
+            self.clear_branch_selection()  # esc also drops marks / a visual range
 
     @on(DataTable.RowSelected)
     def _row_selected(self) -> None:
@@ -534,6 +645,10 @@ class SandboxTUI(App[None]):
         return name
 
     def action_launch(self, mode: Mode) -> None:
+        selected = self.selection()
+        if selected:
+            self._launch_octopus(mode, selected)
+            return
         name = self._require_branch()
         if name is None:
             return
@@ -550,6 +665,7 @@ class SandboxTUI(App[None]):
         defaults = resolve_launch_defaults(self.cfg, last)
         previous = self.jobs.jobs.get(name)
         prompt = previous.spec.prompt_text if previous is not None else ""
+        prompt = prompt.split(STATE_HEADING, 1)[0].rstrip()  # drop an old state report
         branch = self.branch(name)
         screen = LaunchScreen(
             name,
@@ -576,6 +692,49 @@ class SandboxTUI(App[None]):
 
         self.push_screen(screen, chosen)
 
+    def _launch_octopus(self, mode: Mode, chosen: list[str]) -> None:
+        """r / i with branches selected: merge or rebase them into a new branch."""
+        if len(chosen) < 2:
+            self.notify(
+                "select at least two branches to merge or rebase (esc clears the selection)",
+                severity="warning",
+            )
+            return
+        kind = self.backend.kind
+        try:
+            default_base = self.default_start or self.backend.default_start()
+        except VcsError:
+            default_base = ""
+        overrides = {
+            "merge": self.cfg.prompts.octopus_merge,
+            "rebase": self.cfg.prompts.octopus_rebase,
+        }
+        setup = OctopusSetup(
+            inputs=chosen,
+            kind=kind,
+            existing={b.name for b in self.branches if not b.working_copy},
+            default_base=default_base,
+            templates={
+                op: overrides[op] or octopus.DEFAULT_TEMPLATES[(op, kind)]
+                for op in octopus.OPERATIONS
+            },
+        )
+        last = LastUsed.load(self.repo)
+        screen = LaunchScreen(
+            "",
+            mode,
+            self.cfg,
+            last,
+            resolve_launch_defaults(self.cfg, last),
+            self._form_preview,
+            opens_in=launchers.describe(self.cfg.ui.terminal_mode())
+            if mode == "interactive"
+            else "",
+            prompt_history=self.prompt_history,
+            octopus=setup,
+        )
+        self.push_screen(screen, self._launch_chosen)
+
     def _launch_chosen(
         self, spec: LaunchSpec | None, *, new_branch_start: str | None = None
     ) -> None:
@@ -584,9 +743,59 @@ class SandboxTUI(App[None]):
         # Start only once the form is gone and its key event is fully processed:
         # dismiss() runs this callback before the screen has been popped, and an
         # interactive session blocks the event loop until the agent exits.
+        if spec.operation:
+            self.clear_branch_selection()
+            self.call_after_refresh(self._integrate, spec)
+            return
         self.call_after_refresh(self._start_launch, spec, new_branch_start=new_branch_start)
 
-    def _start_launch(self, spec: LaunchSpec, *, new_branch_start: str | None = None) -> None:
+    @work(exclusive=True, group="octopus")
+    async def _integrate(self, spec: LaunchSpec) -> None:
+        """Merge / rebase the inputs into the result branch on the host, then start
+        the session that resolves what is left and reviews the integration."""
+        operation: octopus.Operation = "rebase" if spec.operation == "rebase" else "merge"
+        plan = octopus.OctopusPlan(operation, list(spec.inputs), spec.branch, spec.base)
+        try:
+            branches = await asyncio.to_thread(self.backend.list_branches)
+            octopus.validate(plan, {b.name for b in branches if not b.working_copy})
+            reason = self.jobs.busy_reason(spec.branch, self.sessions)
+            if reason:
+                raise BusyError(reason)
+            moving = [i for i in spec.inputs if self.jobs.busy_reason(i, self.sessions)]
+            if moving:
+                self.notify(
+                    f"{', '.join(moving)} still has a session running; the {operation} "
+                    "uses its current state",
+                    severity="warning",
+                    timeout=8,
+                )
+            self.notify(f"{spec.branch}: preparing {operation} of {len(spec.inputs)} branches…")
+            state = await asyncio.to_thread(
+                octopus.prepare, self.backend.kind, self.repo, plan, self.worktree_dir
+            )
+        except (octopus.OctopusError, BusyError, VcsError) as exc:
+            self.notify(f"{spec.branch}: {exc}", severity="error", timeout=10)
+            await self.refresh_data()
+            return
+        self.notify(
+            f"{spec.branch}: {state.summary()}",
+            severity="information" if state.clean else "warning",
+            timeout=8,
+        )
+        typed = spec.prompt_text
+        if spec.mode == "background":
+            spec.prompt_text = f"{typed.rstrip()}\n\n{state.report()}\n"
+        await self.refresh_data()  # the result branch exists now
+        self._start_launch(spec, history_text=typed, banner=state.report())
+
+    def _start_launch(
+        self,
+        spec: LaunchSpec,
+        *,
+        new_branch_start: str | None = None,
+        history_text: str | None = None,
+        banner: str = "",
+    ) -> None:
         try:
             # The checkout and external sessions may have changed while the
             # launch form was open. Recheck immediately before starting.
@@ -612,14 +821,14 @@ class SandboxTUI(App[None]):
             elif self.cfg.ui.terminal_mode() != "inline":
                 self._launch_external(spec)
             else:
-                self._launch_interactive(spec)
+                self._launch_interactive(spec, banner)
         except (BusyError, ConfigError, CheckoutConflict, VcsError, launchers.LaunchError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
         except OSError as exc:
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
         else:
             if spec.mode == "background":
-                self.prompt_history.add(spec.prompt_text)
+                self.prompt_history.add(spec.prompt_text if history_text is None else history_text)
             # Only a launch that actually started becomes the new default.
             remember(
                 self.repo,
@@ -647,12 +856,16 @@ class SandboxTUI(App[None]):
         if error is not None:
             raise error
 
-    def _launch_interactive(self, spec: LaunchSpec) -> None:
+    def _launch_interactive(self, spec: LaunchSpec, banner: str = "") -> None:
         with self.jobs.interactive(spec, self.sessions) as job, self._suspended():
             print(
                 f"\n── sbx-tui: {spec.label()} on {spec.branch} ──\n{shlex.join(job.argv)}\n",
                 flush=True,
             )
+            if banner:  # e.g. what an octopus merge left to resolve; read it first
+                print(banner, flush=True)
+                with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
+                    input("\n── press Enter to start the session ──")
             # The agent's `container run -it` may die with the terminal still
             # raw or non-blocking; put it back before prompting or resuming.
             with terminal.preserved():
@@ -807,6 +1020,9 @@ class SandboxTUI(App[None]):
             self.push_screen(MessageScreen("nothing to clean up", body))
             return
         chosen = await self.push_screen_wait(CleanupScreen(found))
+        if isinstance(chosen, ForceRemove):
+            await self._force_remove_workspace(chosen.workspace)
+            return
         if not chosen:
             return
         try:
@@ -814,7 +1030,7 @@ class SandboxTUI(App[None]):
                 remove_workspaces,
                 self.backend,
                 self.cfg,
-                [ws.path for ws in chosen],
+                chosen,
                 state_dir=self.jobs.state_dir,
                 sessions_dir=self.sessions_dir,
             )
@@ -825,6 +1041,33 @@ class SandboxTUI(App[None]):
         self.notify(f"removed {removed} workspace{'' if removed == 1 else 's'}")
         if removed != len(results):
             self.push_screen(MessageScreen("workspace cleanup", "\n".join(results)))
+        await self.refresh_data()
+
+    async def _force_remove_workspace(self, ws: Workspace) -> None:
+        noun = "worktree" if self.backend.kind == "git" else "workspace"
+        body = (
+            f"{ws.name}: {ws.path}\nkept because: {ws.status}\n\n"
+            f"Deletes the directory with everything in it, including uncommitted,\n"
+            f"untracked and ignored files, and unregisters the {noun}.\n"
+            f"Branches / bookmarks are kept."
+        )
+        if not await self.push_screen_wait(
+            ConfirmScreen(f"force-delete {ws.name}?", body, "delete")
+        ):
+            return
+        try:
+            result = await asyncio.to_thread(
+                force_remove_workspace,
+                self.backend,
+                self.cfg,
+                ws,
+                state_dir=self.jobs.state_dir,
+                sessions_dir=self.sessions_dir,
+            )
+        except (VcsError, OSError) as exc:
+            result = f"skipped {ws.name}: {exc}"
+        removed = result.startswith("force-removed")
+        self.notify(result, severity="information" if removed else "error", timeout=8)
         await self.refresh_data()
 
     def action_stop(self) -> None:

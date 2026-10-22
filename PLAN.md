@@ -369,6 +369,17 @@ the resume, and `terminal.py` restores termios and O_NONBLOCK if the agent's
 `container run -it` leaves the terminal raw or non-blocking. `tests/test_pty_session.py`
 drives the real TUI in a pseudo-terminal to cover this.
 
+Octopus merge / rebase (2026-10-22): select branches with `v` (range) / `space` (marks,
+in marking order), then `r` / `i`. `octopus.py` prepares on the host: jj merge =
+`jj new --no-edit A B C` + result bookmark (conflicts live in the commit); jj rebase =
+`jj duplicate` of each input's own commits onto the previous tip from `base`; git merge =
+worktree for the result at project-sandbox's own path, octopus merge or one-by-one until the
+first conflict; git rebase = cherry-picks onto `base` until the first conflict. Inputs are
+read-only; host git runs with `core.hooksPath=/dev/null`. The state report is appended to
+the prompt (shown before an interactive session); the agent then resolves and reviews.
+`LaunchSpec` carries `operation`, `inputs`, `base`; templates are overridable in `[prompts]`.
+Tested against jj 0.30 and 0.46 and git.
+
 Interactive terminals (2026-10-22): `ui.terminal` = inline | tmux | zellij | screen | custom
 (`launchers.py`, see §4); tmux is covered by a test against a private tmux server.
 

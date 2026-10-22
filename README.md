@@ -60,6 +60,7 @@ sbx-tui                  # the real thing
 | `x` | stop a background run: SIGINT for a clean teardown; each further press escalates to SIGTERM, then SIGKILL plus `container stop` |
 | `l` / `enter` | log view: transcript (`.md`), agent log, captured output (`tab` cycles, `f` toggles follow) |
 | `n` | new branch / bookmark (name + start revision) |
+| `v` · `space` | select branches: `v` starts a range at the cursor (`v` again keeps it), `space` marks one and moves on; `esc` clears. With two or more selected, `r` / `i` merge or rebase them, see [Merging and rebasing several branches](#merging-and-rebasing-several-branches) |
 | `o` | open the branch's worktree in your editor |
 | `P` | preview the full `project-sandbox` command |
 | `c` · `C` | clear a finished status · force-forget a record stuck as running (signals nothing) |
@@ -117,23 +118,79 @@ next start re-adopts them and notifies about any that finished meanwhile.
 
 ```sh
 sbx-tui --cleanup-workspaces --dry-run   # preview
-sbx-tui --cleanup-workspaces             # remove idle, clean workspaces
+sbx-tui --cleanup-workspaces             # remove idle clean / merged workspaces and branches
 ```
 
-In the TUI, `W` lists every workspace it found with its path and status.
-Removable ones are preselected; the others are shown greyed out with the reason
-they are kept. Toggle with `space` (`a` selects all / none), press `enter` to
-remove the selection, `esc` to cancel. The CLI prints the same list: `removed` /
-`would remove` lines, plus a `kept` line with the reason for each of the rest.
+In the TUI, `W` lists every workspace and merged branch it found with its path
+and status (the reason wraps onto its own line; long lists scroll). Removable
+ones are preselected; the others are shown greyed out with the reason they are
+kept. Toggle with `space` (`a` selects all / none), press `enter` to remove the
+selection, `esc` to cancel. The CLI removes everything removable and prints the
+same list: `removed` / `would remove` / `deleted branch` lines, plus a `kept`
+line with the reason for each of the rest.
 
 Workspaces come from the VCS itself (`git worktree list` / `jj workspace list`),
 so worktrees of deleted branches, detached worktrees and jj workspaces in any
 location or with any name are included. The workspace the TUI runs in is never
-listed. Workspaces are kept when they have a running TUI job or project-sandbox
-session, uncommitted, untracked or ignored files, are locked, are missing on disk,
-or hold the repository itself (jj's `default` workspace). Removal re-checks each
-selected workspace, unregisters it (`git worktree remove` / `jj workspace forget`)
-and keeps branches, bookmarks and job history.
+listed. Workspaces are always kept when they have a running TUI job or
+project-sandbox session, uncommitted or untracked files (for jj: changes in `@`,
+or files too large to snapshot), are locked, or hold the repository itself (jj's
+`default` workspace).
+
+The main branch (`project.main_branch`, default: the first of `main` / `master`
+/ `trunk`) relaxes the rules for work that is fully merged:
+
+- A workspace whose commits are all in the main branch (git: `HEAD` is an
+  ancestor; jj: only an empty, undescribed `@` is not in `::main`) may also be
+  removed when it only has ignored files (they are deleted) or when its directory
+  is missing (it is just unregistered). Its branch / bookmark is deleted with it,
+  except the main branch itself.
+- Branches / bookmarks fully merged into the main branch that have no workspace
+  are listed as rows of their own.
+
+Unmerged workspaces with ignored files or a missing directory are kept. Removal
+re-checks each selected row, unregisters workspaces (`git worktree remove` /
+`jj workspace forget`), and deletes branches with `git update-ref -d` (only if the
+branch has not moved) / `jj bookmark delete` (which also deletes a tracked remote
+bookmark on the next `jj git push`). Job history is kept.
+
+To get rid of a kept workspace anyway (e.g. a stale jj working copy), highlight
+it and press `D`. After a confirmation this deletes its directory with everything
+in it (uncommitted, untracked and ignored files included) and unregisters it
+(`git worktree remove --force --force`, which also handles locked worktrees /
+`jj workspace forget`). Branches and bookmarks are kept. Workspaces with a
+running session and the repository itself (jj's `default` workspace) can never
+be force-deleted, and for jj only a directory that really is a workspace of this
+repository is deleted.
+
+## Merging and rebasing several branches
+
+Select two or more branches (`v` for a range, `space` for single ones; the order
+you marked them is the merge / stacking order, a range adds in list order), then:
+
+- `r`: the form gains **action** (`merge` / `rebase`, `h`/`l`), **result**
+  (new branch, default `merge/<a>-<b>-…`) and **base** (rebase only, default
+  main/master/trunk), and a prompt from a template that follows those fields
+  until you edit it.
+- `i`: the same, then an interactive session on the result to resolve conflicts
+  yourself (or with the agent). Pick the `bash` agent if you want a plain shell.
+
+On launch sbx-tui does the mechanical part on your machine, then starts the
+session on the result branch, with the agent asked to resolve what is left
+**and review the integration** (semantic conflicts, tests):
+
+| | jj | git |
+|---|---|---|
+| merge | `jj new A B C` (conflicts are recorded in the commit) + bookmark `result` on it | worktree for `result` at `A`, octopus `git merge B C`; on conflicts one branch at a time, stopping at the first conflict |
+| rebase | each bookmark's own commits `jj duplicate`d onto the previous tip, starting at `base` | worktree for `result` at `base`, `git cherry-pick` of each branch's own commits, stopping at the first conflict |
+
+The inputs are never modified. A "Current state" section (what was merged,
+which files or commits conflict, what is still to apply) is appended to the
+prompt; for `i` it is shown before the session starts. Git commands run on
+your machine with hooks disabled, because the sandbox can write to `.git`.
+The templates can be replaced per repo in `[prompts]` (`octopus_merge`,
+`octopus_rebase`; placeholders `{inputs}`, `{result}`, `{base}`, `{first}`,
+`{rest}`).
 
 ## Interactive sessions
 
@@ -204,6 +261,7 @@ build_version = ""                # --python / --rust for a generated build
 worktree_dir = ""
 keep_workspace = true             # reuse the worktree across runs
 default_branch_start = ""         # "" = main/master/trunk, else HEAD (git) / @- (jj)
+main_branch = ""                  # cleanup removes work merged into it ("" = main/master/trunk)
 
 [ui]
 notify_command = ""

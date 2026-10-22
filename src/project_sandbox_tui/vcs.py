@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -36,6 +37,10 @@ class Branch:
 
 
 def _run(args: list[str], cwd: Path) -> str:
+    return _run_with_stderr(args, cwd)[0]
+
+
+def _run_with_stderr(args: list[str], cwd: Path) -> tuple[str, str]:
     try:
         proc = subprocess.run(
             args,
@@ -52,7 +57,7 @@ def _run(args: list[str], cwd: Path) -> str:
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout).strip().splitlines()
         raise VcsError(msg[-1] if msg else f"{' '.join(args[:3])} failed")
-    return proc.stdout
+    return proc.stdout, proc.stderr
 
 
 _INVALID_NAME = re.compile(r"[\s\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.lock(?:/|$)|/\.|//")
@@ -142,11 +147,7 @@ class GitBackend:
         _run(["git", "branch", "--no-track", "--", name, start or "HEAD"], self.root)
 
     def default_start(self) -> str:
-        names = {b.name for b in self.list_branches()}
-        for candidate in ("main", "master", "trunk"):
-            if candidate in names:
-                return candidate
-        return "HEAD"
+        return main_branch({b.name for b in self.list_branches()}) or "HEAD"
 
 
 _JJ_TEMPLATE = (
@@ -225,11 +226,15 @@ class JjBackend:
 
     def default_start(self) -> str:
         names = {b.name for b in self.list_branches() if not b.working_copy}
-        for candidate in ("main", "master", "trunk"):
-            if candidate in names:
-                return candidate
         # With no bookmarks, sessions have been working in @: bookmark that.
-        return "@-" if names else "@"
+        return main_branch(names) or ("@-" if names else "@")
+
+
+def main_branch(names: Collection[str], configured: str = "") -> str | None:
+    """``configured`` if it is one of ``names``, else the first of main / master / trunk."""
+    if configured:
+        return configured if configured in names else None
+    return next((c for c in ("main", "master", "trunk") if c in names), None)
 
 
 def detect(path: Path) -> Backend:

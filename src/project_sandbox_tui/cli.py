@@ -38,7 +38,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--cleanup-workspaces",
         action="store_true",
-        help="remove clean worktrees / workspaces with no running session, then exit",
+        help="remove idle clean or merged worktrees / workspaces and merged branches, then exit",
     )
     p.add_argument(
         "--dry-run",

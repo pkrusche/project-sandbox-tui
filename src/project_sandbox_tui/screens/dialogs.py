@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Input, SelectionList, Static
-from textual.widgets.selection_list import Selection
+from textual.widgets import Input, OptionList, Static
 
 from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.vcs import validate_branch_name
@@ -118,71 +119,116 @@ class ConfirmScreen(ModalScreen[bool]):
             self.dismiss(event.key == "y")
 
 
-class CleanupScreen(ModalScreen[list[Workspace] | None]):
-    """List every workspace found; clean ones are preselected, the rest say why they stay."""
+@dataclass(frozen=True)
+class ForceRemove:
+    """CleanupScreen result: force-delete this kept workspace (after confirmation)."""
+
+    workspace: Workspace
+
+
+class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
+    """List every workspace and merged branch; removable ones are preselected, the rest say why."""
 
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="CleanupScreen")
         + """
     CleanupScreen > Vertical { width: 110; }
-    CleanupScreen SelectionList { border: none; height: auto; max-height: 20; padding: 0; }
+    CleanupScreen OptionList { border: none; height: auto; padding: 0; }
     """
     )
     BINDINGS = [
         Binding("escape,q", "cancel", show=False),
         Binding("enter", "confirm", show=False, priority=True),
+        Binding("space", "toggle_one", show=False),
         Binding("j", "move(1)", show=False),
         Binding("k", "move(-1)", show=False),
         Binding("a", "toggle_all", show=False),
+        Binding("D", "force_remove", show=False),
     ]
 
     def __init__(self, workspaces: list[Workspace]) -> None:
         super().__init__()
         self.workspaces = workspaces
+        self.selected = {i for i, ws in enumerate(workspaces) if ws.removable}
 
     def compose(self) -> ComposeResult:
         removable = sum(ws.removable for ws in self.workspaces)
+        branches = sum(ws.path is None for ws in self.workspaces)
         kept = len(self.workspaces) - removable
-        summary = f"{len(self.workspaces)} found · {removable} can be removed"
+        summary = f"{len(self.workspaces) - branches} workspaces"
+        if branches:
+            summary += f" · {branches} merged branches"
+        summary += f" · {removable} can be removed"
         if kept:
             summary += f" · {kept} kept (reason shown)"
         with Vertical():
             yield Static("clean up workspaces", classes="title")
             yield Static(summary)
-            yield SelectionList[int](
-                *(
-                    Selection(self._label(ws), i, ws.removable, disabled=not ws.removable)
-                    for i, ws in enumerate(self.workspaces)
-                )
-            )
+            # Not a SelectionList: its options are one line each, which cut long reasons off.
+            yield OptionList(*(self._label(i) for i in range(len(self.workspaces))))
             yield Static(
-                "space toggle · a all/none · enter remove selected · esc cancel", classes="hint"
+                "space toggle · a all/none · enter remove · D force-delete kept · esc cancel",
+                classes="hint",
             )
 
-    @staticmethod
-    def _label(ws: Workspace) -> Text:
-        label = Text(ws.name, style="bold")
-        label.append(f"  {ws.path}", style="dim")
-        label.append(f"  {ws.status}", style="green" if ws.removable else "yellow")
+    def _label(self, index: int) -> Text:
+        ws = self.workspaces[index]
+        label = Text("[x] " if index in self.selected else "[ ] " if ws.removable else "    ")
+        label.append(ws.name, style="bold" if ws.removable else "bold dim")
+        label.append(f"  {ws.path}" if ws.path else "  branch", style="dim")
+        # The reason gets its own line(s): long ones wrap instead of being cut off.
+        label.append(f"\n    {ws.status}", style="green" if ws.removable else "yellow")
         return label
 
     def on_mount(self) -> None:
-        self.query_one(SelectionList).focus()
+        self.query_one(OptionList).focus()
+
+    def on_resize(self, event: events.Resize) -> None:
+        # Long lists scroll inside the dialog; title, summary and hint stay visible.
+        chrome = 7  # padding, title + margin, summary, hint + margin
+        self.query_one(OptionList).styles.max_height = max(3, event.size.height - chrome)
 
     def action_move(self, step: int) -> None:
-        options = self.query_one(SelectionList)
+        options = self.query_one(OptionList)
         options.action_cursor_down() if step > 0 else options.action_cursor_up()
 
+    @on(OptionList.OptionSelected)
+    def _clicked(self, event: OptionList.OptionSelected) -> None:
+        self._toggle(event.option_index)
+
+    def action_toggle_one(self) -> None:
+        highlighted = self.query_one(OptionList).highlighted
+        if highlighted is not None:
+            self._toggle(highlighted)
+
+    def _toggle(self, index: int) -> None:
+        if self.workspaces[index].removable:
+            self.selected ^= {index}
+            self.query_one(OptionList).replace_option_prompt_at_index(index, self._label(index))
+
     def action_toggle_all(self) -> None:
-        options = self.query_one(SelectionList)
-        if options.selected:
-            options.deselect_all()
+        if self.selected:
+            self.selected.clear()
         else:
-            options.select_all()
+            self.selected = {i for i, ws in enumerate(self.workspaces) if ws.removable}
+        options = self.query_one(OptionList)
+        for i in range(len(self.workspaces)):
+            options.replace_option_prompt_at_index(i, self._label(i))
+
+    def action_force_remove(self) -> None:
+        highlighted = self.query_one(OptionList).highlighted
+        if highlighted is None:
+            return
+        ws = self.workspaces[highlighted]
+        if ws.removable:
+            self.notify("removable without force: select it and press enter")
+        elif not ws.forceable or ws.path is None:
+            self.notify(f"cannot force-delete {ws.name}: {ws.status}", severity="warning")
+        else:
+            self.dismiss(ForceRemove(ws))
 
     def action_confirm(self) -> None:
-        selected = self.query_one(SelectionList).selected
-        self.dismiss([self.workspaces[i] for i in sorted(selected)])
+        self.dismiss([self.workspaces[i] for i in sorted(self.selected)])
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -190,30 +236,22 @@ class CleanupScreen(ModalScreen[list[Workspace] | None]):
 
 HELP_TEXT = """\
 navigation
-  j / k          down / up            gg / G      top / bottom
-  ctrl+d / u     half page            /           filter (esc clears)
-
+  j / k  gg / G  ctrl+d / u   down / up · top / bottom · half page
+  /      filter (esc clears)  ?  this help   q  quit (runs continue)
 sessions (one sandbox per branch)
-  i              interactive session (inline, or tmux/zellij/screen per ui.terminal)
-  r              unsupervised run with a prompt (background)
-  x              stop background run
-  x again        escalate: SIGINT → SIGTERM → SIGKILL + container stop
-  l / enter      log / transcript of the last run
-  c / C          clear a finished status / force-forget a stuck record
-
+  i          interactive (inline, or tmux / zellij / screen: ui.terminal)
+  r          unsupervised run with a prompt (background)
+  x          stop a run; again: SIGINT → SIGTERM → SIGKILL + container
+  l / enter  log / transcript     c / C  clear status / forget stuck run
 prompt box (unsupervised runs)
-  ctrl+enter     submit prompt and launch (enter inserts a newline)
-  → / ctrl+f     take the history suggestion shown as ghost text
-  ctrl+p / n     older / newer prompt starting with what you typed
-  ctrl+r         search the prompt history
-
+  ctrl+enter  launch (enter = newline)  → / ctrl+f  take the suggestion
+  ctrl+p / n  older / newer prompt      ctrl+r      search prompt history
 branches
-  n              new branch/bookmark  W           clean up workspaces
-  o              open the branch worktree in your editor
-  P              preview the project-sandbox command
-  R              refresh now          ctrl+r      reload configuration
-  H              show / hide the cheat-sheet
-  ?              this help            q           quit (background runs continue)
+  n          new branch / bookmark      W  clean up workspaces
+  v / space  select a range / mark branches (esc clears), then r or i
+             merges or rebases them into a new branch
+  o  open the worktree in your editor   P  show the project-sandbox command
+  R  refresh   ctrl+r  reload configuration   H  show / hide cheat-sheet
 """
 
 

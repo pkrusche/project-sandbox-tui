@@ -593,6 +593,47 @@ def test_modifier_hints(git_repo: Path, fake_cfg: Callable[..., Config]) -> None
         await pilot.press("q")
         assert app.screen is app.main
 
+
+# ---------------------------------------------------------------- octopus
+
+
+def _add_git_branch(repo: Path, name: str, path: str, text: str) -> None:
+    from tests.conftest import run
+
+    run("git", "checkout", "-q", "-b", name, "main", cwd=repo)
+    (repo / path).write_text(text)
+    run("git", "add", path, cwd=repo)
+    run("git", "commit", "-q", "-m", f"{name}: {path}", cwd=repo)
+    run("git", "checkout", "-q", "main", cwd=repo)
+
+
+def test_selection_keys(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        names = [r[1] for r in row_texts(app)]
+        assert len(names) == 3
+        await pilot.press("space")  # mark the first row and move down
+        assert app.selection() == [app.branches[0].name]
+        assert row_texts(app)[0][1].startswith("+ ")
+        await pilot.press("space")
+        assert len(app.selection()) == 2
+        assert "2 selected" in str(app.main.query_one("#header").render())
+        await pilot.press("escape")
+        assert app.selection() == []
+        # visual range: v at the top, G extends to the bottom
+        await pilot.press("g", "g", "v", "G")
+        assert len(app.selection()) == 3
+        assert "VISUAL" in str(app.main.query_one("#header").render())
+        await pilot.press("v")  # end visual, keep the range as marks
+        await pilot.press("g", "g")
+        assert len(app.selection()) == 3 and app._visual_anchor is None
+        await pilot.press("escape")
+        assert app.selection() == []
+        # one branch is not enough
+        await pilot.press("space", "r")
+        assert not isinstance(app.screen, LaunchScreen)
+
     run_app(git_repo, fake_cfg(), scenario)
 
 
@@ -641,8 +682,6 @@ def test_launch_command_preview_scrolls(git_repo: Path, fake_cfg: Callable[..., 
 
 
 def test_cleanup_workspaces_key(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    from textual.widgets import SelectionList
-
     from project_sandbox_tui.screens.dialogs import CleanupScreen, MessageScreen
     from project_sandbox_tui.vcs import workspace_path
     from tests.conftest import run
@@ -656,11 +695,12 @@ def test_cleanup_workspaces_key(git_repo: Path, fake_cfg: Callable[..., Config])
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("W")
         await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        assert isinstance(app.screen, CleanupScreen)
         assert [(ws.name, ws.removable) for ws in app.screen.workspaces] == [
             ("feature/x", True),
             ("dirty (detached)", False),
         ]
-        assert app.screen.query_one(SelectionList).selected == [0]
+        assert app.screen.selected == {0}
         await pilot.press("escape")
         assert not isinstance(app.screen, CleanupScreen)
         await pilot.pause(0.2)
@@ -684,9 +724,154 @@ def test_cleanup_workspaces_key(git_repo: Path, fake_cfg: Callable[..., Config])
         run("git", "worktree", "remove", str(dirty), cwd=git_repo)
         await pilot.press("W")  # nothing left: just a message
         await wait_until(pilot, lambda: isinstance(app.screen, MessageScreen))
+        assert isinstance(app.screen, MessageScreen)
         assert "No worktrees found" in app.screen.body
         await pilot.press("q")
         assert app.is_running
 
     run_app(git_repo, fake_cfg(), scenario)
     assert "feature/x" in run("git", "branch", cwd=git_repo)
+
+
+def test_octopus_merge_background_git(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui.history import PromptHistory
+    from project_sandbox_tui.vcs import workspace_path
+    from tests.conftest import run
+
+    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        order = [b.name for b in app.branches]
+        await pilot.press("v", "G", "r")  # select all three, unsupervised
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.octopus is not None
+        assert form.octopus.inputs == order
+        result = form.query_one("#result", Input)
+        assert result.value.startswith("merge/")
+        prompt = form.query_one("#prompt", TextArea)
+        assert prompt.text.startswith("Integrate the branches")
+        # switching to rebase updates the untouched name and prompt
+        form.query_one("#operation").focus()
+        await pilot.press("l")
+        await pilot.pause()
+        assert result.value.startswith("rebase/") and "linear history" in prompt.text
+        await pilot.press("h")
+        await pilot.pause()
+        assert result.value.startswith("merge/")
+        # an existing branch name is refused, the form stays open
+        result.value = "main"
+        await pilot.press("ctrl+enter")
+        assert app.screen is form
+        result.value = "merge/all"
+        prompt.text = prompt.text + "\nsleep:0.3"
+        await pilot.press("ctrl+enter")
+        await wait_until(pilot, lambda: "merge/all" in app.jobs.jobs, timeout=15)
+        job = app.jobs.jobs["merge/all"]
+        assert job.spec.operation == "merge" and job.spec.inputs == order
+        assert "## Current state" in job.spec.prompt_text
+        assert "--branch" in job.argv and "merge/all" in job.argv
+        assert app.selection() == []  # cleared after launching
+        await wait_until(pilot, lambda: not app.jobs.jobs["merge/all"].running, timeout=15)
+
+    run_app(git_repo, fake_cfg(), scenario)
+    wt = workspace_path(git_repo, "git", "merge/all", None)
+    assert (wt / "b.txt").exists() and (wt / "y.txt").exists()  # merged on the host
+    assert len(run("git", "log", "-1", "--format=%P", cwd=wt).split()) == 3  # octopus
+    # history keeps what was typed, not the generated state report
+    newest = PromptHistory.for_repo(git_repo).newest_first()[0]
+    assert "## Current state" not in newest and newest.endswith("sleep:0.3")
+
+
+def test_octopus_rebase_background_jj(jj_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from tests.conftest import run
+
+    for name, path in (("a", "a.txt"), ("b", "b.txt")):
+        run("jj", "new", "--quiet", "main", cwd=jj_repo)
+        (jj_repo / path).write_text(name)
+        run("jj", "commit", "--quiet", "-m", f"{name}: {path}", cwd=jj_repo)
+        run("jj", "bookmark", "create", "--quiet", name, "-r", "@-", cwd=jj_repo)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        rows = [b.name for b in app.branches]
+        # the working copy row cannot be selected
+        await pilot.press("space")
+        assert app.selection() == []
+        for name in ("a", "b"):
+            app.table.move_cursor(row=rows.index(name), animate=False)
+            await pilot.press("space")
+        assert app.selection() == ["a", "b"]  # marking order
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.octopus is not None
+        form.query_one("#operation").focus()
+        await pilot.press("l")  # rebase
+        await pilot.pause()
+        assert form.query_one("#base", Input).value == "main"
+        form.query_one("#prompt", TextArea).text += "\nsleep:0.2"
+        await pilot.press("ctrl+enter")
+        await wait_until(pilot, lambda: "rebase/a-b" in app.jobs.jobs, timeout=15)
+        assert any(b.name == "rebase/a-b" for b in app.branches)
+        await wait_until(pilot, lambda: not app.jobs.jobs["rebase/a-b"].running, timeout=15)
+
+    run_app(jj_repo, fake_cfg(), scenario)
+    stack = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", 'main.."rebase/a-b"',
+                "-T", 'description.first_line() ++ "\\n"', cwd=jj_repo).splitlines()  # fmt: skip
+    assert stack == ["b: b.txt", "a: a.txt"]
+
+
+def test_octopus_interactive_resolution(
+    git_repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+    cfg = fake_cfg()
+    cfg.sandbox.command = "true"  # the "agent" exits at once
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "suspend", contextlib.nullcontext)
+        await pilot.press("v", "j", "i")
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.octopus is not None
+        assert "interactive session · merge 2 branches" in str(form.query_one("#title").render())
+        await pilot.press("enter")  # launch from the operation field
+        await wait_until(
+            pilot, lambda: bool([j for j in app.jobs.jobs.values() if j.spec.operation])
+        )
+        job = next(j for j in app.jobs.jobs.values() if j.spec.operation)
+        assert job.mode == "interactive"
+        await wait_until(pilot, lambda: not job.running)
+        assert app.screen is app.main
+
+    run_app(git_repo, cfg, scenario)
+
+
+def test_cleanup_force_delete(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui.screens.dialogs import CleanupScreen, ConfirmScreen
+    from tests.conftest import run
+
+    dirty = git_repo.parent / "dirty"
+    run("git", "worktree", "add", "--detach", str(dirty), "main", cwd=git_repo)
+    (dirty / "untracked").write_text("lost")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("W")
+        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await pilot.press("D")
+        await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        assert isinstance(app.screen, ConfirmScreen)
+        assert "uncommitted or untracked files" in app.screen.body
+        await pilot.press("n")  # cancelled: nothing happens
+        await pilot.pause(0.2)
+        assert dirty.exists()
+
+        await pilot.press("W")
+        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await pilot.press("D")
+        await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await pilot.press("y")
+        await wait_until(pilot, lambda: not dirty.exists())
+        assert app.is_running
+
+    run_app(git_repo, fake_cfg(), scenario)
+    assert "dirty" not in run("git", "worktree", "list", cwd=git_repo)
