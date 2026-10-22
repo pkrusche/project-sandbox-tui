@@ -29,6 +29,7 @@ from project_sandbox_tui import launchers, notify, octopus, terminal
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
+    force_removal_details,
     force_remove_workspace,
     remove_workspaces,
 )
@@ -1044,13 +1045,11 @@ class SandboxTUI(App[None]):
         await self.refresh_data()
 
     async def _force_remove_workspace(self, ws: Workspace) -> None:
-        noun = "worktree" if self.backend.kind == "git" else "workspace"
-        body = (
-            f"{ws.name}: {ws.path}\nkept because: {ws.status}\n\n"
-            f"Deletes the directory with everything in it, including uncommitted,\n"
-            f"untracked and ignored files, and unregisters the {noun}.\n"
-            f"Branches / bookmarks are kept."
-        )
+        try:
+            body = await asyncio.to_thread(force_removal_details, ws, self.backend.kind)
+        except OSError as exc:
+            self.notify(f"cannot list files for deletion: {exc}", severity="error", timeout=8)
+            return
         if not await self.push_screen_wait(
             ConfirmScreen(f"force-delete {ws.name}?", body, "delete")
         ):

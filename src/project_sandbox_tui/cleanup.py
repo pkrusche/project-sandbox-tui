@@ -133,11 +133,9 @@ def _merged(backend: Backend, repo: Path, main: str | None, ws: _Found) -> bool:
                 return False
             _run(["git", "merge-base", "--is-ancestor", ws.head, f"refs/heads/{main}"], repo)
             return True
-        # Commits only this workspace has; its empty, undescribed @ does not count.
-        revset = (
-            f"(::{_revset_str(ws.name)}@ ~ ::{_revset_str(main)})"
-            ' ~ (empty() & description(exact:""))'
-        )
+        # Check the latest non-empty history, skipping any trailing empty revisions.
+        # Keep all ancestry paths so an unmerged side of a merge is not overlooked.
+        revset = f"(::{_revset_str(ws.name)}@ ~ ::{_revset_str(main)}) ~ empty()"
         return not _jj(repo, "log", "--no-graph", "-r", revset, "-T", "commit_id", "-n", "1")
     except VcsError:  # not an ancestor, or main / the workspace cannot be resolved
         return False
@@ -221,7 +219,8 @@ def _inspect(
         merged = _merged(backend, repo, main, ws)
     except (VcsError, OSError) as exc:
         return keep(str(exc))
-    if changes:
+    # jj snapshots its working-copy revision: a diff already in main is safe to remove.
+    if changes and not (backend.kind == "jj" and merged and changes == "uncommitted changes"):
         return keep(changes)
     if ignored and not merged:
         return keep("ignored files (removable once merged into the main branch)")
@@ -365,6 +364,37 @@ def remove_workspaces(
         for path, name in sorted(wanted, key=str)
     ]
     return results
+
+
+def force_removal_details(ws: Workspace, kind: str) -> str:
+    """Describe the registration and every on-disk entry force removal deletes."""
+    noun = "worktree" if kind == "git" else "workspace"
+    lines = [
+        f"{ws.name}: {ws.path}",
+        f"kept because: {ws.status}",
+        "",
+        f"Unregister {noun}: {ws.name}",
+        f"Delete directory and all contents: {ws.path}",
+    ]
+    if ws.path is not None and ws.path.exists():
+
+        def fail(exc: OSError) -> None:
+            raise exc
+
+        for directory, dirs, files in os.walk(ws.path, onerror=fail, followlinks=False):
+            dirs.sort()
+            for name in sorted(dirs + files):
+                entry = Path(directory) / name
+                label = str(entry.relative_to(ws.path))
+                if entry.is_symlink():
+                    label += f" -> {os.readlink(entry)} (symlink)"
+                elif name in dirs:
+                    label += "/"
+                lines.append(f"  {label}")
+    else:
+        lines.append("  (directory not found)")
+    lines.extend(["", "Branches / bookmarks are kept."])
+    return "\n".join(lines)
 
 
 def force_remove_workspace(

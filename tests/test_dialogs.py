@@ -119,3 +119,26 @@ def test_help_fits_a_small_terminal() -> None:
                 assert needle in shot, needle
 
     asyncio.run(scenario())
+
+
+def test_confirmation_contents_scroll_without_dismissing() -> None:
+    from textual.containers import VerticalScroll
+
+    from project_sandbox_tui.screens.dialogs import ConfirmScreen
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ConfirmScreen("delete?", "\n".join(f"file-{i}" for i in range(100)), "delete")
+            app.push_screen(screen)
+            await pilot.pause()
+            scroll = screen.query_one(VerticalScroll)
+            assert scroll.max_scroll_y > 0
+            assert screen.query_one(".hint").region.bottom <= screen.region.bottom
+            await pilot.press("end")
+            await pilot.pause()
+            assert app.screen is screen and scroll.scroll_y > 0
+            await pilot.press("n")
+            assert app.screen is not screen
+
+    asyncio.run(scenario())

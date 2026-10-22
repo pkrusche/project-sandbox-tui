@@ -8,7 +8,7 @@ from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 
@@ -95,9 +95,14 @@ class MessageScreen(ModalScreen[None]):
 
 
 class ConfirmScreen(ModalScreen[bool]):
-    """Show a block of plain text; y confirms, any other key cancels."""
+    """Show scrollable plain text; y confirms, navigation scrolls, other keys cancel."""
 
-    DEFAULT_CSS = _MODAL_CSS.format(name="ConfirmScreen")
+    DEFAULT_CSS = (
+        _MODAL_CSS.format(name="ConfirmScreen")
+        + """
+    ConfirmScreen VerticalScroll { height: auto; max-height: 60vh; }
+    """
+    )
 
     def __init__(self, title: str, body: str, action: str) -> None:
         super().__init__()
@@ -108,13 +113,29 @@ class ConfirmScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self.title_text, classes="title")
-            yield Static(Text(self.body))
-            yield Static(f"y {self.action_text} · any other key cancels", classes="hint")
+            with VerticalScroll():
+                yield Static(Text(self.body))
+            yield Static(
+                f"y {self.action_text} · arrows/pgup/pgdn scroll · any other key cancels",
+                classes="hint",
+            )
 
     def on_key(self, event: events.Key) -> None:
         # Consume the key so it cannot also trigger a binding on the screen below.
         event.stop()
         event.prevent_default()
+        scroll = self.query_one(VerticalScroll)
+        actions = {
+            "up": scroll.scroll_up,
+            "down": scroll.scroll_down,
+            "pageup": scroll.scroll_page_up,
+            "pagedown": scroll.scroll_page_down,
+            "home": scroll.scroll_home,
+            "end": scroll.scroll_end,
+        }
+        if event.key in actions:
+            actions[event.key]()
+            return
         if not modifier_key(event.key):
             self.dismiss(event.key == "y")
 

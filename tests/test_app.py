@@ -886,6 +886,10 @@ def test_cleanup_force_delete(git_repo: Path, fake_cfg: Callable[..., Config]) -
         await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         assert isinstance(app.screen, ConfirmScreen)
         assert "uncommitted or untracked files" in app.screen.body
+        assert f"Delete directory and all contents: {dirty}" in app.screen.body
+        assert "  untracked" in app.screen.body
+        assert "  a.txt" in app.screen.body
+        assert "Unregister worktree:" in app.screen.body
         await pilot.press("n")  # cancelled: nothing happens
         await pilot.pause(0.2)
         assert dirty.exists()
