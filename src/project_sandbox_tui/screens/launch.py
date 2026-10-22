@@ -216,6 +216,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             result,
             base if operation == "rebase" else "",
         )
+        if self._value("#agent", self.defaults.agent) == "bash":
+            return octopus_mod.bash_prompt(self.octopus.kind, plan)
         return octopus_mod.render_prompt(self.octopus.templates[operation], plan)
 
     def _octopus_changed(self) -> None:
@@ -318,6 +320,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         model = self.query_one("#model", Input)
         model.suggester = self._suggester(event.value)
         model.value = _resolve_model(self.cfg, self.last, event.value)
+        self._octopus_changed()
         self._update_preview()
 
     @on(CycleField.Changed, "#operation")

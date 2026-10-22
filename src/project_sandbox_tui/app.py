@@ -784,7 +784,10 @@ class SandboxTUI(App[None]):
         )
         typed = spec.prompt_text
         if spec.mode == "background":
-            spec.prompt_text = f"{typed.rstrip()}\n\n{state.report()}\n"
+            if spec.agent == "bash":
+                spec.prompt_text = f"printf '%s\\n' {shlex.quote(state.report())}\n{typed}"
+            else:
+                spec.prompt_text = f"{typed.rstrip()}\n\n{state.report()}\n"
         await self.refresh_data()  # the result branch exists now
         self._start_launch(spec, history_text=typed, banner=state.report())
 

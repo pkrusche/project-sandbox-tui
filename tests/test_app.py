@@ -17,6 +17,7 @@ from project_sandbox_tui.screens.dialogs import HelpScreen, NewBranchScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import detect
+from project_sandbox_tui.widgets import CycleField
 
 
 def run_app(
@@ -774,6 +775,16 @@ def test_octopus_merge_background_git(git_repo: Path, fake_cfg: Callable[..., Co
         result = form.query_one("#result", Input)
         assert result.value.startswith("merge/")
         prompt = form.query_one("#prompt", TextArea)
+        assert prompt.text.startswith("Integrate the branches")
+        form.query_one("#agent", CycleField).value = "bash"
+        await pilot.pause()
+        assert prompt.text.startswith("git status")
+        form.query_one("#operation", CycleField).value = "rebase"
+        await pilot.pause()
+        assert "git diff --stat main --" in prompt.text
+        form.query_one("#operation", CycleField).value = "merge"
+        form.query_one("#agent", CycleField).value = "claude"
+        await pilot.pause()
         assert prompt.text.startswith("Integrate the branches")
         # switching to rebase updates the untouched name and prompt
         form.query_one("#operation").focus()

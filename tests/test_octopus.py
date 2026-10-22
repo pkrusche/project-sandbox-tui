@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 from typing import cast
 
@@ -181,3 +182,26 @@ def test_jj_rebase_duplicates_without_touching_inputs(jj_branches: Path) -> None
 def test_jj_rebase_unknown_base(jj_branches: Path) -> None:
     with pytest.raises(OctopusError, match="no such revision|doesn't exist|not found"):
         octopus.prepare("jj", jj_branches, OctopusPlan("rebase", ["a", "b"], "r", base="nope"))
+
+
+@pytest.mark.parametrize("operation", ["merge", "rebase"])
+@pytest.mark.parametrize("conflicted", [False, True])
+@pytest.mark.parametrize("kind", ["git", "jj"])
+def test_bash_summary(request, operation, conflicted, kind) -> None:
+    repo = request.getfixturevalue(f"{kind}_branches")
+    inputs = ["a", "c"] if conflicted else ["a", "b"]
+    plan = OctopusPlan(operation, inputs, "summary", base="main")
+    state = octopus.prepare(kind, repo, plan)
+    if kind == "git":
+        cwd = state.workspace
+    else:
+        run("jj", "new", "summary", cwd=repo)
+        cwd = repo
+    result = subprocess.run(
+        ["bash", "-c", octopus.bash_prompt(kind, plan)],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == (1 if conflicted else 0), result.stderr
+    assert "shared.txt" in result.stdout or "b.txt" in result.stdout

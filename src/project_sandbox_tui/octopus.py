@@ -2,8 +2,8 @@
 
 The TUI does the mechanical part on the host before any agent runs, then hands
 the result branch to a normal session whose prompt asks the agent to resolve
-what is left and review the integration (pick the ``bash`` agent to do that
-yourself).
+what is left and review the integration. The ``bash`` agent instead summarizes
+changes and fails when conflicts remain.
 
 - jj merge:  ``jj new --no-edit A B C`` + bookmark ``result`` on it. jj records
   conflicts in the commit; the session starts on top of it.
@@ -24,6 +24,7 @@ Inputs are only read. Host-side git runs with hooks disabled: the sandbox has
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -153,6 +154,28 @@ DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
         "Finish with a short summary of conflicts, resolutions and follow-ups."
     ),
 }
+
+
+def bash_prompt(kind: str, plan: OctopusPlan) -> str:
+    """Summarize the integration without resolving it; fail on conflicts."""
+    baseline = plan.base if plan.operation == "rebase" else plan.inputs[0]
+    if kind == "git":
+        return (
+            "git status --short &&\n"
+            f"git diff --stat {shlex.quote(baseline)} -- &&\n"
+            "conflicts=$(git diff --name-only --diff-filter=U) &&\n"
+            'printf "Conflicts:\n%s\n" "$conflicts" &&\n'
+            '[ -z "$conflicts" ]'
+        )
+    # Include conflicts in intermediate commits, even if the final tree is clean.
+    return (
+        "jj status &&\n"
+        f"jj diff --stat --from {shlex.quote(baseline)} --to @- &&\n"
+        "conflicts=$(jj log --no-graph -r '::@- & conflicts()' "
+        "-T 'commit_id.short()') &&\n"
+        'printf "Conflicted commits:\n%s\n" "$conflicts" &&\n'
+        '[ -z "$conflicts" ]'
+    )
 
 
 def render_prompt(template: str, plan: OctopusPlan) -> str:

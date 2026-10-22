@@ -175,6 +175,9 @@ you marked them is the merge / stacking order, a range adds in list order), then
 - `i`: the same, then an interactive session on the result to resolve conflicts
   yourself (or with the agent). Pick the `bash` agent if you want a plain shell.
 
+For unsupervised runs, choosing `bash` fills the prompt with a command that
+prints changes and conflicts and exits with failure if conflicts remain.
+
 On launch sbx-tui does the mechanical part on your machine, then starts the
 session on the result branch, with the agent asked to resolve what is left
 **and review the integration** (semantic conflicts, tests):
