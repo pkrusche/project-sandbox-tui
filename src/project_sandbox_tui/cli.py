@@ -12,7 +12,7 @@ from pathlib import Path
 from project_sandbox_tui import __version__
 from project_sandbox_tui import config as config_mod
 from project_sandbox_tui.config import ConfigError
-from project_sandbox_tui.vcs import VcsError, detect
+from project_sandbox_tui.vcs import Backend, VcsError, detect, sort_branches
 
 
 def build_parser() -> ArgumentParser:
@@ -45,8 +45,14 @@ def build_parser() -> ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    target = Path(args.repo).expanduser()
+    if not target.is_dir():
+        # detect() walks up parent directories, so a mistyped path would
+        # otherwise silently open whatever repository surrounds it.
+        print(f"sbx-tui: {args.repo}: no such directory", file=sys.stderr)
+        return 2
     try:
-        backend = detect(Path(args.repo))
+        backend = detect(target)
     except VcsError as exc:
         print(f"sbx-tui: {exc}", file=sys.stderr)
         return 2
@@ -58,7 +64,11 @@ def main(argv: list[str] | None = None) -> int:
             (gpath, config_mod.GLOBAL_TEMPLATE),
             (config_mod.project_config_path(repo), config_mod.PROJECT_TEMPLATE),
         ):
-            written = config_mod.write_template(path, template)
+            try:
+                written = config_mod.write_template(path, template)
+            except OSError as exc:
+                print(f"sbx-tui: could not write {path}: {exc}", file=sys.stderr)
+                return 2
             print(f"{'wrote' if written else 'exists'}: {path}")
         return 0
 
@@ -79,21 +89,39 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _print_config(repo: Path, backend: object, cfg: config_mod.Config) -> int:
-    from project_sandbox_tui.sandbox import LaunchSpec, build_argv
+def _print_config(repo: Path, backend: Backend, cfg: config_mod.Config) -> int:
+    from project_sandbox_tui.sandbox import (
+        CheckoutConflict,
+        LaunchSpec,
+        build_argv,
+        uses_main_checkout,
+    )
 
     data = dataclasses.asdict(cfg)
     data["sources"] = [str(p) for p in cfg.sources]
     print(json.dumps(data, indent=2))
-    branches = backend.list_branches()  # type: ignore[attr-defined]
-    current = next((b.name for b in branches if b.is_current), branches[0].name if branches else "")
-    if not current:
-        return 0
-    d = config_mod.resolve_launch_defaults(cfg, config_mod.LastUsed.load(repo))
-    spec = LaunchSpec(branch=current, agent=d.agent, model=d.model, effort=d.effort)
     try:
-        print("\n# interactive command for", current)
+        branches = sort_branches(backend.list_branches())
+    except VcsError as exc:
+        print(f"sbx-tui: {exc}", file=sys.stderr)
+        return 2
+    if not branches:
+        return 0
+    branch = branches[0]  # current branch first, else most recent
+    d = config_mod.resolve_launch_defaults(cfg, config_mod.LastUsed.load(repo))
+    worktree_dir = (
+        cfg.resolve_path(cfg.project.worktree_dir, repo) if cfg.project.worktree_dir else None
+    )
+    print("\n# interactive command for", branch.name)
+    try:
+        spec = LaunchSpec(
+            branch=branch.name,
+            agent=d.agent,
+            model=d.model,
+            effort=d.effort,
+            main_checkout=uses_main_checkout(repo, branch, worktree_dir),
+        )
         print(shlex.join(build_argv(cfg, repo, spec)))
-    except ConfigError as exc:
+    except (ConfigError, CheckoutConflict) as exc:
         print(f"# cannot build command: {exc}")
     return 0

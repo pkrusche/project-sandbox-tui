@@ -54,6 +54,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         defaults: LaunchDefaults,
         preview: Callable[[LaunchSpec], str],
         prompt_text: str = "",
+        *,
+        main_checkout: bool = False,
     ) -> None:
         super().__init__()
         self.branch = branch
@@ -63,12 +65,15 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.defaults = defaults
         self.preview_fn = preview
         self.initial_prompt = prompt_text
+        self.main_checkout = main_checkout
 
     def compose(self) -> ComposeResult:
         what = "interactive session" if self.mode == "interactive" else "unsupervised run"
         with Vertical():
             title = Text(f"{what} on ")
             title.append(self.branch, style="bold")
+            if self.main_checkout:
+                title.append("  (in the main checkout)", style="dim")
             yield Static(title, classes="title")
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
             with Horizontal(classes="field"):
@@ -123,6 +128,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             mode=self.mode,
             prompt_text=prompt,
             timeout=timeout,
+            main_checkout=self.main_checkout,
         )
 
     def _update_preview(self) -> None:
@@ -149,12 +155,20 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     @on(Input.Submitted)
     def _submitted(self) -> None:
-        self.action_launch()
+        self._enter()
 
     def key_enter(self) -> None:
-        # Enter on a CycleField launches; Inputs handle their own Submitted.
+        # Inputs report Enter as Submitted; this covers the CycleFields.
         if isinstance(self.focused, CycleField):
+            self._enter()
+
+    def _enter(self) -> None:
+        """Enter launches an interactive session; in the unsupervised form, where
+        the prompt is the main field, it only moves on (ctrl+s launches)."""
+        if self.mode == "interactive":
             self.action_launch()
+        else:
+            self.focus_next()
 
     def action_launch(self) -> None:
         spec = self.current_spec()

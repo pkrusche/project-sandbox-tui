@@ -97,9 +97,10 @@ navigation
 sessions (one sandbox per branch)
   i              interactive session in this terminal
   r              unsupervised run with a prompt (background)
-  x              stop background run (again: force kill)
+  x              stop background run
+  x again        escalate: SIGINT → SIGTERM → SIGKILL + container stop
   l / enter      log / transcript of the last run
-  c              clear a finished status
+  c / C          clear a finished status / force-forget a stuck record
 
 branches
   n              new branch / bookmark

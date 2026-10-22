@@ -103,3 +103,21 @@ def test_state_dir_is_per_repo(tmp_path: Path) -> None:
     b = c.repo_state_dir(tmp_path / "y" / "repo")
     assert a != b
     assert a.parent == c.state_home()
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('[sandbox]\ncommand = " "\n', "sandbox.command"),
+        ('[sandbox]\ncommand = "\'unclosed"\n', "sandbox.command"),
+        ("[sandbox]\ncpus = -1\n", "sandbox.cpus"),
+        ("[ui]\nrefresh_seconds = nan\n", "ui.refresh_seconds"),
+        ("[ui]\nrefresh_seconds = inf\n", "ui.refresh_seconds"),
+        ('[ui]\nterminal_command = "\'unclosed"\n', "ui.terminal_command"),
+        ('[ui]\neditor_command = " "\n', "ui.editor_command"),
+    ],
+)
+def test_invalid_commands_and_numeric_settings(tmp_path: Path, text: str, message: str) -> None:
+    write(tmp_path / c.PROJECT_CONFIG_NAME, text)
+    with pytest.raises(c.ConfigError, match=message):
+        c.load(tmp_path)

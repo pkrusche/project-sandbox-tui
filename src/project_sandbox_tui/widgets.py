@@ -55,7 +55,7 @@ class CycleField(Widget, can_focus=True):
         self.options = list(options)
         self.empty_label = empty_label
         initial = self.options.index(value) if value in self.options else 0
-        self.set_reactive(CycleField.index, initial)  # type: ignore[arg-type]
+        self.set_reactive(CycleField.index, initial)
 
     @property
     def value(self) -> str:

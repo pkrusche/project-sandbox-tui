@@ -166,3 +166,152 @@ def test_missing_image_config_is_reported(git_repo: Path) -> None:
         assert "main" not in app.jobs.jobs
 
     run_app(git_repo, Config(), scenario)
+    assert LastUsed.load(git_repo).agent == ""  # failed launch did not become the default
+
+
+def test_filter_box_is_visible_above_footer(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("slash", "m")
+        await pilot.pause()
+        box = app.main.query_one("#filter")
+        footer = app.main.query_one("#footer")
+        assert box.region.height == 1 and footer.region.height == 1
+        assert box.region.y < footer.region.y  # stacked, not drawn on top of each other
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_run_on_current_git_branch_uses_main_checkout(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        assert app.selected_branch_name() == "main"  # the checked-out branch
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.main_checkout
+        form.query_one("#prompt", TextArea).text = "sleep:3"
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
+        argv = app.jobs.jobs["main"].argv
+        assert "--branch" not in argv and "--keep-workspace" not in argv
+        # the fake's session runs in the repo itself and is attributed to main
+        await wait_until(pilot, lambda: "main" in app.sessions)
+        app.jobs.stop("main", app.sessions)
+        await wait_until(pilot, lambda: not app.jobs.jobs["main"].running)
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_enter_does_not_launch_unsupervised_run(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#prompt", TextArea).text = "sleep:0.1"
+        form.query_one("#timeout", Input).focus()
+        await pilot.press("enter")
+        assert app.screen is form  # still in the form; focus moved on
+        await pilot.press("escape")
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_launch_rechecks_checkout_after_form_opens(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from tests.conftest import run
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.main_checkout
+        # Another terminal switches the checkout while the form is open.
+        run("git", "checkout", "-q", "feature/x", cwd=git_repo)
+        form.query_one("#prompt", TextArea).text = "sleep:0.1"
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
+        assert "--branch" in app.jobs.jobs["main"].argv
+        await wait_until(pilot, lambda: not app.jobs.jobs["main"].running)
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_external_launch_rechecks_busy_state(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.jobs import JobManager
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    cfg = fake_cfg()
+    cfg.ui.terminal_command = "true {cmd}"
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("i")
+        assert isinstance(app.screen, LaunchScreen)
+        other = JobManager(git_repo, cfg)
+        reserved = other.record_external(LaunchSpec(branch="main", agent="codex"), ["other"])
+        await pilot.press("enter")
+        assert app.jobs.jobs["main"].started_at == reserved.started_at
+        assert app.jobs.jobs["main"].spec.agent == "codex"
+        assert LastUsed.load(git_repo).agent == ""
+
+    run_app(git_repo, cfg, scenario)
+
+
+def test_failed_external_launch_releases_reservation(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.ui.terminal_command = "definitely-not-an-installed-terminal {cmd}"
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("i", "enter")
+        assert "main" not in app.jobs.jobs
+        assert LastUsed.load(git_repo).agent == ""
+
+    run_app(git_repo, cfg, scenario)
+
+
+def test_log_follows_partial_utf8_and_truncation(
+    git_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from textual.widgets import Log
+
+    from project_sandbox_tui.jobs import JobRecord
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        path = git_repo / "agent.log"
+        path.write_bytes(b"first\n\xe2\x82")  # partial euro sign at a poll boundary
+        job = JobRecord(
+            "main",
+            LaunchSpec(branch="main", agent="claude"),
+            1,
+            "",
+            log_path=str(path),
+            stdout_path=str(git_repo / "out"),
+        )
+        screen = LogScreen(job)
+        app.push_screen(screen)
+        await pilot.pause()
+        with path.open("ab") as stream:
+            stream.write(b"\xac\n")
+        screen._poll()
+        log = screen.query_one(Log)
+        assert log.lines[:2] == ["first", "€"]
+        path.write_bytes(b"new\n")
+        screen._poll()
+        assert log.lines == ["new", ""]
+        # A replacement file can be larger, so size alone cannot detect rotation.
+        replacement = path.with_suffix(".replacement")
+        replacement.write_text("replacement contents\n")
+        replacement.replace(path)
+        screen._poll()
+        assert log.lines == ["replacement contents", ""]
+        await pilot.press("q")
+
+    run_app(git_repo, fake_cfg(), scenario)

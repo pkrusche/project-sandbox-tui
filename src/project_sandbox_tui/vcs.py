@@ -24,6 +24,8 @@ class Branch:
     subject: str  # first line of the tip's description
     timestamp: int  # committer time (unix seconds), 0 if unknown
     is_current: bool = False
+    # git only: where the branch is checked out (main checkout or a worktree)
+    checkout_path: Path | None = None
 
 
 def _run(args: list[str], cwd: Path) -> str:
@@ -46,7 +48,9 @@ def _run(args: list[str], cwd: Path) -> str:
     return proc.stdout
 
 
-_INVALID_NAME = re.compile(r"[\s~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.lock$|//")
+_INVALID_NAME = re.compile(
+    r"[\s\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.lock(?:/|$)|/\.|//"
+)
 
 
 def validate_branch_name(name: str) -> str | None:
@@ -98,11 +102,12 @@ class GitBackend:
     def list_branches(self) -> list[Branch]:
         fmt = "%00".join(
             (
-                "%(refname:short)",
+                "%(refname:lstrip=2)",
                 "%(objectname:short)",
                 "%(contents:subject)",
                 "%(committerdate:unix)",
                 "%(HEAD)",
+                "%(worktreepath)",
             )
         )
         out = _run(
@@ -112,9 +117,9 @@ class GitBackend:
         branches: list[Branch] = []
         for line in out.splitlines():
             parts = line.split("\0")
-            if len(parts) != 5:
+            if len(parts) != 6:
                 continue
-            name, head, subject, ts, current = parts
+            name, head, subject, ts, current, checkout = parts
             branches.append(
                 Branch(
                     name=name,
@@ -123,6 +128,7 @@ class GitBackend:
                     subject=subject,
                     timestamp=int(ts) if ts.isdigit() else 0,
                     is_current=current.strip() == "*",
+                    checkout_path=Path(checkout) if checkout else None,
                 )
             )
         return branches
@@ -144,7 +150,8 @@ _JJ_TEMPLATE = (
     'normal_target.change_id().shortest(8) ++ "\\x00" ++ '
     'normal_target.description().first_line() ++ "\\x00" ++ '
     'normal_target.committer().timestamp().format("%s") ++ "\\x00" ++ '
-    'if(normal_target.current_working_copy(), "1", "0"), '
+    # "current" in jj: the bookmark sits on the working-copy commit or its parent
+    'if(normal_target.contained_in("@ | @-"), "1", "0"), '
     '"\\x00(conflicted)\\x000\\x000") ++ "\\n")'
 )
 

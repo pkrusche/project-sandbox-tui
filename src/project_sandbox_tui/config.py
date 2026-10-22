@@ -10,9 +10,11 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import shlex
 import tomllib
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -98,12 +100,15 @@ class Config:
     # ---------------------------------------------------------- helpers
 
     def sandbox_command(self) -> list[str]:
-        cmd = shlex.split(self.sandbox.command)
+        try:
+            cmd = shlex.split(self.sandbox.command)
+        except ValueError as exc:
+            raise ConfigError(f"sandbox.command: {exc}") from exc
         if not cmd:
             raise ConfigError("sandbox.command must not be empty")
         return cmd
 
-    def validate(self, repo: Path | None = None) -> None:
+    def validate(self) -> None:
         d, p, s = self.defaults, self.project, self.sandbox
         if d.agent not in AGENTS:
             raise ConfigError(f"defaults.agent must be one of {', '.join(AGENTS)}")
@@ -113,6 +118,18 @@ class Config:
             raise ConfigError("defaults.timeout must be >= 0")
         if s.runtime not in RUNTIMES:
             raise ConfigError(f"sandbox.runtime must be one of {', '.join(RUNTIMES)}")
+        if s.cpus < 0:
+            raise ConfigError("sandbox.cpus must be >= 0")
+        self.sandbox_command()
+        for key in ("notify_command", "terminal_command", "editor_command"):
+            command = getattr(self.ui, key)
+            if command:
+                try:
+                    tokens = shlex.split(command)
+                except ValueError as exc:
+                    raise ConfigError(f"ui.{key}: {exc}") from exc
+                if not tokens:
+                    raise ConfigError(f"ui.{key} must contain a command")
         if p.build not in GENERATED_BUILDS:
             raise ConfigError(
                 "project.build must be empty or one of python-uv, rust-cargo, node-npm"
@@ -129,8 +146,8 @@ class Config:
         for agent in self.models:
             if agent not in AGENTS:
                 raise ConfigError(f"[models] has unknown agent {agent!r}")
-        if self.ui.refresh_seconds <= 0:
-            raise ConfigError("ui.refresh_seconds must be > 0")
+        if not math.isfinite(self.ui.refresh_seconds) or self.ui.refresh_seconds <= 0:
+            raise ConfigError("ui.refresh_seconds must be finite and > 0")
 
     def has_image_source(self) -> bool:
         p = self.project
@@ -187,7 +204,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             return tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
+    except (OSError, ValueError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
 
 
@@ -252,12 +269,14 @@ def load(repo: Path, global_path: Path | None = None) -> Config:
     merged: dict[str, Any] = {}
     sources: list[Path] = []
     for path in (gpath, ppath):
+        if path == gpath and global_path is not None and not path.is_file():
+            raise ConfigError(f"{path}: config file does not exist or is not a file")
         if path.is_file():
             merged = deep_merge(merged, _read_toml(path))
             sources.append(path)
     cfg = from_dict(merged)
     cfg.sources = sources
-    cfg.validate(repo)
+    cfg.validate()
     return cfg
 
 
@@ -305,7 +324,7 @@ class LastUsed:
         path = repo_state_dir(repo) / "last_used.json"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
+            tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
             tmp.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
             tmp.replace(path)
         except OSError:

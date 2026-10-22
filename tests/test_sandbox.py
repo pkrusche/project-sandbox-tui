@@ -156,3 +156,55 @@ def test_session_matching(tmp_path: Path) -> None:
 def test_notification_template_is_injection_safe() -> None:
     argv = notification_argv("t; rm -rf /", "msg $(x)", "notifier --title {title} -m {message}")
     assert argv == ["notifier", "--title", "t; rm -rf /", "-m", "msg $(x)"]
+
+
+def test_main_checkout_decision(git_repo: Path, tmp_path: Path) -> None:
+    from project_sandbox_tui.sandbox import CheckoutConflict, uses_main_checkout
+    from project_sandbox_tui.vcs import detect
+    from tests.conftest import run
+
+    def branch(name: str):  # type: ignore[no-untyped-def]
+        return next(b for b in detect(git_repo).list_branches() if b.name == name)
+
+    assert uses_main_checkout(git_repo, branch("main"), None)  # checked out in the repo
+    assert not uses_main_checkout(git_repo, branch("feature/x"), None)  # not checked out
+
+    # checked out in project-sandbox's own worktree → reuse it via --branch
+    ps_wt = workspace_path(git_repo, "git", "feature/x", None)
+    run("git", "worktree", "add", "-q", str(ps_wt), "feature/x", cwd=git_repo)
+    assert not uses_main_checkout(git_repo, branch("feature/x"), None)
+
+    # checked out in some other worktree → conflict
+    run("git", "branch", "other", cwd=git_repo)
+    run("git", "worktree", "add", "-q", str(tmp_path / "mine"), "other", cwd=git_repo)
+    with pytest.raises(CheckoutConflict, match="another worktree"):
+        uses_main_checkout(git_repo, branch("other"), None)
+
+
+def test_main_checkout_argv_omits_worktree_flags(tmp_path: Path) -> None:
+    spec = LaunchSpec(branch="main", agent="claude", main_checkout=True)
+    argv = build_argv(make_cfg(), tmp_path, spec)
+    for flag in ("--branch", "--worktree-dir", "--keep-workspace"):
+        assert flag not in argv
+    assert LaunchSpec.from_dict(spec.to_dict()).main_checkout
+
+
+def test_main_checkout_sessions_map_to_current_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "s.json").write_text(
+        json.dumps(
+            {
+                "session_id": "s",
+                "status": "running",
+                "pid": os.getpid(),
+                "workspace_path": str(repo),
+            }
+        )
+    )
+    records = read_sessions(sessions)
+    assert running_by_branch(records, repo, "git", ["main"], None) == {}
+    assert list(running_by_branch(records, repo, "git", ["main"], None, main_branch="main")) == [
+        "main"
+    ]

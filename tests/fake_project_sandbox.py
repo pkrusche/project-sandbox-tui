@@ -3,7 +3,8 @@
 
 Understands just enough of the real CLI: the positional repo, --branch,
 --worktree-dir, --agent, --prompt-text, --log, --json-summary. Behaviour is
-driven by the prompt text: ``sleep:<seconds>`` and ``exit:<code>`` tokens.
+driven by the prompt text: ``sleep:<seconds>``, ``exit:<code>`` and
+``ignore-signals`` (ignore SIGINT/SIGTERM) tokens.
 Writes a session record the same way project-sandbox does, so the TUI's
 session matching is exercised too.
 """
@@ -15,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import sys
 import time
 from datetime import UTC, datetime
@@ -48,6 +50,9 @@ def main() -> int:
     prompt = args.prompt_text or ""
     sleep = float(m.group(1)) if (m := re.search(r"sleep:([\d.]+)", prompt)) else 0.0
     code = int(m.group(1)) if (m := re.search(r"exit:(\d+)", prompt)) else 0
+    if "ignore-signals" in prompt:  # simulate a process that won't stop politely
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
     state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
     sessions = Path(state) / "project-sandbox" / "sessions"

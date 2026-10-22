@@ -78,3 +78,41 @@ def test_workspace_path_matches_project_sandbox(tmp_path: Path) -> None:
     )
     assert vcs.workspace_path(repo, "jj", "plain", None) == tmp_path / "proj-workspaces" / "plain"
     assert vcs.workspace_path(repo, "git", "plain", tmp_path / "wt") == tmp_path / "wt" / "plain"
+
+
+def test_git_reports_checkout_paths(git_repo: Path, tmp_path: Path) -> None:
+    from tests.conftest import run
+
+    wt = tmp_path / "elsewhere"
+    run("git", "worktree", "add", "-q", str(wt), "feature/x", cwd=git_repo)
+    by_name = {b.name: b for b in vcs.detect(git_repo).list_branches()}
+    assert by_name["main"].checkout_path is not None
+    assert by_name["main"].checkout_path.resolve() == git_repo.resolve()
+    assert by_name["feature/x"].checkout_path is not None
+    assert by_name["feature/x"].checkout_path.resolve() == wt.resolve()
+
+
+def test_jj_marks_bookmark_under_working_copy_as_current(jj_repo: Path) -> None:
+    from tests.conftest import run
+
+    backend = vcs.detect(jj_repo)
+    assert {b.name: b.is_current for b in backend.list_branches()} == {"main": True}  # main is @-
+    (jj_repo / "b.txt").write_text("b\n")
+    run("jj", "commit", "--quiet", "-m", "second", cwd=jj_repo)  # main is now @--
+    backend.create_branch("tip", "@-")
+    by_name = {b.name: b for b in backend.list_branches()}
+    assert not by_name["main"].is_current
+    assert by_name["tip"].is_current
+    assert all(b.checkout_path is None for b in by_name.values())
+
+
+def test_branch_names_are_unambiguous_with_matching_tags(git_repo: Path) -> None:
+    from tests.conftest import run
+
+    run("git", "tag", "main", cwd=git_repo)
+    assert {b.name for b in vcs.detect(git_repo).list_branches()} == {"main", "feature/x"}
+
+
+@pytest.mark.parametrize("name", ["topic/.hidden", "topic.lock/child", "a\x00b", "a\x7fb"])
+def test_invalid_branch_components(name: str) -> None:
+    assert vcs.validate_branch_name(name)

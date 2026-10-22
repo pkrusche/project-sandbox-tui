@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from project_sandbox_tui.config import Config, ConfigError
-from project_sandbox_tui.vcs import Kind, workspace_path
+from project_sandbox_tui.vcs import Branch, Kind, workspace_path
 
 Mode = Literal["interactive", "background"]
 
@@ -30,6 +30,10 @@ class LaunchSpec:
     mode: Mode = "interactive"
     prompt_text: str = ""
     timeout: int = 0  # seconds, 0 = none
+    # Run in the repository's own checkout instead of a worktree (git only):
+    # used when the branch is the one checked out there, which git cannot
+    # check out a second time.
+    main_checkout: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +44,7 @@ class LaunchSpec:
             "mode": self.mode,
             "prompt_text": self.prompt_text,
             "timeout": self.timeout,
+            "main_checkout": self.main_checkout,
         }
 
     @classmethod
@@ -52,6 +57,7 @@ class LaunchSpec:
             mode="background" if raw.get("mode") == "background" else "interactive",
             prompt_text=str(raw.get("prompt_text", "")),
             timeout=int(raw.get("timeout") or 0),
+            main_checkout=bool(raw.get("main_checkout")),
         )
 
     def label(self) -> str:
@@ -75,6 +81,31 @@ class RunPaths:
     def transcript(self) -> Path:
         # project-sandbox writes a Markdown transcript beside the --log file.
         return self.log.with_suffix(".md")
+
+
+class CheckoutConflict(RuntimeError):
+    """The branch is checked out somewhere project-sandbox cannot use."""
+
+
+def uses_main_checkout(repo: Path, branch: Branch, worktree_dir: Path | None) -> bool:
+    """Decide whether a session on ``branch`` must run in the main checkout.
+
+    git refuses to check a branch out twice, so ``--branch`` fails for the
+    branch checked out in the repository itself; that one runs without
+    ``--branch``. A branch checked out in project-sandbox's own worktree is
+    reused as usual. Any other worktree is a conflict the user has to resolve.
+    """
+    if branch.kind != "git" or branch.checkout_path is None:
+        return False
+    where = branch.checkout_path.resolve()
+    if where == repo.resolve():
+        return True
+    if where == workspace_path(repo, "git", branch.name, worktree_dir).resolve():
+        return False
+    raise CheckoutConflict(
+        f"{branch.name} is checked out in another worktree ({where}); "
+        "switch that worktree to a different branch first"
+    )
 
 
 def build_argv(
@@ -116,12 +147,13 @@ def build_argv(
     if s.cpus:
         argv += ["--cpus", str(s.cpus)]
 
-    # branch / worktree
-    argv += ["--branch", spec.branch]
-    if p.worktree_dir:
-        argv += ["--worktree-dir", str(cfg.resolve_path(p.worktree_dir, repo))]
-    if p.keep_workspace:
-        argv.append("--keep-workspace")
+    # branch / worktree (project-sandbox rejects the worktree flags without --branch)
+    if not spec.main_checkout:
+        argv += ["--branch", spec.branch]
+        if p.worktree_dir:
+            argv += ["--worktree-dir", str(cfg.resolve_path(p.worktree_dir, repo))]
+        if p.keep_workspace:
+            argv.append("--keep-workspace")
 
     # agent
     argv += ["--agent", spec.agent]
@@ -190,6 +222,8 @@ def pid_alive(pid: object) -> bool:
         return False
     except PermissionError:
         return True
+    except OverflowError:
+        return False
     return True
 
 
@@ -203,6 +237,7 @@ class SessionRecord:
     status: str
     pid: int | None
     started_at: str
+    runtime: str = ""
 
     @property
     def running(self) -> bool:
@@ -243,6 +278,7 @@ def read_sessions(directory: Path | None = None) -> list[SessionRecord]:
                 status=status,
                 pid=pid,
                 started_at=str(raw.get("started_at") or ""),
+                runtime=str(raw.get("runtime") or ""),
             )
         )
     return records
@@ -254,11 +290,18 @@ def running_by_branch(
     kind: Kind,
     branches: list[str],
     worktree_dir: Path | None,
+    main_branch: str | None = None,
 ) -> dict[str, SessionRecord]:
-    """Map branch name → running session, matching on the worktree path."""
+    """Map branch name → running session, matching on the worktree path.
+
+    A session whose workspace is the repository itself (started without
+    ``--branch``) belongs to ``main_branch``, the branch checked out there.
+    """
     by_path = {
         str(workspace_path(repo, kind, name, worktree_dir).resolve()): name for name in branches
     }
+    if main_branch is not None:
+        by_path[str(repo.resolve())] = main_branch
     out: dict[str, SessionRecord] = {}
     for rec in records:
         if not rec.running or not rec.workspace_path:

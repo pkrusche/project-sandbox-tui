@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 from pathlib import Path
 
 from rich.text import Text
@@ -27,8 +28,8 @@ class LogScreen(Screen[None]):
         Binding("tab", "next_file", "next file", show=False),
         Binding("j", "scroll(1)", show=False),
         Binding("k", "scroll(-1)", show=False),
-        Binding("ctrl+d", "scroll(15)", show=False),
-        Binding("ctrl+u", "scroll(-15)", show=False),
+        Binding("ctrl+d", "page(1)", show=False),
+        Binding("ctrl+u", "page(-1)", show=False),
         Binding("G", "bottom", show=False),
         Binding("g", "g_prefix", show=False),
         Binding("f", "toggle_follow", show=False),
@@ -44,10 +45,12 @@ class LogScreen(Screen[None]):
         self._follow = True
         self._g_pending = False
         self._missing = False
+        self._file_id: tuple[int, int] | None = None
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def compose(self) -> ComposeResult:
         yield Static("", id="log-title")
-        yield Log(highlight=False, auto_scroll=True)
+        yield Log(highlight=False, auto_scroll=True, max_lines=10_000)
         yield Static(
             "q back · tab next file · j/k scroll · gg/G top/bottom · f follow", id="log-hint"
         )
@@ -77,6 +80,8 @@ class LogScreen(Screen[None]):
         log = self.query_one(Log)
         log.clear()
         self._pos = 0
+        self._file_id = None
+        self._decoder.reset()
         path = self.current
         self._missing = path is not None and not path.exists()
         self._title()
@@ -86,7 +91,12 @@ class LogScreen(Screen[None]):
         if not path.exists():
             log.write_line(f"{path} has not been written yet.")
             return
-        size = path.stat().st_size
+        try:
+            stat = path.stat()
+        except OSError:
+            return
+        self._file_id = (stat.st_dev, stat.st_ino)
+        size = stat.st_size
         if size > INITIAL_TAIL_BYTES:
             self._pos = size - INITIAL_TAIL_BYTES
             log.write_line(f"… showing last {INITIAL_TAIL_BYTES // 1024} KiB …")
@@ -98,16 +108,21 @@ class LogScreen(Screen[None]):
             return
         try:
             with path.open("rb") as fh:
+                stat = path.stat()
+                if (stat.st_dev, stat.st_ino) != self._file_id or stat.st_size < self._pos:
+                    self._load()
+                    return
                 fh.seek(self._pos)
-                chunk = fh.read()
+                chunk = fh.read(INITIAL_TAIL_BYTES)
         except OSError:
+            self._missing = True
             return
         if not chunk:
             return
         self._pos += len(chunk)
         log = self.query_one(Log)
         log.auto_scroll = self._follow
-        log.write(chunk.decode("utf-8", errors="replace"))
+        log.write(self._decoder.decode(chunk))
 
     def _poll(self) -> None:
         path = self.current
@@ -128,6 +143,9 @@ class LogScreen(Screen[None]):
         if lines < 0:
             self._follow = False
             self._title()
+
+    def action_page(self, direction: int) -> None:
+        self.action_scroll(direction * max(1, self.query_one(Log).size.height // 2))
 
     def action_bottom(self) -> None:
         self.query_one(Log).scroll_end(animate=False)

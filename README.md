@@ -48,16 +48,18 @@ sbx-tui                  # the real thing
 | `/` | filter branches (`enter` keeps it, `esc` clears) |
 | `i` | interactive session on the branch (the TUI suspends; you're back when the agent exits) |
 | `r` | unsupervised run: prompt + optional timeout, runs in the background |
-| `x` | stop a background run (SIGINT for a clean teardown; press again to force-kill and stop the container) |
+| `x` | stop a background run: SIGINT for a clean teardown; each further press escalates to SIGTERM, then SIGKILL plus `container stop` |
 | `l` / `enter` | log view: transcript (`.md`), agent log, captured output (`tab` cycles, `f` toggles follow) |
 | `n` | new branch / bookmark (name + start revision) |
 | `o` | open the branch's worktree in your editor |
 | `P` | preview the full `project-sandbox` command |
-| `c` | clear a finished status · `R` refresh · `?` help · `q` quit |
+| `c` · `C` | clear a finished status · force-forget a record stuck as running (signals nothing) |
+| `R` · `?` · `q` | refresh · help · quit |
 
 In the launch form: `tab` (or `j`/`k` on choice fields) moves between fields,
 `h`/`l` cycles agent and effort, `enter` launches an interactive session,
-`ctrl+s` launches an unsupervised run, `esc` cancels.
+`ctrl+s` launches an unsupervised run (there `enter` just moves to the next
+field), `esc` cancels.
 
 ## One sandbox per branch
 
@@ -67,7 +69,15 @@ A branch counts as busy when either
   `~/.local/state/project-sandbox-tui/<repo>-<hash>/jobs/`, so a second TUI
   instance or a restarted one sees them), or
 - project-sandbox has a `running` session record whose workspace is that
-  branch's worktree — this also catches sessions you started from a shell.
+  branch's worktree, or the repository itself for the branch checked out
+  there. This also catches sessions you started from a shell, as long as they
+  used `--branch` or ran in the main checkout.
+
+Sessions normally run in a project-sandbox worktree (`--branch`). git cannot
+check a branch out twice, so the branch checked out in your main checkout runs
+there instead, without `--branch` (the launch form says "in the main
+checkout"). A branch checked out in some other worktree is refused until you
+switch that worktree away from it. jj workspaces have no such restriction.
 
 Background runs are detached from the TUI: quitting leaves them running, and the
 next start re-adopts them and notifies about any that finished meanwhile.

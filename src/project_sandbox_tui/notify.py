@@ -37,10 +37,10 @@ def notification_argv(title: str, message: str, command: str = "") -> list[str] 
 
 
 def send(title: str, message: str, command: str = "") -> bool:
-    argv = notification_argv(title, message, command)
-    if argv is None:
-        return False
     try:
+        argv = notification_argv(title, message, command)
+        if not argv:
+            return False
         subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
@@ -48,6 +48,6 @@ def send(title: str, message: str, command: str = "") -> bool:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    except OSError:
+    except (OSError, ValueError):
         return False
     return True

@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Minimal vim/ranger-style TUI for running project-sandbox sessions per branch"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
 authors = [{ name = "Peter Krusche" }]
 dependencies = [
     "textual>=1.0",

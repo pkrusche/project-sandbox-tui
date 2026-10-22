@@ -30,12 +30,14 @@ from project_sandbox_tui.config import (
 )
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.sandbox import (
+    CheckoutConflict,
     LaunchSpec,
     Mode,
     SessionRecord,
     build_argv,
     read_sessions,
     running_by_branch,
+    uses_main_checkout,
 )
 from project_sandbox_tui.screens.dialogs import HelpScreen, MessageScreen, NewBranchScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
@@ -112,8 +114,8 @@ class Row:
 MAIN_BINDINGS: list[BindingType] = [
     Binding("j", "app.cursor(1)", show=False),
     Binding("k", "app.cursor(-1)", show=False),
-    Binding("ctrl+d", "app.cursor(10)", show=False),
-    Binding("ctrl+u", "app.cursor(-10)", show=False),
+    Binding("ctrl+d", "app.page(1)", show=False),
+    Binding("ctrl+u", "app.page(-1)", show=False),
     Binding("G", "app.bottom", show=False),
     Binding("g", "app.g_prefix", show=False),
     Binding("slash", "app.filter", show=False),
@@ -126,6 +128,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("P", "app.preview", show=False),
     Binding("x", "app.stop", show=False),
     Binding("c", "app.clear_status", show=False),
+    Binding("C", "app.clear_status(True)", show=False),
     Binding("R", "app.refresh", show=False),
     Binding("question_mark", "app.help", show=False),
     Binding("q", "app.quit", show=False),
@@ -156,9 +159,9 @@ class SandboxTUI(App[None]):
     #header { height: 1; background: $panel; padding: 0 1; }
     MainScreen DataTable { height: 1fr; border: none; scrollbar-size-vertical: 1; }
     MainScreen DataTable > .datatable--header { background: $background; color: $text-muted; }
-    #filter { dock: bottom; height: 1; border: none; padding: 0 1; display: none; }
+    #filter { height: 1; border: none; padding: 0 1; display: none; }
     #filter.visible { display: block; }
-    #footer { dock: bottom; height: 1; color: $text-disabled; padding: 0 1; }
+    #footer { height: 1; color: $text-disabled; padding: 0 1; }
     """
 
     def __init__(
@@ -242,12 +245,15 @@ class SandboxTUI(App[None]):
             self.backend.kind,
             [b.name for b in self.branches],
             self.worktree_dir,
+            main_branch=self.main_checkout_branch(),
         )
         for job in self.jobs.refresh(self.sessions):
             self._announce(job)
         self._render_table()
 
     def _announce(self, job: JobRecord) -> None:
+        if not self.jobs.mark_notified(job):
+            return
         title = f"sbx-tui: {job.branch} {job.status.replace('_', ' ')}"
         detail = job.spec.label()
         if job.exit_code is not None:
@@ -261,7 +267,6 @@ class SandboxTUI(App[None]):
         notify.send(title, detail, self.cfg.ui.notify_command)
         if self.cfg.ui.bell:
             self.bell()
-        self.jobs.mark_notified(job)
 
     def visible_rows(self) -> list[Row]:
         rows = []
@@ -302,6 +307,26 @@ class SandboxTUI(App[None]):
         header.append(f"   {stats}", style="dim")
         self.main.query_one("#header", Static).update(header)
 
+    def main_checkout_branch(self) -> str | None:
+        """The git branch checked out in the repository itself, if any."""
+        if self.backend.kind != "git":
+            return None
+        repo = self.repo.resolve()
+        for b in self.branches:
+            if b.checkout_path is not None and b.checkout_path.resolve() == repo:
+                return b.name
+        return None
+
+    def branch(self, name: str) -> Branch | None:
+        return next((b for b in self.branches if b.name == name), None)
+
+    def _main_checkout(self, name: str) -> bool:
+        """Whether a session on ``name`` runs in the main checkout (raises on conflict)."""
+        branch = self.branch(name)
+        if branch is None:
+            return False
+        return uses_main_checkout(self.repo, branch, self.worktree_dir)
+
     def selected_branch_name(self) -> str | None:
         table = self.table
         if table.row_count == 0:
@@ -312,11 +337,6 @@ class SandboxTUI(App[None]):
             return None
         return str(key.value) if key.value is not None else None
 
-    def select_branch(self, name: str) -> None:
-        names = [r.branch.name for r in self.visible_rows()]
-        if name in names:
-            self.table.move_cursor(row=names.index(name), animate=False)
-
     # ------------------------------------------------------------ navigation
 
     def action_cursor(self, step: int) -> None:
@@ -324,6 +344,9 @@ class SandboxTUI(App[None]):
         if table.row_count:
             row = min(max(table.cursor_row + step, 0), table.row_count - 1)
             table.move_cursor(row=row, animate=False)
+
+    def action_page(self, direction: int) -> None:
+        self.action_cursor(direction * max(1, self.table.size.height // 2))
 
     def action_bottom(self) -> None:
         table = self.table
@@ -396,24 +419,45 @@ class SandboxTUI(App[None]):
         if reason:
             self.notify(reason, severity="warning")
             return
+        try:
+            main_checkout = self._main_checkout(name)
+        except CheckoutConflict as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
         last = LastUsed.load(self.repo)
         defaults = resolve_launch_defaults(self.cfg, last)
         previous = self.jobs.jobs.get(name)
         prompt = previous.spec.prompt_text if previous is not None else ""
-        screen = LaunchScreen(name, mode, self.cfg, last, defaults, self._form_preview, prompt)
+        screen = LaunchScreen(
+            name,
+            mode,
+            self.cfg,
+            last,
+            defaults,
+            self._form_preview,
+            prompt,
+            main_checkout=main_checkout,
+        )
         self.push_screen(screen, self._launch_chosen)
 
     def _launch_chosen(self, spec: LaunchSpec | None) -> None:
         if spec is None:
             return
-        remember(
-            self.repo,
-            spec.agent,
-            spec.model,
-            spec.effort,
-            spec.timeout if spec.mode == "background" else None,
-        )
         try:
+            # The checkout and external sessions may have changed while the
+            # launch form was open. Recheck immediately before starting.
+            self.branches = sort_branches(self.backend.list_branches())
+            if self.branch(spec.branch) is None:
+                raise VcsError(f"{spec.branch} no longer exists")
+            spec.main_checkout = self._main_checkout(spec.branch)
+            self.sessions = running_by_branch(
+                read_sessions(self.sessions_dir),
+                self.repo,
+                self.backend.kind,
+                [b.name for b in self.branches],
+                self.worktree_dir,
+                main_branch=self.main_checkout_branch(),
+            )
             if spec.mode == "background":
                 job = self.jobs.start_background(spec, self.sessions)
                 self.notify(f"{spec.branch}: started {spec.label()} (pid {job.pid})")
@@ -421,10 +465,19 @@ class SandboxTUI(App[None]):
                 self._launch_external(spec)
             else:
                 self._launch_interactive(spec)
-        except (BusyError, ConfigError) as exc:
+        except (BusyError, ConfigError, CheckoutConflict, VcsError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
         except OSError as exc:
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
+        else:
+            # Only a launch that actually started becomes the new default.
+            remember(
+                self.repo,
+                spec.agent,
+                spec.model,
+                spec.effort,
+                spec.timeout if spec.mode == "background" else None,
+            )
         self.call_later(self.refresh_data)
 
     def _launch_interactive(self, spec: LaunchSpec) -> None:
@@ -456,15 +509,19 @@ class SandboxTUI(App[None]):
             .replace("{repo}", str(self.repo))
             for t in shlex.split(self.cfg.ui.terminal_command)
         ]
-        subprocess.Popen(
-            tokens,
-            cwd=self.repo,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        self.jobs.record_external(spec, argv)
+        job = self.jobs.record_external(spec, argv, self.sessions)
+        try:
+            subprocess.Popen(
+                tokens,
+                cwd=self.repo,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            self.jobs.discard(job)
+            raise
         self.notify(f"{spec.branch}: opened {spec.label()} in a new terminal")
 
     def action_new_branch(self) -> None:
@@ -508,7 +565,9 @@ class SandboxTUI(App[None]):
         if name is None:
             return
         path = workspace_path(self.repo, self.backend.kind, name, self.worktree_dir)
-        branch = next((b for b in self.branches if b.name == name), None)
+        branch = self.branch(name)
+        if branch is not None and branch.checkout_path is not None:
+            path = branch.checkout_path  # git: wherever the branch is checked out
         if not path.exists():
             if branch is not None and branch.is_current:
                 path = self.repo
@@ -537,18 +596,27 @@ class SandboxTUI(App[None]):
                 self.notify(f"editor failed: {exc}", severity="error")
             return
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-        with self.suspend():
-            subprocess.call([*shlex.split(editor), str(path)], cwd=path)
+        try:
+            with self.suspend():
+                subprocess.call([*shlex.split(editor), str(path)], cwd=path)
+        except (OSError, ValueError) as exc:
+            self.notify(f"editor failed: {exc}", severity="error")
 
     def action_preview(self) -> None:
         name = self._require_branch()
         if name is None:
             return
         d = resolve_launch_defaults(self.cfg, LastUsed.load(self.repo))
-        spec = LaunchSpec(branch=name, agent=d.agent, model=d.model, effort=d.effort)
         try:
+            spec = LaunchSpec(
+                branch=name,
+                agent=d.agent,
+                model=d.model,
+                effort=d.effort,
+                main_checkout=self._main_checkout(name),
+            )
             body = self._spec_preview(spec)
-        except ConfigError as exc:
+        except (ConfigError, CheckoutConflict) as exc:
             body = f"! {exc}"
         self.push_screen(MessageScreen(f"interactive command for {name}", body))
 
@@ -558,12 +626,17 @@ class SandboxTUI(App[None]):
             return
         self.notify(self.jobs.stop(name, self.sessions))
 
-    def action_clear_status(self) -> None:
+    def action_clear_status(self, force: bool = False) -> None:
         name = self._require_branch()
         if name is None:
             return
-        if not self.jobs.clear(name):
-            self.notify(f"{name} is still running", severity="warning")
+        if not self.jobs.clear(name, force=force):
+            self.notify(
+                f"{name} is still running (C forgets the record without stopping it)",
+                severity="warning",
+            )
+        elif force:
+            self.notify(f"{name}: record cleared (no process was signalled)")
         self._render_table()
 
     async def action_refresh(self) -> None:
