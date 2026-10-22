@@ -95,6 +95,8 @@ class PromptArea(TextArea):
     - ``ctrl+p`` / ``ctrl+n`` walk back / forward through entries that start
       with the text typed before browsing began (zsh history-beginning-search).
     - ``ctrl+r`` asks the screen to open the history search.
+    - ``ctrl+l`` clears the prompt (e.g. one pre-filled from the last run);
+      ``ctrl+z`` brings it back.
     """
 
     BINDINGS = [
@@ -102,6 +104,7 @@ class PromptArea(TextArea):
         Binding("ctrl+n", "history(-1)", "newer prompt", show=False),
         Binding("ctrl+f", "accept_suggestion", "accept suggestion", show=False),
         Binding("ctrl+r", "search_history", "search history", show=False),
+        Binding("ctrl+l", "clear_prompt", "clear prompt", show=False),
     ]
 
     class SearchRequested(Message):
@@ -186,6 +189,11 @@ class PromptArea(TextArea):
     def action_accept_suggestion(self) -> None:
         if self.suggestion:
             self.insert(self.suggestion)
+
+    def action_clear_prompt(self) -> None:
+        self._browse = None  # also ends a history walk
+        self._browse_index = -1
+        self.clear()  # an edit, so ctrl+z undoes it
 
     def action_search_history(self) -> None:
         self.post_message(self.SearchRequested(self))

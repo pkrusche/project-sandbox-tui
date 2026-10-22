@@ -52,6 +52,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen .field { height: 1; }
     LaunchScreen .field-label { width: 10; color: $text-muted; padding: 0 0 0 1; }
     LaunchScreen .field Input { width: 1fr; padding: 0; }
+    LaunchScreen .field-value { width: 1fr; height: 1; }
     LaunchScreen TextArea { height: 8; border: none; margin: 0; }
     LaunchScreen TextArea:focus { background: $boost; border: none; }
     LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
@@ -119,12 +120,13 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 yield CycleField("action", octopus_mod.OPERATIONS, "merge", id="operation")
                 with Horizontal(classes="field"):
                     yield Static("result", classes="field-label")
-                    yield Input(value=self.branch, id="result")
+                    yield Input(value=self.branch, select_on_focus=False, id="result")
                 with Horizontal(classes="field"):
                     yield Static("base", classes="field-label")
                     yield Input(
                         value=self.octopus.default_base,
                         placeholder="rebase onto (rebase only)",
+                        select_on_focus=False,
                         id="base",
                     )
             else:
@@ -134,10 +136,18 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                         value=self.branch,
                         placeholder="select an existing branch or enter a new name",
                         suggester=SuggestFromList(self.branches, case_sensitive=True),
+                        select_on_focus=False,
                         id="branch",
                     )
+                with Horizontal(classes="field"):
+                    yield Static("base", classes="field-label")
+                    yield Static(
+                        Text(self.branch_label, overflow="ellipsis"),
+                        classes="field-value",
+                        id="start-branch",
+                    )
                 yield Static(
-                    "existing name selects · new name creates from " + self.branch_label,
+                    "existing name selects it · new name creates it from base",
                     classes="prompt-hint",
                 )
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
@@ -147,6 +157,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                     value=self.defaults.model,
                     placeholder="agent default",
                     suggester=self._suggester(self.defaults.agent),
+                    select_on_focus=False,
                     id="model",
                 )
             yield CycleField("effort", ("", *EFFORTS), self.defaults.effort, id="effort")
@@ -157,6 +168,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                         value=str(self.defaults.timeout or ""),
                         restrict=r"[0-9]*",
                         placeholder="none (seconds)",
+                        select_on_focus=False,
                         id="timeout",
                     )
                 yield Static("prompt", classes="row-label")
@@ -179,7 +191,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             if modifier == "ctrl":
                 hint = "ctrl+enter launch"
                 if isinstance(self.focused, PromptArea):
-                    hint += " · ctrl+p/n history · ctrl+r search · ctrl+f complete"
+                    hint += " · ctrl+p/n history · ctrl+r search · ctrl+f complete · ctrl+l clear"
             elif modifier == "shift":
                 hint = "shift+tab previous field"
             else:
@@ -252,13 +264,13 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         area = self.query_one("#prompt", PromptArea)
         count = len(self.prompt_history.entries) if self.prompt_history else 0
         if not count:
-            hint = "no prompt history yet"
+            hint = "no prompt history yet · ctrl+l clear"
         elif (pos := area.browse_position) is not None:
             hint = f"history {pos[0]}/{pos[1]} · ctrl+p older · ctrl+n newer · ctrl+r search"
         elif area.suggestion:
             hint = "→ or ctrl+f: complete from history · ctrl+p/n browse · ctrl+r search"
         else:
-            hint = f"{count} prompts in history · ctrl+p/n browse · ctrl+r search"
+            hint = f"{count} prompts in history · ctrl+p/n browse · ctrl+r search · ctrl+l clear"
         self.query_one("#prompt-hint", Static).update(hint)
 
     def _suggester(self, agent: str) -> SuggestFromList | None:

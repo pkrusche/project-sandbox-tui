@@ -85,6 +85,7 @@ Prompts of unsupervised runs that started are remembered per repository
 | `→` (at the end) · `ctrl+f` | take the suggestion |
 | `ctrl+p` · `ctrl+n` | step to older / newer prompts starting with what you had typed; past the newest you're back to your text |
 | `ctrl+r` | search the history: type words to filter (all must match, any case), `↑`/`↓` choose, `enter` use |
+| `ctrl+l` | clear the prompt (it starts with the branch's previous prompt); `ctrl+z` undoes |
 
 ## One sandbox per branch
 
