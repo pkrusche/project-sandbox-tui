@@ -296,7 +296,7 @@ Each phase ends with tests passing and a usable increment.
 ## 8. Implementation status (2026-10-22)
 
 Phases 0–3 are implemented, plus parts of phase 4 (`o` open worktree, `terminal_command`,
-`[models]` suggestions). 104 tests pass: CLI, config, prompt history, git and jj VCS, argv golden tests, the
+`[models]` suggestions). 114 tests pass: CLI, config, prompt history, git and jj VCS, argv golden tests, the
 job lifecycle against `tests/fake_project_sandbox.py`, and Textual Pilot UI tests.
 Sections 2–5 above describe the code as built, plus the additions below.
 
@@ -353,6 +353,15 @@ Changes from the original plan, made after reading the project-sandbox source:
   `allow_github` and `no_firewall`.
 - **Models**: `[models]` only feeds autocomplete. A blank model means the agent's own default.
 - **`--dry-run`** on `sbx-tui` adds `--dry-run` to every project-sandbox call.
+
+Interactive-session fix (2026-10-22): after an interactive session the TUI ignored keys.
+The Enter that submitted the launch form bubbled up to the App after the form was popped
+and fired the branch list's Enter binding, so the session ended on an (empty) log screen.
+The form now consumes that key, launches start via `call_after_refresh` once the form is
+gone, `App.suspend()` is wrapped so an exception (e.g. project-sandbox missing) cannot skip
+the resume, and `terminal.py` restores termios and O_NONBLOCK if the agent's
+`container run -it` leaves the terminal raw or non-blocking. `tests/test_pty_session.py`
+drives the real TUI in a pseudo-terminal to cover this.
 
 Known limitations / next steps:
 

@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -21,7 +22,7 @@ from textual.notifications import SeverityLevel
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
-from project_sandbox_tui import notify
+from project_sandbox_tui import notify, terminal
 from project_sandbox_tui.config import (
     Config,
     ConfigError,
@@ -521,6 +522,12 @@ class SandboxTUI(App[None]):
     def _launch_chosen(self, spec: LaunchSpec | None) -> None:
         if spec is None:
             return
+        # Start only once the form is gone and its key event is fully processed:
+        # dismiss() runs this callback before the screen has been popped, and an
+        # interactive session blocks the event loop until the agent exits.
+        self.call_after_refresh(self._start_launch, spec)
+
+    def _start_launch(self, spec: LaunchSpec) -> None:
         try:
             # The checkout and external sessions may have changed while the
             # launch form was open. Recheck immediately before starting.
@@ -560,19 +567,43 @@ class SandboxTUI(App[None]):
             )
         self.call_later(self.refresh_data)
 
+    @contextlib.contextmanager
+    def _suspended(self) -> Iterator[None]:
+        """``App.suspend()`` that always resumes.
+
+        Textual's ``suspend()`` has no try/finally around its ``yield``: an
+        exception in the block (e.g. project-sandbox not on PATH) skips
+        ``resume_application_mode()`` and leaves the TUI deaf to input.
+        """
+        error: BaseException | None = None
+        with self.suspend():
+            try:
+                yield
+            except BaseException as exc:  # re-raised once the app has resumed
+                error = exc
+        if error is not None:
+            raise error
+
     def _launch_interactive(self, spec: LaunchSpec) -> None:
-        with self.jobs.interactive(spec, self.sessions) as job, self.suspend():
+        with self.jobs.interactive(spec, self.sessions) as job, self._suspended():
             print(
                 f"\n── sbx-tui: {spec.label()} on {spec.branch} ──\n{shlex.join(job.argv)}\n",
                 flush=True,
             )
-            proc = subprocess.Popen(job.argv, cwd=self.repo)
-            while True:
+            # The agent's `container run -it` may die with the terminal still
+            # raw or non-blocking; put it back before prompting or resuming.
+            with terminal.preserved():
                 try:
-                    job.exit_code = proc.wait()
-                    break
-                except KeyboardInterrupt:
-                    continue  # the child got the SIGINT too; wait for it to wind down
+                    proc = subprocess.Popen(job.argv, cwd=self.repo)
+                except OSError:
+                    job.exit_code = 127  # like a shell: command could not be run
+                    raise
+                while True:
+                    try:
+                        job.exit_code = proc.wait()
+                        break
+                    except KeyboardInterrupt:
+                        continue  # the child got the SIGINT too; wait for it to wind down
             if job.exit_code:
                 with contextlib.suppress(EOFError, KeyboardInterrupt):
                     input(
@@ -677,7 +708,7 @@ class SandboxTUI(App[None]):
             return
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
         try:
-            with self.suspend():
+            with self._suspended(), terminal.preserved():
                 subprocess.call([*shlex.split(editor), str(path)], cwd=path)
         except (OSError, ValueError) as exc:
             self.notify(f"editor failed: {exc}", severity="error")

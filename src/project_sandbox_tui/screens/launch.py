@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -199,9 +199,13 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     def _submitted(self) -> None:
         self._enter()
 
-    def key_enter(self) -> None:
+    def key_enter(self, event: events.Key) -> None:
         # Inputs report Enter as Submitted; this covers the CycleFields.
         if isinstance(self.focused, CycleField):
+            # Consume the key: left to bubble, it reaches the App after the form
+            # is popped and fires the branch list's Enter binding (open log).
+            event.stop()
+            event.prevent_default()
             self._enter()
 
     def _enter(self) -> None:

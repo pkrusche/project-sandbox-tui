@@ -7,6 +7,7 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
+import pytest
 from textual.widgets import Input, TextArea
 
 from project_sandbox_tui.app import SandboxTUI
@@ -453,3 +454,33 @@ def test_cheatsheet_shown_on_start_and_toggles(
         assert app.main.query_one("#cheatsheet").region.height == 0
 
     run_app(git_repo, cfg, hidden)
+
+
+def test_enter_that_launches_interactive_session_does_not_leak(
+    git_repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the Enter that submitted the launch form used to bubble up to the
+    App after the form was popped, where it matched the branch list's Enter binding
+    and opened the log screen, so after the session the TUI looked frozen."""
+    import contextlib
+
+    from project_sandbox_tui.screens.log import LogScreen
+
+    cfg = fake_cfg()
+    cfg.sandbox.command = "true"  # a real child that exits 0 straight away
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        # headless drivers cannot suspend; the session itself is what we stub out
+        monkeypatch.setattr(app, "suspend", contextlib.nullcontext)
+        await pilot.press("i")
+        assert isinstance(app.screen, LaunchScreen)
+        await pilot.press("enter")  # launch from the agent field
+        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
+        await wait_until(pilot, lambda: not app.jobs.jobs["main"].running)
+        await pilot.pause(0.3)
+        assert app.screen is app.main, f"stray screen after session: {app.screen!r}"
+        assert not isinstance(app.screen, LogScreen)
+        await pilot.press("question_mark")  # and the list still takes keys
+        assert isinstance(app.screen, HelpScreen)
+
+    run_app(git_repo, cfg, scenario)
