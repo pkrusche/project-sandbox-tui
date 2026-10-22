@@ -153,7 +153,8 @@ def test_background_run_notifies_and_shows_log(
         await pilot.press("shift+tab", "shift+tab", "shift+tab", "shift+tab", "l")  # agent → codex
         assert form.current_spec().agent == "codex"
         assert form.current_spec().model == ""  # agent default until chosen
-        form.query_one("#model", Input).value = "gpt-x"
+        form.query_one("#model", CycleField).options.append("gpt-x")
+        form.query_one("#model", CycleField).value = "gpt-x"
         preview = str(form.query_one("#preview").render())
         assert "--agent codex" in preview and "--prompt-text" in preview
         await pilot.press("ctrl+enter")

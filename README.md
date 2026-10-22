@@ -46,7 +46,9 @@ uv sync && uv run sbx-tui --help
 ```sh
 cd ~/workspace/myproject
 sbx-tui --init           # writes ~/.config/project-sandbox-tui/config.toml (if missing)
-                         # and ./.project-sandbox-tui.toml — set the image source there
+                         # and ./.project-sandbox-tui.toml — set the image source there;
+                         # also downloads the model list if there is none yet
+sbx-tui --update-models  # refresh the model list (see Model suggestions)
 sbx-tui --print-config   # merged config + the command an interactive session would run
 sbx-tui --dry-run        # try the UI; every project-sandbox call gets --dry-run
 sbx-tui                  # the real thing
@@ -76,6 +78,37 @@ In the launch form: `tab` (or `j`/`k` on choice fields) moves between fields,
 `h`/`l` cycles agent and effort, `enter` launches an interactive session,
 `ctrl+enter` launches an unsupervised run. In that form, `enter` inserts a newline
 in the prompt or moves to the next field elsewhere. `esc` cancels.
+
+### Model suggestions
+
+The model field cycles with `h`/`l` or `←`/`→`, including an agent default option. Choices come from, in
+this order:
+
+1. `[models]` in your configuration,
+2. Claude Code's aliases (`opus`, `sonnet`, `haiku`, `opusplan`, `best`, `fable`,
+   `opus[1m]`, `sonnet[1m]`),
+3. Codex's own list, `$CODEX_HOME/models_cache.json` (default `~/.codex`), which
+   Codex keeps for your account,
+4. the downloaded list, newest models first.
+
+The TUI never goes online by itself. The list is downloaded only by
+`sbx-tui --update-models` (and by `sbx-tui --init` when there is none yet) from
+[models.dev](https://models.dev) (MIT), the catalog agentgateway also uses for
+cost tracking:
+
+```sh
+sbx-tui --update-models                  # https://models.dev/api.json
+sbx-tui --update-models ~/api.json       # a file in the same format (offline machines)
+sbx-tui --update-models https://mirror.example/api.json
+```
+
+Only `https://` URLs and local files are accepted; proxies come from
+`HTTPS_PROXY`. The download is capped at 20 MB and validated, and only recent
+(released in the last year), non-deprecated Anthropic and OpenAI models with
+reasoning and tool calling are kept, with name, release date, context size and
+API list prices, in `~/.local/state/project-sandbox-tui/models.json`. The file is
+replaced atomically, so a failed update keeps the previous list. Without a list,
+or with one older than 30 days, the launch form says so under the model field.
 
 ### Prompt history
 
@@ -280,8 +313,9 @@ refresh_seconds = 3
 bell = true
 cheatsheet = true       # key cheat-sheet on the welcome screen (H toggles)
 
-[models]                # autocomplete suggestions in the launch form
-claude = ["opus", "sonnet", "haiku"]
+[models]                # extra launch-form suggestions, listed first (see Model suggestions)
+claude = ["opus", "sonnet"]
+codex = ["gpt-5.5"]
 ```
 
 **Defaults that update:** the launch form is pre-filled with the agent, effort,

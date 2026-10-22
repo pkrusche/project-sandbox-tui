@@ -25,6 +25,7 @@ def run(*args: str, cwd: Path, env_extra: dict[str, str] | None = None) -> str:
 def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))  # never the real ~/.codex
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
     (tmp_path / "gitconfig").write_text(
         "[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n"

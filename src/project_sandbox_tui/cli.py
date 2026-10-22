@@ -11,6 +11,7 @@ from pathlib import Path
 
 from project_sandbox_tui import __version__
 from project_sandbox_tui import config as config_mod
+from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.config import ConfigError
 from project_sandbox_tui.vcs import Backend, VcsError, detect, sort_branches
 
@@ -27,7 +28,16 @@ def build_parser() -> ArgumentParser:
         "--init",
         action="store_true",
         help="write a commented .project-sandbox-tui.toml into the repo (and the global "
-        "config if missing), then exit",
+        "config if missing), download the model list if there is none yet, then exit",
+    )
+    p.add_argument(
+        "--update-models",
+        nargs="?",
+        const=models_mod.DEFAULT_SOURCE,
+        metavar="SOURCE",
+        help="download the model list for the launch form (default: "
+        f"{models_mod.DEFAULT_SOURCE}; or an https:// URL or a local file of the same "
+        "format) into the state directory, then exit",
     )
     p.add_argument(
         "--print-config",
@@ -50,6 +60,8 @@ def build_parser() -> ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.update_models is not None:  # needs no repository
+        return _update_models(args.update_models)
     target = Path(args.repo).expanduser()
     if not target.is_dir():
         # detect() walks up parent directories, so a mistyped path would
@@ -75,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"sbx-tui: could not write {path}: {exc}", file=sys.stderr)
                 return 2
             print(f"{'wrote' if written else 'exists'}: {path}")
+        if models_mod.load_store() is None:
+            # not fatal: the launch form works without it
+            _update_models(models_mod.DEFAULT_SOURCE, required=False)
         return 0
 
     try:
@@ -102,6 +117,18 @@ def main(argv: list[str] | None = None) -> int:
     from project_sandbox_tui.app import SandboxTUI  # import Textual only when needed
 
     SandboxTUI(repo, backend, cfg, config_path=args.config, dry_run=args.dry_run).run()
+    return 0
+
+
+def _update_models(source: str, *, required: bool = True) -> int:
+    try:
+        path, store = models_mod.update(source)
+    except models_mod.ModelsError as exc:
+        print(f"sbx-tui: models: {exc}", file=sys.stderr)
+        if not required:
+            print("sbx-tui: models: run `sbx-tui --update-models` later", file=sys.stderr)
+        return 2 if required else 0
+    print(f"models: {models_mod.describe(store)} -> {path}")
     return 0
 
 
