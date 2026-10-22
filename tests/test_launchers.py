@@ -114,11 +114,11 @@ def test_real_tmux_detached_session(tmp_path: Path) -> None:
         launchers.start(spec, cwd=tmp_path)
         name = launchers.session_name(tmp_path, "feat/x")
         assert subprocess.run(["tmux", "has-session", "-t", name], env=env).returncode == 0
-        deadline = time.time() + 10
-        while not marker.exists() and time.time() < deadline:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert marker.exists()
-        while time.time() < deadline:  # the session closes when the command exits
+        while time.monotonic() < deadline:  # the session closes when the command exits
             if (
                 subprocess.run(
                     ["tmux", "has-session", "-t", name], env=env, capture_output=True

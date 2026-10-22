@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -17,7 +18,8 @@ def notification_argv(title: str, message: str, command: str = "") -> list[str] 
     """
     if command:
         tokens = shlex.split(command)
-        return [t.replace("{title}", title).replace("{message}", message) for t in tokens]
+        values = {"{title}": title, "{message}": message}
+        return [re.sub(r"\{(?:title|message)\}", lambda m: values[m[0]], t) for t in tokens]
     if platform.system() == "Darwin" and shutil.which("osascript"):
         # Pass text as argv so quotes in branch names cannot break the script.
         return [

@@ -64,6 +64,10 @@ def test_jj_list_and_create(jj_repo: Path) -> None:
         ("trailing/", False),
         ("x.lock", False),
         ("a:b", False),
+        ("topic/.hidden", False),
+        ("topic.lock/child", False),
+        ("a\x00b", False),
+        ("a\x7fb", False),
     ],
 )
 def test_validate_branch_name(name: str, ok: bool) -> None:
@@ -114,11 +118,6 @@ def test_branch_names_are_unambiguous_with_matching_tags(git_repo: Path) -> None
     assert {b.name for b in vcs.detect(git_repo).list_branches()} == {"main", "feature/x"}
 
 
-@pytest.mark.parametrize("name", ["topic/.hidden", "topic.lock/child", "a\x00b", "a\x7fb"])
-def test_invalid_branch_components(name: str) -> None:
-    assert vcs.validate_branch_name(name)
-
-
 def test_jj_always_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
     backend = vcs.detect(jj_repo_no_bookmarks)
     [wc] = backend.list_branches()
@@ -129,3 +128,42 @@ def test_jj_always_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
     branches = vcs.sort_branches(backend.list_branches())
     assert [b.name for b in branches] == ["@", "feature"]  # still listed, and first
     assert backend.default_start() == "@-"  # bookmarks exist, none named main/master/trunk
+
+
+def test_sort_branches_priorities_and_ties() -> None:
+    def branch(
+        name: str,
+        timestamp: int = 0,
+        *,
+        is_current: bool = False,
+        working_copy: bool = False,
+    ) -> vcs.Branch:
+        return vcs.Branch(
+            name,
+            "jj",
+            "abc",
+            "subject",
+            timestamp,
+            is_current=is_current,
+            working_copy=working_copy,
+        )
+
+    branches = [
+        branch("z", 10),
+        branch("a", 10),
+        branch("newest", 20),
+        branch("current", 1, is_current=True),
+        branch("old", 1),
+        branch("@", working_copy=True),
+    ]
+    original = branches.copy()
+    assert [b.name for b in vcs.sort_branches(branches)] == [
+        "@",
+        "current",
+        "newest",
+        "a",
+        "z",
+        "old",
+    ]
+    assert branches == original
+    assert vcs.sort_branches([]) == []
