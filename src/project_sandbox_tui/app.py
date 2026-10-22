@@ -63,12 +63,14 @@ from project_sandbox_tui.screens.dialogs import (
     MessageScreen,
     NewBranchScreen,
 )
+from project_sandbox_tui.screens.diff import DiffScreen
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import (
     Backend,
     Branch,
     VcsError,
+    main_branch,
     sort_branches,
     workspace_path,
 )
@@ -176,6 +178,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("n", "app.new_branch", show=False),
     Binding("l", "app.open_log", show=False),
     Binding("o", "app.open_editor", show=False),
+    Binding("d", "app.diff", show=False),
     Binding("P", "app.preview", show=False),
     Binding("W", "app.cleanup_workspaces", show=False),
     Binding("x", "app.stop", show=False),
@@ -217,6 +220,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("n", "new branch"),
             ("v ␣", "select → merge/rebase"),
+            ("d", "diff branches"),
             ("o", "open in editor"),
             ("P", "show command"),
             ("W", "clean workspaces"),
@@ -226,7 +230,9 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
 )
 
-FOOTER = "j/k move · i interactive · r run · n new · l log · x stop · o open · ? help · q quit"
+FOOTER = (
+    "j/k move · i interactive · r run · n new · l log · d diff · x stop · o open · ? help · q quit"
+)
 
 
 def _cheatsheet_section(title: str, keys: tuple[tuple[str, str], ...]) -> Text:
@@ -658,6 +664,28 @@ class SandboxTUI(App[None]):
         if name is None:
             self.notify("no branch selected", severity="warning")
         return name
+
+    def action_diff(self) -> None:
+        chosen = self.selection()
+        if not chosen:
+            name = self._require_branch()
+            if name is None:
+                return
+            chosen = [name]
+        if len(chosen) > 2:
+            self.notify("select one or two branches to diff", severity="warning")
+            return
+        if len(chosen) == 1:
+            base = main_branch({b.name for b in self.branches}, self.cfg.project.main_branch)
+            if base is None:
+                self.notify(
+                    "no main branch found; configure project.main_branch", severity="warning"
+                )
+                return
+            target = chosen[0]
+        else:
+            base, target = chosen
+        self.push_screen(DiffScreen(self.backend, base, target))
 
     def action_launch(self, mode: Mode) -> None:
         selected = self.selection()

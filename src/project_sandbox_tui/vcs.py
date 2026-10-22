@@ -102,6 +102,8 @@ class Backend(Protocol):
 
     def default_start(self) -> str: ...
 
+    def diff(self, base: str, target: str) -> str: ...
+
 
 class GitBackend:
     kind: Kind = "git"
@@ -145,6 +147,23 @@ class GitBackend:
 
     def create_branch(self, name: str, start: str) -> None:
         _run(["git", "branch", "--no-track", "--", name, start or "HEAD"], self.root)
+
+    def diff(self, base: str, target: str) -> str:
+        """Compare branch tips without external diff drivers or working-tree changes."""
+        return _run(
+            [
+                "git",
+                "--no-pager",
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                f"refs/heads/{base}",
+                f"refs/heads/{target}",
+                "--",
+            ],
+            self.root,
+        )
 
     def default_start(self) -> str:
         return main_branch({b.name for b in self.list_branches()}) or "HEAD"
@@ -223,6 +242,9 @@ class JjBackend:
             ["jj", "--no-pager", "--color=never", "bookmark", "create", name, "-r", start or "@-"],
             self.root,
         )
+
+    def diff(self, base: str, target: str) -> str:
+        return self._jj("diff", "--git", "--from", base, "--to", target)
 
     def default_start(self) -> str:
         names = {b.name for b in self.list_branches() if not b.working_copy}

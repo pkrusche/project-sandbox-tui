@@ -129,3 +129,34 @@ def test_jj_always_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
     branches = vcs.sort_branches(backend.list_branches())
     assert [b.name for b in branches] == ["@", "feature"]  # still listed, and first
     assert backend.default_start() == "@-"  # bookmarks exist, none named main/master/trunk
+
+
+def test_git_diff_tips(git_repo: Path) -> None:
+    backend = vcs.detect(git_repo)
+    diff = backend.diff("main", "feature/x")
+    assert "diff --git" in diff
+    assert "+" in diff
+    assert backend.diff("main", "main") == ""
+    assert backend.diff("feature/x", "main") != diff
+    # Diverging main contributes deletions to a tip-to-tip comparison.
+    from tests.conftest import run
+
+    (git_repo / "main-only.txt").write_text("main only\n")
+    run("git", "add", "main-only.txt", cwd=git_repo)
+    run("git", "commit", "-qm", "advance main", cwd=git_repo)
+    assert "-main only" in backend.diff("main", "feature/x")
+    with pytest.raises(vcs.VcsError):
+        backend.diff("missing", "main")
+
+
+def test_jj_diff_tips(jj_repo: Path) -> None:
+    from tests.conftest import run
+
+    backend = vcs.detect(jj_repo)
+    run("jj", "new", "main", cwd=jj_repo)
+    (jj_repo / "diff-file").write_text("new content\n")
+    run("jj", "bookmark", "create", "feature", cwd=jj_repo)
+    diff = backend.diff("main", "feature")
+    assert "diff --git" in diff
+    assert "+new content" in diff
+    assert backend.diff("main", "main") == ""

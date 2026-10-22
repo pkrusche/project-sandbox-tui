@@ -64,6 +64,7 @@ sbx-tui                  # the real thing
 | `l` / `enter` | log view: transcript (`.md`), agent log, captured output (`tab` cycles, `f` toggles follow) |
 | `n` | new branch / bookmark (name + start revision) |
 | `v` · `space` | select branches: `v` starts a range at the cursor (`v` again keeps it), `space` marks one and moves on; `esc` clears. With two or more selected, `r` / `i` merge or rebase them, see [Merging and rebasing several branches](#merging-and-rebasing-several-branches) |
+| `d` | diff one selected branch (or the highlighted row) against main; two selected branches compare tips in selection order. Uses `project.main_branch`, or main/master/trunk. Scroll with `j`/`k`, `ctrl+d`/`ctrl+u`, `gg`/`G`; `q`/`esc` returns |
 | `o` | open the branch's worktree in your editor |
 | `P` | preview the full `project-sandbox` command |
 | `c` · `C` | clear a finished status · force-forget a record stuck as running (signals nothing) |
