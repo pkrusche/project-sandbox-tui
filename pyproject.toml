@@ -18,8 +18,8 @@ sbx-tui = "project_sandbox_tui.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "ruff>=0.6",
-    "mypy>=1.11",
+    "ruff>=0.17",
+    "ty>=0.0.90",
 ]
 
 [build-system]
@@ -39,7 +39,14 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
-[tool.mypy]
-python_version = "3.12"
-strict = true
-ignore_missing_imports = true
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.ty.terminal]
+error-on-warning = true

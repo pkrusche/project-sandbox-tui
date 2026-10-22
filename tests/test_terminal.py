@@ -4,6 +4,7 @@ import fcntl
 import os
 import termios
 import tty
+from pathlib import Path
 
 import pytest
 
@@ -41,7 +42,7 @@ def test_restores_even_when_the_block_raises() -> None:
         os.close(slave)
 
 
-def test_not_a_tty_is_a_no_op(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_not_a_tty_is_a_no_op(tmp_path: Path) -> None:
     with (tmp_path / "f").open("w") as fh:
         assert terminal.save(fh.fileno()) is None
         terminal.restore(None)

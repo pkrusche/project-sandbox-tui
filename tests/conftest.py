@@ -7,6 +7,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -75,10 +76,10 @@ def jj_repo_no_bookmarks(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake_cfg() -> Callable[..., Config]:
-    def make(**project: object) -> Config:
+    def make(**project: Any) -> Config:
         cfg = Config()
         cfg.sandbox = Sandbox(command=f"{sys.executable} {FAKE}")
-        cfg.project = Project(base_image="python:3.12-slim", **project)  # type: ignore[arg-type]
+        cfg.project = Project(base_image="python:3.12-slim", **project)
         return cfg
 
     return make

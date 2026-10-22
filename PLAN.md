@@ -363,6 +363,11 @@ the resume, and `terminal.py` restores termios and O_NONBLOCK if the agent's
 `container run -it` leaves the terminal raw or non-blocking. `tests/test_pty_session.py`
 drives the real TUI in a pseudo-terminal to cover this.
 
+Tooling (2026-10-22): ruff (lint + format) and ty replace mypy; ty is configured in
+`pyproject.toml` (`[tool.ty]`, Python 3.12, `src` and `tests`, warnings are errors).
+`.github/workflows/ci.yml` runs ruff check, ruff format --check and ty, plus pytest on
+Linux/macOS × Python 3.12/3.14 with jj installed, all from `uv sync --locked`.
+
 Known limitations / next steps:
 
 - An interactive session suspends the TUI's event loop. Notifications for background runs

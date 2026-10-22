@@ -180,9 +180,16 @@ you've launched something.
 
 ```sh
 uv sync
-uv run pytest            # unit + Textual Pilot tests; jj tests skip if jj is missing
-uv run ruff check . && uv run mypy src
+uv run pytest                 # unit, Textual Pilot and pty tests; jj tests skip if jj is missing
+uv run ruff check .           # lint
+uv run ruff format --check .  # formatting (drop --check to apply)
+uv run ty check               # types (src and tests; warnings are errors)
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same checks on pushes to `main` and on
+pull requests: a lint job (ruff check, ruff format, ty) and pytest on Linux and
+macOS with Python 3.12 and 3.14, with jj installed. Dependencies are installed
+with `uv sync --locked`, so commit `uv.lock` whenever `pyproject.toml` changes.
 
 Tests use `tests/fake_project_sandbox.py`, a stand-in CLI that writes session
 records, logs, a transcript and a JSON summary the way project-sandbox does.

@@ -16,7 +16,7 @@ import fcntl
 import os
 import sys
 import termios
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,7 +62,7 @@ def restore(state: TerminalState | None) -> None:
 
 
 @contextlib.contextmanager
-def preserved(fd: int | None = None) -> Iterator[TerminalState | None]:
+def preserved(fd: int | None = None) -> Generator[TerminalState | None, None, None]:
     """Restore the terminal state on exit, however the block ends."""
     state = save(fd)
     try:

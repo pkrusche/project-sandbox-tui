@@ -11,7 +11,7 @@ import contextlib
 import fcntl
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 from project_sandbox_tui.config import repo_state_dir
@@ -42,7 +42,7 @@ class PromptHistory:
         return [p for p in prompts if isinstance(p, str) and p.strip()]
 
     @contextlib.contextmanager
-    def _locked(self) -> Iterator[None]:
+    def _locked(self) -> Generator[None, None, None]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.with_name(self.path.name + ".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)

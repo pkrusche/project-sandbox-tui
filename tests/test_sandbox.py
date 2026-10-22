@@ -160,10 +160,10 @@ def test_notification_template_is_injection_safe() -> None:
 
 def test_main_checkout_decision(git_repo: Path, tmp_path: Path) -> None:
     from project_sandbox_tui.sandbox import CheckoutConflict, uses_main_checkout
-    from project_sandbox_tui.vcs import detect
+    from project_sandbox_tui.vcs import Branch, detect
     from tests.conftest import run
 
-    def branch(name: str):  # type: ignore[no-untyped-def]
+    def branch(name: str) -> Branch:
         return next(b for b in detect(git_repo).list_branches() if b.name == name)
 
     assert uses_main_checkout(git_repo, branch("main"), None)  # checked out in the repo

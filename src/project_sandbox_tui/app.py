@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import os
 import shlex
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -474,7 +475,7 @@ class SandboxTUI(App[None]):
     def _spec_preview(self, spec: LaunchSpec) -> str:
         paths = self.jobs.new_run_paths(spec.branch) if spec.mode == "background" else None
         if spec.mode == "background" and not spec.prompt_text.strip():
-            spec = LaunchSpec(**{**spec.to_dict(), "prompt_text": "<prompt>"})
+            spec = dataclasses.replace(spec, prompt_text="<prompt>")
         return shlex.join(build_argv(self.cfg, self.repo, spec, paths))
 
     def _form_preview(self, spec: LaunchSpec) -> str:
@@ -568,7 +569,7 @@ class SandboxTUI(App[None]):
         self.call_later(self.refresh_data)
 
     @contextlib.contextmanager
-    def _suspended(self) -> Iterator[None]:
+    def _suspended(self) -> Generator[None, None, None]:
         """``App.suspend()`` that always resumes.
 
         Textual's ``suspend()`` has no try/finally around its ``yield``: an

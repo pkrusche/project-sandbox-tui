@@ -9,11 +9,11 @@ import pytest
 
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.jobs import BusyError, JobManager, status_for_exit
-from project_sandbox_tui.sandbox import LaunchSpec, read_sessions, running_by_branch
+from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord, read_sessions, running_by_branch
 from tests.conftest import FAKE, wait_for
 
 
-def sessions_for(repo: Path, branches: list[str]):  # type: ignore[no-untyped-def]
+def sessions_for(repo: Path, branches: list[str]) -> dict[str, SessionRecord]:
     return running_by_branch(read_sessions(), repo, "git", branches, None)
 
 

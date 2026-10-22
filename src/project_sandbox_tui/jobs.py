@@ -16,7 +16,7 @@ import signal
 import subprocess
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -178,7 +178,7 @@ class JobManager:
     # ------------------------------------------------------------ persistence
 
     @contextlib.contextmanager
-    def _locked(self) -> Iterator[None]:
+    def _locked(self) -> Generator[None, None, None]:
         """Serialize record changes across TUI instances for this repository."""
         self.state_dir.mkdir(parents=True, exist_ok=True)
         with (self.state_dir / "jobs.lock").open("a") as lock:
@@ -327,7 +327,7 @@ class JobManager:
     @contextlib.contextmanager
     def interactive(
         self, spec: LaunchSpec, sessions: dict[str, SessionRecord]
-    ) -> Iterator[JobRecord]:
+    ) -> Generator[JobRecord, None, None]:
         """Hold the branch for the duration of an in-terminal session."""
         with self._locked():
             self.load()
