@@ -1,0 +1,46 @@
+[project]
+name = "project-sandbox-tui"
+version = "0.1.0"
+description = "Minimal vim/ranger-style TUI for running project-sandbox sessions per branch"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Peter Krusche" }]
+dependencies = [
+    "textual>=1.0",
+]
+
+# project-sandbox itself is a separate tool: `uv tool install project-sandbox`,
+# or point `sandbox.command` at e.g. "uvx project-sandbox".
+
+[project.scripts]
+sbx-tui = "project_sandbox_tui.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/project_sandbox_tui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
