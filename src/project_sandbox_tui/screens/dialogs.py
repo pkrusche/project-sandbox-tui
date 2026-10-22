@@ -95,7 +95,7 @@ navigation
   ctrl+d / u     half page            /           filter (esc clears)
 
 sessions (one sandbox per branch)
-  i              interactive session in this terminal
+  i              interactive session (inline, or tmux/zellij/screen per ui.terminal)
   r              unsupervised run with a prompt (background)
   x              stop background run
   x again        escalate: SIGINT → SIGTERM → SIGKILL + container stop
@@ -111,7 +111,7 @@ branches
   n              new branch / bookmark
   o              open the branch worktree in your editor
   P              preview the project-sandbox command
-  R              refresh now
+  R              refresh now          ctrl+r      reload configuration
   H              show / hide the cheat-sheet
 
   ?              this help            q           quit (background runs continue)

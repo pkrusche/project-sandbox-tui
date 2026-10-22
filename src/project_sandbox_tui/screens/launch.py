@@ -62,6 +62,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         main_checkout: bool = False,
         branch_label: str | None = None,
         prompt_history: PromptHistory | None = None,
+        opens_in: str = "",
     ) -> None:
         super().__init__()
         self.branch = branch
@@ -74,6 +75,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.main_checkout = main_checkout
         self.branch_label = branch_label or branch
         self.prompt_history = prompt_history
+        self.opens_in = opens_in
 
     def compose(self) -> ComposeResult:
         what = "interactive session" if self.mode == "interactive" else "unsupervised run"
@@ -82,6 +84,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             title.append(self.branch_label, style="bold")
             if self.main_checkout and self.branch_label == self.branch:
                 title.append("  (in the main checkout)", style="dim")
+            if self.opens_in:
+                title.append(f"  · {self.opens_in}", style="dim")
             yield Static(title, classes="title")
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
             with Horizontal(classes="field"):

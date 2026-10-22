@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from project_sandbox_tui.app import SandboxTUI  # import Textual only when needed
 
-    SandboxTUI(repo, backend, cfg).run()
+    SandboxTUI(repo, backend, cfg, config_path=args.config, dry_run=args.dry_run).run()
     return 0
 
 

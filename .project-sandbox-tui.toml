@@ -11,6 +11,8 @@ build = "python-uv"                  # python-uv | rust-cargo | node-npm
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new branches
 
+[ui]
+terminal = "zellij"
 # [defaults]
 # agent = "claude"                     # claude | codex | opencode | pi | bash
 # model = ""

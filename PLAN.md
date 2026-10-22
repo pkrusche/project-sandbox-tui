@@ -58,7 +58,8 @@ extra_args = []              # appended verbatim
 
 [ui]
 notify_command = ""          # "" = platform default; supports {title} {message}
-terminal_command = ""        # "" = suspend TUI; e.g. 'tmux new-window -n {branch} {cmd}'
+terminal = "inline"          # inline | tmux | zellij | screen | custom
+terminal_command = ""        # with terminal = "custom"; supports {cmd} {branch} {repo}
 editor_command = ""          # for `o` (open worktree), GUI editors; "" = $EDITOR in this terminal
 refresh_seconds = 3
 bell = true
@@ -201,10 +202,15 @@ any other worktree is refused with a message. jj workspaces are unaffected.
 - Default: `with app.suspend(): subprocess.run(argv)`; same one-per-branch
   guard; a lightweight `JobRecord` with `mode=interactive` is written for the
   duration so a second TUI instance also sees the branch as busy.
-- With `ui.terminal_command`: render the template (`{cmd}`, `{branch}`,
-  `{repo}`) and `Popen` it detached; row shows "interactive (ext)" until the
-  session that appeared for the branch has ended, or for at most 10 minutes
-  if none ever appears.
+- With `ui.terminal` = tmux / zellij / screen / custom (`launchers.py`): tmux and
+  screen open a window when sbx-tui runs inside them (`$TMUX`, `$STY`) and a
+  detached `sbx-<repo>-<branch>` session otherwise; zellij opens a pane and needs
+  sbx-tui inside Zellij (outside, `zellij run` exits 0 without doing anything).
+  Multiplexer commands are run and their exit code checked; a custom
+  `terminal_command` (`{cmd}`, `{branch}`, `{repo}`) is started detached. The
+  agent runs via `sh -c` that waits for Enter after a failure. The row shows
+  "interactive (ext)" until the session that appeared for the branch has ended,
+  or for at most 10 minutes if none ever appears.
 
 ## 5. UI
 
@@ -296,7 +302,7 @@ Each phase ends with tests passing and a usable increment.
 ## 8. Implementation status (2026-10-22)
 
 Phases 0–3 are implemented, plus parts of phase 4 (`o` open worktree, `terminal_command`,
-`[models]` suggestions). 114 tests pass: CLI, config, prompt history, git and jj VCS, argv golden tests, the
+`[models]` suggestions). 127 tests pass: CLI, config, prompt history, git and jj VCS, argv golden tests, the
 job lifecycle against `tests/fake_project_sandbox.py`, and Textual Pilot UI tests.
 Sections 2–5 above describe the code as built, plus the additions below.
 
@@ -363,16 +369,19 @@ the resume, and `terminal.py` restores termios and O_NONBLOCK if the agent's
 `container run -it` leaves the terminal raw or non-blocking. `tests/test_pty_session.py`
 drives the real TUI in a pseudo-terminal to cover this.
 
+Interactive terminals (2026-10-22): `ui.terminal` = inline | tmux | zellij | screen | custom
+(`launchers.py`, see §4); tmux is covered by a test against a private tmux server.
+
 Tooling (2026-10-22): ruff (lint + format) and ty replace mypy; ty is configured in
 `pyproject.toml` (`[tool.ty]`, Python 3.12, `src` and `tests`, warnings are errors).
 `.github/workflows/ci.yml` runs ruff check, ruff format --check and ty, plus pytest on
-Linux/macOS × Python 3.12/3.14 with jj installed, all from `uv sync --locked`.
+Linux with Python 3.14 and jj installed (macOS / 3.12 commented out in the matrix), all from `uv sync --locked`.
 
 Known limitations / next steps:
 
 - An interactive session suspends the TUI's event loop. Notifications for background runs
   that finish in the meantime arrive when you return.
-- With `terminal_command`, the TUI cannot see the launched process, only project-sandbox's
+- With `ui.terminal` other than inline, the TUI cannot see the launched process, only project-sandbox's
   session record. A launch that fails before writing one keeps the branch busy for up to
   10 minutes (or until `C`).
 - PID reuse after a crash can make a record look running forever; `C` forgets it.

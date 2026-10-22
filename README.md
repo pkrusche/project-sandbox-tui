@@ -55,7 +55,7 @@ sbx-tui                  # the real thing
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | move · top/bottom · half page |
 | `/` | filter branches (`enter` keeps it, `esc` clears) |
-| `i` | interactive session on the branch (the TUI suspends; you're back when the agent exits) |
+| `i` | interactive session on the branch: inline (the TUI hands over this terminal and comes back when the agent exits) or in tmux / Zellij / screen, see [Interactive sessions](#interactive-sessions) |
 | `r` | unsupervised run: prompt + optional timeout, runs in the background |
 | `x` | stop a background run: SIGINT for a clean teardown; each further press escalates to SIGTERM, then SIGKILL plus `container stop` |
 | `l` / `enter` | log view: transcript (`.md`), agent log, captured output (`tab` cycles, `f` toggles follow) |
@@ -65,6 +65,7 @@ sbx-tui                  # the real thing
 | `c` · `C` | clear a finished status · force-forget a record stuck as running (signals nothing) |
 | `R` · `?` · `q` | refresh · help · quit |
 | `H` | show / hide the cheat-sheet |
+| `ctrl+r` | reload global and project configuration |
 
 In the launch form: `tab` (or `j`/`k` on choice fields) moves between fields,
 `h`/`l` cycles agent and effort, `enter` launches an interactive session,
@@ -112,6 +113,26 @@ bookmarks yet, `n` offers `@` as the start revision; otherwise it prefers
 Background runs are detached from the TUI: quitting leaves them running, and the
 next start re-adopts them and notifies about any that finished meanwhile.
 
+## Interactive sessions
+
+`ui.terminal` decides where `i` runs the agent:
+
+| `ui.terminal` | inside the multiplexer | outside it |
+|---|---|---|
+| `inline` (default) | the TUI suspends, the agent takes over this terminal, you're back in the list when it exits | same |
+| `tmux` | new tmux window named after the branch | detached session `sbx-<repo>-<branch>`: `tmux attach -t …` |
+| `zellij` | new pane, closed when the agent exits | not supported (start sbx-tui inside Zellij) |
+| `screen` | new screen window | detached session `sbx-<repo>-<branch>`: `screen -r …` |
+| `custom` | `ui.terminal_command` with `{cmd}`, `{branch}`, `{repo}`, e.g. `'wezterm start -- sh -c {cmd}'` | same |
+
+"Inside" means sbx-tui itself runs in that multiplexer (`$TMUX`, `$ZELLIJ`, `$STY`).
+Everything except `inline` returns to the list straight away and the row shows
+`interactive (ext)` while project-sandbox's session record for the branch is
+running. Detach and reattach with the multiplexer's own keys. If project-sandbox
+fails, its window stays open with the exit code until you press Enter, so the
+error is readable. A setting with only `terminal_command` keeps meaning
+`custom`. `x` cannot stop these sessions; quit the agent in its window.
+
 ## Notifications
 
 When a background run finishes the row updates, a toast appears, the terminal
@@ -127,6 +148,9 @@ Exit codes map to status: `0` completed, `124` timeout, `75` rate limited,
 
 Global `~/.config/project-sandbox-tui/config.toml`, overridden per repo by
 `.project-sandbox-tui.toml` (deep merge). Unknown keys are errors.
+Press `ctrl+r` in the branch list to reload both files without restarting.
+Invalid configuration leaves the current settings in place. Running sessions keep
+their launch settings; new launches use the reloaded configuration.
 
 ```toml
 [defaults]
@@ -161,7 +185,8 @@ default_branch_start = ""         # "" = main/master/trunk, else HEAD (git) / @-
 
 [ui]
 notify_command = ""
-terminal_command = ""   # run interactive sessions elsewhere, e.g. 'tmux new-window -n {branch} {cmd}'
+terminal = "inline"     # inline | tmux | zellij | screen | custom (see Interactive sessions)
+terminal_command = ""   # only with terminal = "custom", e.g. 'wezterm start -- sh -c {cmd}'
 editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this terminal
 refresh_seconds = 3
 bell = true
@@ -187,8 +212,9 @@ uv run ty check               # types (src and tests; warnings are errors)
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks on pushes to `main` and on
-pull requests: a lint job (ruff check, ruff format, ty) and pytest on Linux and
-macOS with Python 3.12 and 3.14, with jj installed. Dependencies are installed
+pull requests: a lint job (ruff check, ruff format, ty) and pytest on Linux with
+Python 3.14 and jj installed (macOS and Python 3.12 are commented out in the
+test matrix and can be switched back on). Dependencies are installed
 with `uv sync --locked`, so commit `uv.lock` whenever `pyproject.toml` changes.
 
 Tests use `tests/fake_project_sandbox.py`, a stand-in CLI that writes session

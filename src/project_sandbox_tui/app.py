@@ -23,11 +23,12 @@ from textual.notifications import SeverityLevel
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
-from project_sandbox_tui import notify, terminal
+from project_sandbox_tui import launchers, notify, terminal
 from project_sandbox_tui.config import (
     Config,
     ConfigError,
     LastUsed,
+    load,
     remember,
     resolve_launch_defaults,
 )
@@ -148,6 +149,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("c", "app.clear_status", show=False),
     Binding("C", "app.clear_status(True)", show=False),
     Binding("R", "app.refresh", show=False),
+    Binding("ctrl+r", "app.reload_config", show=False),
     Binding("question_mark", "app.help", show=False),
     Binding("H", "app.toggle_cheatsheet", show=False),
     Binding("q", "app.quit", show=False),
@@ -174,7 +176,13 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
     (
         "other",
-        (("c C", "clear / forget"), ("H", "hide this sheet"), ("?", "full help"), ("q", "quit")),
+        (
+            ("c C", "clear / forget"),
+            ("^r", "reload config"),
+            ("H", "hide this sheet"),
+            ("?", "full help"),
+            ("q", "quit"),
+        ),
     ),
 )
 
@@ -238,11 +246,16 @@ class SandboxTUI(App[None]):
         cfg: Config,
         jobs: JobManager | None = None,
         sessions_dir: Path | None = None,
+        *,
+        config_path: Path | None = None,
+        dry_run: bool = False,
     ) -> None:
         super().__init__()
         self.repo = repo
         self.backend = backend
         self.cfg = cfg
+        self.config_path = config_path
+        self.dry_run = dry_run
         self.jobs = jobs or JobManager(repo, cfg)
         self.sessions_dir = sessions_dir
         self.branches: list[Branch] = []
@@ -279,7 +292,7 @@ class SandboxTUI(App[None]):
             table.add_column(label, width=width, key=label or "glyph")
         table.focus()
         await self.refresh_data()
-        self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
+        self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
 
     # ------------------------------------------------------------ data
 
@@ -516,6 +529,9 @@ class SandboxTUI(App[None]):
             prompt,
             main_checkout=main_checkout,
             branch_label=branch.label if branch is not None else name,
+            opens_in=launchers.describe(self.cfg.ui.terminal_mode())
+            if mode == "interactive"
+            else "",
             prompt_history=self.prompt_history,
         )
         self.push_screen(screen, self._launch_chosen)
@@ -547,11 +563,11 @@ class SandboxTUI(App[None]):
             if spec.mode == "background":
                 job = self.jobs.start_background(spec, self.sessions)
                 self.notify(f"{spec.branch}: started {spec.label()} (pid {job.pid})")
-            elif self.cfg.ui.terminal_command:
+            elif self.cfg.ui.terminal_mode() != "inline":
                 self._launch_external(spec)
             else:
                 self._launch_interactive(spec)
-        except (BusyError, ConfigError, CheckoutConflict, VcsError) as exc:
+        except (BusyError, ConfigError, CheckoutConflict, VcsError, launchers.LaunchError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
         except OSError as exc:
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
@@ -613,28 +629,18 @@ class SandboxTUI(App[None]):
                     )
 
     def _launch_external(self, spec: LaunchSpec) -> None:
+        """Hand the session to tmux / zellij / screen / a custom terminal command."""
         argv = build_argv(self.cfg, self.repo, spec)
-        cmd = shlex.join(argv)
-        tokens = [
-            t.replace("{cmd}", cmd)
-            .replace("{branch}", spec.branch)
-            .replace("{repo}", str(self.repo))
-            for t in shlex.split(self.cfg.ui.terminal_command)
-        ]
+        launch = launchers.external_launch(
+            self.cfg.ui.terminal_mode(), argv, spec.branch, self.repo, self.cfg.ui.terminal_command
+        )
         job = self.jobs.record_external(spec, argv, self.sessions)
         try:
-            subprocess.Popen(
-                tokens,
-                cwd=self.repo,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        except OSError:
+            launchers.start(launch, cwd=self.repo)
+        except (OSError, launchers.LaunchError):
             self.jobs.discard(job)
             raise
-        self.notify(f"{spec.branch}: opened {spec.label()} in a new terminal")
+        self.notify(f"{spec.branch}: {launch.message}", timeout=8)
 
     def action_new_branch(self) -> None:
         start = self.default_start
@@ -753,6 +759,24 @@ class SandboxTUI(App[None]):
 
     async def action_refresh(self) -> None:
         await self.refresh_data()
+
+    async def action_reload_config(self) -> None:
+        """Reload both config files, keeping the current settings on error."""
+        try:
+            cfg = load(self.repo, self.config_path)
+        except ConfigError as exc:
+            self.notify(f"Config reload failed: {exc}", severity="error")
+            return
+        if self.dry_run:
+            cfg.sandbox.extra_args.append("--dry-run")
+        self.cfg = cfg
+        self.jobs.cfg = cfg
+        self.default_start = cfg.project.default_branch_start
+        self._refresh_timer.stop()
+        self._refresh_timer = self.set_interval(cfg.ui.refresh_seconds, self.refresh_data)
+        self.show_cheatsheet(cfg.ui.cheatsheet)
+        await self.refresh_data()
+        self.notify("Configuration reloaded")
 
     def action_toggle_cheatsheet(self) -> None:
         self.show_cheatsheet(not self.cheatsheet_visible)

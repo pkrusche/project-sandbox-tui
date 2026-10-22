@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
@@ -484,3 +485,83 @@ def test_enter_that_launches_interactive_session_does_not_leak(
         assert isinstance(app.screen, HelpScreen)
 
     run_app(git_repo, cfg, scenario)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+def test_interactive_session_in_detached_tmux_session(
+    git_repo: Path, fake_cfg: Callable[..., Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+    import sys
+
+    from project_sandbox_tui import launchers
+
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))  # private tmux server
+    monkeypatch.delenv("TMUX", raising=False)  # as if sbx-tui runs outside tmux
+    agent = Path(__file__).with_name("fake_interactive_agent.py")
+    cfg = fake_cfg()
+    cfg.sandbox.command = f"{sys.executable} {agent}"
+    cfg.ui.terminal = "tmux"
+    name = launchers.session_name(git_repo, "main")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("i")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        assert "opens in tmux" in str(form.query_one(".title").render())
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
+        job = app.jobs.jobs["main"]
+        assert job.external and job.running
+        has = ["tmux", "has-session", "-t", name]
+        await wait_until(pilot, lambda: subprocess.run(has).returncode == 0)
+        assert app.screen is app.main  # the TUI is not suspended
+        # a second interactive launch on the branch is refused while it runs
+        await pilot.press("i")
+        assert not isinstance(app.screen, LaunchScreen)
+        subprocess.run(["tmux", "send-keys", "-t", name, "q"], check=True)  # quit the agent
+        await wait_until(pilot, lambda: subprocess.run(has, capture_output=True).returncode != 0)
+
+    try:
+        run_app(git_repo, cfg, scenario)
+    finally:
+        subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+def test_reload_config(git_repo: Path, tmp_path: Path) -> None:
+    from project_sandbox_tui.config import load
+
+    global_path = tmp_path / "custom.toml"
+    global_path.write_text('[defaults]\nagent = "codex"\n')
+    project_path = git_repo / ".project-sandbox-tui.toml"
+    project_path.write_text('[project]\nbase_image = "old"\n')
+    cfg = load(git_repo, global_path)
+    cfg.sandbox.extra_args.append("--dry-run")
+    app = SandboxTUI(git_repo, detect(git_repo), cfg, config_path=global_path, dry_run=True)
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 30)) as pilot:
+            old_timer = app._refresh_timer
+            global_path.write_text('[defaults]\nagent = "bash"\n')
+            project_path.write_text(
+                '[project]\nbase_image = "new"\ndefault_branch_start = "feature/x"\n'
+                "[ui]\nrefresh_seconds = 7\ncheatsheet = false\n"
+            )
+            await pilot.press("ctrl+r")
+            assert app.cfg.defaults.agent == "bash"
+            assert app.cfg.project.base_image == "new"
+            assert app.cfg.sandbox.extra_args == ["--dry-run"]
+            assert app.jobs.cfg is app.cfg
+            assert app.default_start == "feature/x"
+            assert not app.cheatsheet_visible
+            assert app._refresh_timer is not old_timer
+            assert app.cfg.ui.refresh_seconds == 7
+            good_cfg, good_timer = app.cfg, app._refresh_timer
+            project_path.write_text("[ui]\nrefresh_seconds = 0\n")
+            await pilot.press("ctrl+r")
+            assert app.cfg is good_cfg
+            assert app.jobs.cfg is good_cfg
+            assert app._refresh_timer is good_timer
+            assert any("Config reload failed" in str(n.message) for n in app._notifications)
+
+    asyncio.run(scenario())

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from project_sandbox_tui.launchers import TERMINALS
+
 AGENTS: tuple[str, ...] = ("claude", "codex", "opencode", "pi", "bash")
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 RUNTIMES: tuple[str, ...] = ("auto", "apple-container", "docker", "podman")
@@ -81,11 +83,20 @@ class Project:
 @dataclass
 class UI:
     notify_command: str = ""  # "" = platform default; tokens may use {title} {message}
-    terminal_command: str = ""  # "" = suspend TUI; tokens may use {cmd} {branch} {repo}
+    # where interactive sessions run: inline | tmux | zellij | screen | custom
+    # ("" = custom if terminal_command is set, else inline)
+    terminal: str = ""
+    terminal_command: str = ""  # ui.terminal = "custom"; tokens may use {cmd} {branch} {repo}
     editor_command: str = ""  # "" = $EDITOR; tokens may use {path}
     refresh_seconds: float = 3.0
     bell: bool = True
     cheatsheet: bool = True  # key cheat-sheet under the branch list (toggle with H)
+
+    def terminal_mode(self) -> str:
+        """The effective ``terminal`` setting (see launchers.py)."""
+        if self.terminal:
+            return self.terminal
+        return "custom" if self.terminal_command else "inline"
 
 
 @dataclass
@@ -131,6 +142,15 @@ class Config:
                     raise ConfigError(f"ui.{key}: {exc}") from exc
                 if not tokens:
                     raise ConfigError(f"ui.{key} must contain a command")
+        if self.ui.terminal and self.ui.terminal not in TERMINALS:
+            raise ConfigError(f"ui.terminal must be one of {', '.join(TERMINALS)}")
+        mode = self.ui.terminal_mode()
+        if mode == "custom" and not self.ui.terminal_command:
+            raise ConfigError('ui.terminal = "custom" needs ui.terminal_command')
+        if mode != "custom" and self.ui.terminal_command:
+            raise ConfigError(
+                f'ui.terminal_command is only used with ui.terminal = "custom" (not "{mode}")'
+            )
         if p.build not in GENERATED_BUILDS:
             raise ConfigError(
                 "project.build must be empty or one of python-uv, rust-cargo, node-npm"
@@ -420,7 +440,9 @@ runtime = "auto"              # auto | apple-container | docker | podman
 
 [ui]
 # notify_command = ""         # e.g. 'terminal-notifier -title {title} -message {message}'
-# terminal_command = ""       # e.g. 'tmux new-window -n {branch} {cmd}'
+# terminal = "inline"         # interactive sessions: inline (take over this terminal, return
+#                             # after) | tmux | zellij | screen | custom (terminal_command)
+# terminal_command = ""       # with terminal = "custom", e.g. 'wezterm start -- sh -c {cmd}'
 # editor_command = ""         # e.g. 'code {path}'
 refresh_seconds = 3
 bell = true

@@ -114,6 +114,9 @@ def test_state_dir_is_per_repo(tmp_path: Path) -> None:
         ("[ui]\nrefresh_seconds = nan\n", "ui.refresh_seconds"),
         ("[ui]\nrefresh_seconds = inf\n", "ui.refresh_seconds"),
         ('[ui]\nterminal_command = "\'unclosed"\n', "ui.terminal_command"),
+        ('[ui]\nterminal = "kitty"\n', "ui.terminal must be one of"),
+        ('[ui]\nterminal = "custom"\n', "needs ui.terminal_command"),
+        ('[ui]\nterminal = "tmux"\nterminal_command = "x {cmd}"\n', "only used with"),
         ('[ui]\neditor_command = " "\n', "ui.editor_command"),
     ],
 )
@@ -121,3 +124,13 @@ def test_invalid_commands_and_numeric_settings(tmp_path: Path, text: str, messag
     write(tmp_path / c.PROJECT_CONFIG_NAME, text)
     with pytest.raises(c.ConfigError, match=message):
         c.load(tmp_path)
+
+
+def test_terminal_mode_resolution(tmp_path: Path) -> None:
+    ui = c.UI()
+    assert ui.terminal_mode() == "inline"
+    ui.terminal_command = "wezterm start -- sh -c {cmd}"
+    assert ui.terminal_mode() == "custom"  # older configs keep working
+    for mode in ("inline", "tmux", "zellij", "screen"):
+        write(tmp_path / c.PROJECT_CONFIG_NAME, f'[ui]\nterminal = "{mode}"\n')
+        assert c.load(tmp_path).ui.terminal_mode() == mode
