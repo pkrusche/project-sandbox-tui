@@ -125,7 +125,9 @@ def _dirty(repo: Path, path: Path) -> tuple[str, bool]:
     ignored = False
     for directory, dirs, files in os.walk(path):
         if Path(directory) == path:
+            # Colocated workspaces use either a .git directory or a pointer file.
             dirs[:] = [d for d in dirs if d not in {".jj", ".git"}]
+            files = [f for f in files if f not in {".jj", ".git"}]
         # os.walk lists symlinks to directories in dirs, but does not follow them.
         # Inspect the links themselves just like files, including jj tracking status.
         links = [d for d in dirs if (Path(directory) / d).is_symlink()]

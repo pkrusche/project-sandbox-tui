@@ -44,6 +44,24 @@ def test_cleanup_keeps_untracked_files(repo: Path, capsys) -> None:
     assert (path / "untracked").read_text() == "keep"
 
 
+def test_cleanup_ignores_git_worktree_metadata(repo: Path) -> None:
+    path = _add_workspace(repo, "feature/x")
+    # jj 0.46+ can create colocated workspaces with a .git pointer file.
+    # Supply the metadata on older jj versions too so they exercise the regression.
+    git_file = path / ".git"
+    if not git_file.exists():
+        git_file.write_text(f"gitdir: {repo / '.jj' / 'repo' / 'store' / 'git'}\n")
+    [ws] = find_workspaces(detect(repo), Config())
+    assert ws.removable
+
+    # Only the workspace's own metadata is excluded; nested .git files are user data.
+    (path / "nested").mkdir()
+    (path / "nested" / ".git").write_text("keep\n")
+    [ws] = find_workspaces(detect(repo), Config())
+    assert not ws.removable
+    assert "ignored files" in ws.status
+
+
 def test_cleanup_preserves_running_session(repo: Path, capsys, monkeypatch) -> None:
     import os
 
