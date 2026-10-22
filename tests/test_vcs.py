@@ -42,10 +42,10 @@ def test_git_create_branch(git_repo: Path) -> None:
 def test_jj_list_and_create(jj_repo: Path) -> None:
     backend = vcs.detect(jj_repo)
     assert backend.kind == "jj"
-    assert [b.name for b in backend.list_branches()] == ["main"]
+    assert [b.name for b in backend.list_branches()] == ["@", "main"]  # working copy first
     assert backend.default_start() == "main"
     backend.create_branch("feat/y", "main")
-    names = sorted(b.name for b in backend.list_branches())
+    names = sorted(b.name for b in backend.list_branches() if not b.working_copy)
     assert names == ["feat/y", "main"]
     main = next(b for b in backend.list_branches() if b.name == "main")
     assert main.subject == "first commit"
@@ -96,7 +96,8 @@ def test_jj_marks_bookmark_under_working_copy_as_current(jj_repo: Path) -> None:
     from tests.conftest import run
 
     backend = vcs.detect(jj_repo)
-    assert {b.name: b.is_current for b in backend.list_branches()} == {"main": True}  # main is @-
+    current = {b.name: b.is_current for b in backend.list_branches()}
+    assert current == {"@": True, "main": True}  # main is @-
     (jj_repo / "b.txt").write_text("b\n")
     run("jj", "commit", "--quiet", "-m", "second", cwd=jj_repo)  # main is now @--
     backend.create_branch("tip", "@-")
@@ -118,11 +119,13 @@ def test_invalid_branch_components(name: str) -> None:
     assert vcs.validate_branch_name(name)
 
 
-def test_jj_without_bookmarks_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
+def test_jj_always_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
     backend = vcs.detect(jj_repo_no_bookmarks)
     [wc] = backend.list_branches()
     assert wc.working_copy and wc.is_current and wc.name == vcs.WORKING_COPY
     assert wc.subject == "work in progress" and wc.label == "@ working copy"
-    assert backend.default_start() == "@"  # bookmark the work done in the working copy
+    assert backend.default_start() == "@"  # no bookmarks: bookmark the work done in @
     backend.create_branch("feature", backend.default_start())
-    assert [b.name for b in backend.list_branches()] == ["feature"]  # row is gone now
+    branches = vcs.sort_branches(backend.list_branches())
+    assert [b.name for b in branches] == ["@", "feature"]  # still listed, and first
+    assert backend.default_start() == "@-"  # bookmarks exist, none named main/master/trunk

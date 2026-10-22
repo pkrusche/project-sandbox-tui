@@ -96,7 +96,7 @@ def uses_main_checkout(repo: Path, branch: Branch, worktree_dir: Path | None) ->
     reused as usual. Any other worktree is a conflict the user has to resolve.
     """
     if branch.working_copy:
-        return True  # jj repo without bookmarks: run in the working copy itself
+        return True  # jj working copy: run in the repository's own workspace
     if branch.kind != "git" or branch.checkout_path is None:
         return False
     where = branch.checkout_path.resolve()

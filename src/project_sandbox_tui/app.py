@@ -45,7 +45,6 @@ from project_sandbox_tui.screens.dialogs import HelpScreen, MessageScreen, NewBr
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import (
-    WORKING_COPY,
     Backend,
     Branch,
     VcsError,
@@ -380,8 +379,7 @@ class SandboxTUI(App[None]):
     def main_checkout_branch(self) -> str | None:
         """The branch whose sessions run in the repository itself, if any.
 
-        git: the branch checked out there. jj: the working-copy row of a repo
-        without bookmarks.
+        git: the branch checked out there. jj: the working-copy row.
         """
         for b in self.branches:
             if b.working_copy:
@@ -528,8 +526,6 @@ class SandboxTUI(App[None]):
             # launch form was open. Recheck immediately before starting.
             self.branches = sort_branches(self.backend.list_branches())
             if self.branch(spec.branch) is None:
-                if spec.branch == WORKING_COPY:
-                    raise VcsError("the repo has bookmarks now; pick one in the list")
                 raise VcsError(f"{spec.branch} no longer exists")
             spec.main_checkout = self._main_checkout(spec.branch)
             self.sessions = running_by_branch(

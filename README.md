@@ -102,10 +102,12 @@ there instead, without `--branch` (the launch form says "in the main
 checkout"). A branch checked out in some other worktree is refused until you
 switch that worktree away from it. jj workspaces have no such restriction.
 
-A jj repository without any (local) bookmarks shows a single `@ working copy`
-row. Sessions on it run in the repository's own workspace, on the working-copy
-commit, without `--branch`. Once you create a bookmark (`n`, which then offers
-`@` as the start revision) the list shows bookmarks instead.
+In a jj repository the first row is always `@ working copy`, followed by the
+bookmarks. Sessions on `@` run in the repository's own workspace, on the
+working-copy commit, without `--branch`. Sessions on a bookmark get their own jj
+workspace as usual, so `@` and each bookmark are separate sandboxes. With no
+bookmarks yet, `n` offers `@` as the start revision; otherwise it prefers
+`main`/`master`/`trunk`, falling back to `@-`.
 
 Background runs are detached from the TUI: quitting leaves them running, and the
 next start re-adopts them and notifies about any that finished meanwhile.

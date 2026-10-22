@@ -139,7 +139,8 @@ The authoritative definitions are `vcs.Branch`, `sandbox.LaunchSpec` and
 `jobs.JobRecord`. In short:
 
 - `Branch`: name, kind (git/jj), head, subject, timestamp, `is_current`
-  (git: checked out in the repo; jj: bookmark on `@` or `@-`), and for git the
+  (git: checked out in the repo; jj: the working-copy row, or a bookmark on `@` or `@-`),
+  `working_copy` (jj's `@` row), and for git the
   `checkout_path` where it is checked out, if anywhere.
 - `LaunchSpec`: branch, agent, model, effort, mode (interactive/background),
   prompt text, timeout, and `main_checkout` (run without `--branch`, see §4).
@@ -295,7 +296,7 @@ Each phase ends with tests passing and a usable increment.
 ## 8. Implementation status (2026-10-22)
 
 Phases 0–3 are implemented, plus parts of phase 4 (`o` open worktree, `terminal_command`,
-`[models]` suggestions). 103 tests pass: CLI, config, prompt history, git and jj VCS, argv golden tests, the
+`[models]` suggestions). 104 tests pass: CLI, config, prompt history, git and jj VCS, argv golden tests, the
 job lifecycle against `tests/fake_project_sandbox.py`, and Textual Pilot UI tests.
 Sections 2–5 above describe the code as built, plus the additions below.
 
@@ -303,10 +304,11 @@ Additions (2026-10-22):
 
 - **Cheat-sheet** on the welcome screen: a four-column key panel under the branch
   list that replaces the footer line. `H` toggles it; `ui.cheatsheet` sets the default.
-- **jj without bookmarks**: the list shows one `@ working copy` row (`Branch.working_copy`).
-  Sessions on it run in the repository's workspace without `--branch`, like the git main
-  checkout, and project-sandbox sessions there are attributed to it. `n` offers `@` as the
-  start revision, and the row disappears once a bookmark exists.
+- **jj working copy**: jj repos always list an `@ working copy` row first
+  (`Branch.working_copy`), above the bookmarks. Sessions on it run in the repository's
+  workspace without `--branch`, like the git main checkout, and project-sandbox sessions
+  there are attributed to it; bookmarks keep their own workspaces. In a repo without
+  bookmarks, `n` offers `@` as the start revision.
 - **Prompt history** (`history.py`): per-repo JSON, newest last, deduplicated, capped at 500,
   written under a lock and re-read on every write so parallel TUIs merge. Recorded when
   an unsupervised run starts. The prompt box (`widgets.PromptArea`) offers fish-style ghost

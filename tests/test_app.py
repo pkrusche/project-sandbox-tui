@@ -346,6 +346,37 @@ def test_jj_repo_without_bookmarks_runs_in_working_copy(
     run_app(jj_repo_no_bookmarks, fake_cfg(), scenario)
 
 
+def test_jj_working_copy_alongside_bookmarks(
+    jj_repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        assert [r[1] for r in row_texts(app)] == ["@ working copy ●", "main ●"]
+        assert "1 bookmark ·" in str(app.main.query_one("#header").render())
+        await pilot.press("r")  # on @: runs in the repo's own workspace
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.main_checkout
+        form.query_one("#prompt", TextArea).text = "sleep:3"
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "@" in app.jobs.jobs)
+        assert "--branch" not in app.jobs.jobs["@"].argv
+        await wait_until(pilot, lambda: "@" in app.sessions)
+        assert "main" not in app.sessions  # the bookmark stays free for its own sandbox
+
+        await pilot.press("j", "r")  # on the bookmark: a separate jj workspace via --branch
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and not form.main_checkout
+        form.query_one("#prompt", TextArea).text = "sleep:0.1"
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
+        argv = app.jobs.jobs["main"].argv
+        assert argv[argv.index("--branch") + 1] == "main"
+
+        app.jobs.stop("@", app.sessions)
+        await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
+
+    run_app(jj_repo, fake_cfg(), scenario)
+
+
 def test_prompt_history_completion_browse_and_search(
     git_repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:

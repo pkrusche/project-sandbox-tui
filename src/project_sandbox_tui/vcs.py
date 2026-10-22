@@ -26,8 +26,8 @@ class Branch:
     is_current: bool = False
     # git only: where the branch is checked out (main checkout or a worktree)
     checkout_path: Path | None = None
-    # jj only: the pseudo-branch for the working copy, listed when the repo has
-    # no bookmarks; sessions on it run in the repository's own workspace.
+    # jj only: the pseudo-branch for the working copy (``@``), always listed
+    # first; sessions on it run in the repository's own workspace.
     working_copy: bool = False
 
     @property
@@ -199,12 +199,10 @@ class JjBackend:
                     is_current=current == "1",
                 )
             )
-        if not branches:
-            branches.append(self._working_copy())
-        return branches
+        return [self._working_copy(), *branches]
 
     def _working_copy(self) -> Branch:
-        """A repo without bookmarks still has a working copy to run a session in."""
+        """The working copy as a row: work directly on ``@`` without a bookmark."""
         out = self._jj("log", "--no-graph", "-r", "@", "-T", _JJ_WORKING_COPY_TEMPLATE)
         head, subject, ts = ([*out.rstrip("\n").split("\0"), "", ""])[:3]
         return Branch(
@@ -226,13 +224,12 @@ class JjBackend:
         )
 
     def default_start(self) -> str:
-        branches = self.list_branches()
-        names = {b.name for b in branches}
+        names = {b.name for b in self.list_branches() if not b.working_copy}
         for candidate in ("main", "master", "trunk"):
             if candidate in names:
                 return candidate
         # With no bookmarks, sessions have been working in @: bookmark that.
-        return "@" if any(b.working_copy for b in branches) else "@-"
+        return "@-" if names else "@"
 
 
 def detect(path: Path) -> Backend:
@@ -247,5 +244,7 @@ def detect(path: Path) -> Backend:
 
 
 def sort_branches(branches: list[Branch]) -> list[Branch]:
-    """Current branch first, then most recently committed."""
-    return sorted(branches, key=lambda b: (not b.is_current, -b.timestamp, b.name))
+    """jj working copy first, then the current branch, then most recently committed."""
+    return sorted(
+        branches, key=lambda b: (not b.working_copy, not b.is_current, -b.timestamp, b.name)
+    )
