@@ -364,7 +364,7 @@ class SandboxTUI(App[None]):
             ("", 1),
             ("branch", None),
             ("head", 8),
-            ("subject", None),
+            ("subject", 32),  # Ellipsize long messages to leave room for session status.
             ("status", None),
             ("agent", None),
             ("when", 8),
