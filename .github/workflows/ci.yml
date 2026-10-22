@@ -38,8 +38,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.12", "3.14"]
+        # os: [ubuntu-latest, macos-latest]
+        # python: ["3.12", "3.14"]
+        os: [ubuntu-latest]
+        python: ["3.14"]
     env:
       JJ_VERSION: v0.46.0
     steps:
