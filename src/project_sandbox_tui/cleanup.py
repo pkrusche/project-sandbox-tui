@@ -172,11 +172,12 @@ def _dirty(backend: Backend, repo: Path, path: Path) -> tuple[str, bool]:
     for directory, dirs, files in os.walk(path):
         if Path(directory) == path:
             dirs[:] = [d for d in dirs if d not in {".jj", ".git"}]
-        for file in files:
+        # os.walk lists symlinks to directories in dirs, but does not follow them.
+        # Inspect the links themselves just like files, including jj tracking status.
+        links = [d for d in dirs if (Path(directory) / d).is_symlink()]
+        for file in [*files, *links]:
             if str((Path(directory) / file).relative_to(path)) not in tracked:
                 ignored = True
-        if any((Path(directory) / d).is_symlink() for d in dirs):
-            dirty = dirty or "untracked directory symlinks"
     return dirty, ignored
 
 

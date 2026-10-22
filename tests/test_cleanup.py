@@ -384,3 +384,39 @@ def test_jj_new_changes_after_merge_are_kept(jj_repo: Path) -> None:
     assert not ws.removable and "uncommitted" in ws.status
     assert remove_workspaces(detect(jj_repo), Config(), [ws])[0].startswith("skipped")
     assert (path / "done.txt").read_text() == "unsnapshotted changes\n"
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+@pytest.mark.parametrize("target_kind", ["directory", "file", "missing"])
+def test_jj_cleanup_symlinks(jj_repo: Path, ignored: bool, target_kind: str) -> None:
+    if ignored:
+        (jj_repo / ".gitignore").write_text("link\n")
+        run("jj", "commit", "-m", "ignore link", cwd=jj_repo)
+        run("jj", "bookmark", "set", "main", "-r", "@-", cwd=jj_repo)
+    path = jj_repo.parent / "linked"
+    run("jj", "workspace", "add", str(path), "--name", "linked", "-r", "main", cwd=jj_repo)
+    target = jj_repo.parent / "target"
+    if target_kind == "directory":
+        target.mkdir()
+        (target / "precious.txt").write_text("keep")
+    elif target_kind == "file":
+        target.write_text("keep")
+    (path / "link").symlink_to(target, target_is_directory=target_kind == "directory")
+    if not ignored:
+        # A new tracked link is real unmerged work and must still be kept.
+        assert not _scan(jj_repo)["linked"].removable
+        run("jj", "bookmark", "set", "main", "-r", "linked@", cwd=jj_repo)
+        run("jj", "new", cwd=path)
+    assert run("jj", "log", "--no-graph", "-r", "@", "-T", "empty", cwd=path) == "true"
+    ws = _scan(jj_repo)["linked"]
+    assert ws.removable
+    if ignored:
+        assert "ignored files are deleted" in ws.status
+    assert remove_workspaces(detect(jj_repo), Config(), [ws]) == [f"removed linked: {path}"]
+    assert not path.exists()
+    if target_kind == "directory":
+        assert (target / "precious.txt").read_text() == "keep"
+    elif target_kind == "file":
+        assert target.read_text() == "keep"
+    else:
+        assert not target.exists()
