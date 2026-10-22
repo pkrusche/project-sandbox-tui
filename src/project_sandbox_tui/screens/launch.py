@@ -43,7 +43,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         background: $panel; padding: 1 2; border: none;
     }
     LaunchScreen .title { text-style: bold; margin-bottom: 1; }
-    LaunchScreen Input { border: none; height: 1; padding: 0 1; margin: 0; }
+    LaunchScreen Input, LaunchScreen Input:focus {
+        border: none; height: 1; padding: 0 1; margin: 0;
+    }
     LaunchScreen Input { background: $panel; }
     LaunchScreen Input:focus { background: $boost; }
     LaunchScreen .row-label { color: $text-muted; height: 1; padding: 0 1; margin-top: 1; }

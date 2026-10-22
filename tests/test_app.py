@@ -92,6 +92,28 @@ def test_create_branch(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
     assert "topic/new" in {b.name for b in detect(git_repo).list_branches()}
 
 
+@pytest.mark.parametrize("mode", ["r", "i"])
+def test_launch_inputs_remain_visible_when_focused(
+    git_repo: Path, fake_cfg: Callable[..., Config], mode: str
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press(mode)
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        inputs = list(form.query(Input))
+        for field in inputs:
+            field.focus()
+            await pilot.pause()
+            await pilot.press("end", "1")
+            assert field.value.endswith("1")
+            assert field.content_size.height == 1
+            assert field.value in field.render_line(0).text
+        # Focus changes must leave the other one-line fields readable too.
+        assert all(field.content_size.height == 1 for field in inputs)
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
 def test_background_run_notifies_and_shows_log(
     git_repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
