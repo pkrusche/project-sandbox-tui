@@ -12,7 +12,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import RichLog, Static
 
-from project_sandbox_tui.vcs import Backend, VcsError
+from project_sandbox_tui.vcs import JjBackend, VcsError
 from project_sandbox_tui.widgets import KeyHints
 
 
@@ -33,7 +33,7 @@ class DiffScreen(Screen[None]):
         Binding("g", "g_prefix", show=False),
     ]
 
-    def __init__(self, backend: Backend, base: str, target: str) -> None:
+    def __init__(self, backend: JjBackend, base: str, target: str) -> None:
         super().__init__()
         self.backend = backend
         self.base = base

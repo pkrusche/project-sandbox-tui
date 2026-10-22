@@ -14,7 +14,7 @@ from tests.conftest import FAKE, wait_for
 
 
 def sessions_for(repo: Path, branches: list[str]) -> dict[str, SessionRecord]:
-    return running_by_branch(read_sessions(), repo, "git", branches, None)
+    return running_by_branch(read_sessions(), repo, branches, None)
 
 
 def bg(branch: str, prompt: str) -> LaunchSpec:
@@ -36,15 +36,15 @@ def test_status_for_exit(code: int | None, status: str) -> None:
     assert status_for_exit(code) == status
 
 
-def test_background_job_lifecycle(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    jobs = JobManager(git_repo, fake_cfg())
+def test_background_job_lifecycle(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    jobs = JobManager(repo, fake_cfg())
     job = jobs.start_background(bg("main", "sleep:0.5 exit:0"), {})
     assert job.running and jobs.running_count() == 1
 
     # one sandbox per branch — guarded by our record and by session records
     with pytest.raises(BusyError):
         jobs.start_background(bg("main", "again"), {})
-    wait_for(lambda: "main" in sessions_for(git_repo, ["main"]) or not jobs.jobs["main"].running)
+    wait_for(lambda: "main" in sessions_for(repo, ["main"]) or not jobs.jobs["main"].running)
 
     finished: list = []
     wait_for(lambda: bool(finished.extend(jobs.refresh({})) or finished))
@@ -60,13 +60,13 @@ def test_background_job_lifecycle(git_repo: Path, fake_cfg: Callable[..., Config
     assert jobs.refresh({}) == []  # notified once only
 
 
-def test_failure_and_readoption(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_failure_and_readoption(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     cfg = fake_cfg()
-    first = JobManager(git_repo, cfg)
+    first = JobManager(repo, cfg)
     first.start_background(bg("feature/x", "sleep:0.8 exit:3"), {})
 
     # A fresh manager (TUI restart) adopts the still-running job from disk.
-    second = JobManager(git_repo, cfg)
+    second = JobManager(repo, cfg)
     assert second.jobs["feature/x"].running
     finished: list = []
     wait_for(lambda: bool(finished.extend(second.refresh({})) or finished))
@@ -74,29 +74,29 @@ def test_failure_and_readoption(git_repo: Path, fake_cfg: Callable[..., Config])
     assert (job.status, job.exit_code) == ("failed", 3)  # read from --json-summary
 
     # Not notified yet → a third start still reports it.
-    third = JobManager(git_repo, cfg)
+    third = JobManager(repo, cfg)
     assert [j.branch for j in third.refresh({})] == ["feature/x"]
-    assert third.clear("feature/x") and "feature/x" not in JobManager(git_repo, cfg).jobs
+    assert third.clear("feature/x") and "feature/x" not in JobManager(repo, cfg).jobs
 
 
-def test_stop_interrupts(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    jobs = JobManager(git_repo, fake_cfg())
+def test_stop_interrupts(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    jobs = JobManager(repo, fake_cfg())
     jobs.start_background(bg("main", "sleep:30"), {})
-    wait_for(lambda: "main" in sessions_for(git_repo, ["main"]))
+    wait_for(lambda: "main" in sessions_for(repo, ["main"]))
     assert "sent SIGINT" in jobs.stop("main", {})
     finished: list = []
     wait_for(lambda: bool(finished.extend(jobs.refresh({})) or finished))
     assert jobs.jobs["main"].status == "interrupted"
 
 
-def test_busy_from_external_session(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_busy_from_external_session(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     """A project-sandbox run started outside the TUI also blocks the branch."""
-    jobs = JobManager(git_repo, fake_cfg())
+    jobs = JobManager(repo, fake_cfg())
     proc = subprocess.Popen(
         [
             sys.executable,
             str(FAKE),
-            str(git_repo),
+            str(repo),
             "img",
             "--branch",
             "main",
@@ -106,8 +106,8 @@ def test_busy_from_external_session(git_repo: Path, fake_cfg: Callable[..., Conf
         stdout=subprocess.DEVNULL,
     )
     try:
-        wait_for(lambda: "main" in sessions_for(git_repo, ["main"]))
-        sessions = sessions_for(git_repo, ["main"])
+        wait_for(lambda: "main" in sessions_for(repo, ["main"]))
+        sessions = sessions_for(repo, ["main"])
         assert "running project-sandbox session" in (jobs.busy_reason("main", sessions) or "")
         with pytest.raises(BusyError):
             jobs.start_background(bg("main", "x"), sessions)
@@ -116,12 +116,12 @@ def test_busy_from_external_session(git_repo: Path, fake_cfg: Callable[..., Conf
         proc.wait()
 
 
-def test_interactive_holds_branch(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    jobs = JobManager(git_repo, fake_cfg())
+def test_interactive_holds_branch(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    jobs = JobManager(repo, fake_cfg())
     spec = LaunchSpec(branch="main", agent="codex")
     with jobs.interactive(spec, {}) as job:
         assert jobs.busy_reason("main", {})
-        assert JobManager(git_repo, fake_cfg()).busy_reason("main", {})  # visible on disk
+        assert JobManager(repo, fake_cfg()).busy_reason("main", {})  # visible on disk
         job.exit_code = 0
     assert not jobs.busy_reason("main", {})
     assert jobs.jobs["main"].status == "completed"
@@ -129,11 +129,11 @@ def test_interactive_holds_branch(git_repo: Path, fake_cfg: Callable[..., Config
 
 
 def test_stop_escalates_one_step_per_press(
-    git_repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    jobs = JobManager(git_repo, fake_cfg())
+    jobs = JobManager(repo, fake_cfg())
     jobs.start_background(bg("main", "sleep:30 ignore-signals"), {})
-    wait_for(lambda: "main" in sessions_for(git_repo, ["main"]))
+    wait_for(lambda: "main" in sessions_for(repo, ["main"]))
     assert "SIGINT" in jobs.stop("main", {})
     assert "already requested" in jobs.stop("main", {})  # double press is debounced
     monkeypatch.setattr(JobManager, "STOP_DEBOUNCE_S", 0.0)
@@ -145,10 +145,8 @@ def test_stop_escalates_one_step_per_press(
     assert jobs.jobs["main"].status == "interrupted"
 
 
-def test_external_session_closes_when_it_ends(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
-    jobs = JobManager(git_repo, fake_cfg())
+def test_external_session_closes_when_it_ends(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    jobs = JobManager(repo, fake_cfg())
     spec = LaunchSpec(branch="main", agent="claude")
     jobs.record_external(spec, ["project-sandbox"])
     assert jobs.refresh({}) == [] and jobs.jobs["main"].running  # still building: no session yet
@@ -157,7 +155,7 @@ def test_external_session_closes_when_it_ends(
         [
             sys.executable,
             str(FAKE),
-            str(git_repo),
+            str(repo),
             "img",
             "--branch",
             "main",
@@ -166,11 +164,11 @@ def test_external_session_closes_when_it_ends(
         ],
         stdout=subprocess.DEVNULL,
     )
-    wait_for(lambda: "main" in sessions_for(git_repo, ["main"]))
-    jobs.refresh(sessions_for(git_repo, ["main"]))
+    wait_for(lambda: "main" in sessions_for(repo, ["main"]))
+    jobs.refresh(sessions_for(repo, ["main"]))
     assert jobs.jobs["main"].session_seen and jobs.jobs["main"].running
     proc.wait()
-    jobs.refresh(sessions_for(git_repo, ["main"]))  # session gone → done, no 10-minute wait
+    jobs.refresh(sessions_for(repo, ["main"]))  # session gone → done, no 10-minute wait
     assert jobs.jobs["main"].status == "completed"
 
     # an external launch whose session never shows up closes after the grace period
@@ -180,19 +178,17 @@ def test_external_session_closes_when_it_ends(
     assert jobs.jobs["main"].status == "completed"
 
 
-def test_force_clear_drops_stuck_record(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    jobs = JobManager(git_repo, fake_cfg())
+def test_force_clear_drops_stuck_record(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    jobs = JobManager(repo, fake_cfg())
     jobs.record_external(LaunchSpec(branch="main", agent="claude"), ["x"])
     assert not jobs.clear("main")
     assert jobs.clear("main", force=True)
-    assert "main" not in JobManager(git_repo, fake_cfg()).jobs
+    assert "main" not in JobManager(repo, fake_cfg()).jobs
 
 
-def test_running_guard_reads_other_instances(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
-    first = JobManager(git_repo, fake_cfg())
-    second = JobManager(git_repo, fake_cfg())  # already open before the reservation
+def test_running_guard_reads_other_instances(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    first = JobManager(repo, fake_cfg())
+    second = JobManager(repo, fake_cfg())  # already open before the reservation
     spec = LaunchSpec(branch="main", agent="claude")
     job = first.record_external(spec, ["project-sandbox"])
     assert second.busy_reason("main", {})
@@ -286,9 +282,9 @@ def test_malformed_records_are_ignored(tmp_path: Path, raw: str) -> None:
 
 
 def test_failed_record_write_stops_detached_child(
-    git_repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    jobs = JobManager(git_repo, fake_cfg())
+    jobs = JobManager(repo, fake_cfg())
     children = []
     real_popen = subprocess.Popen
 

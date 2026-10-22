@@ -14,7 +14,7 @@ from project_sandbox_tui.sandbox import (
     read_sessions,
     running_by_branch,
 )
-from project_sandbox_tui.vcs import workspace_path
+from project_sandbox_tui.vcs import WORKING_COPY, workspace_path
 
 
 def make_cfg() -> Config:
@@ -124,7 +124,7 @@ def test_session_matching(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     sessions = tmp_path / "sessions"
     sessions.mkdir()
-    ws = workspace_path(repo, "git", "feat/x", None)
+    ws = workspace_path(repo, "feat/x", None)
 
     def rec(sid: str, status: str, pid: int, workspace: Path) -> None:
         (sessions / f"{sid}.json").write_text(
@@ -140,50 +140,29 @@ def test_session_matching(tmp_path: Path) -> None:
         )
 
     rec("live", "running", os.getpid(), ws)
-    rec("dead", "running", 999_999_999, workspace_path(repo, "git", "other", None))
-    rec("done", "completed", os.getpid(), workspace_path(repo, "git", "main", None))
+    rec("dead", "running", 999_999_999, workspace_path(repo, "other", None))
+    rec("done", "completed", os.getpid(), workspace_path(repo, "main", None))
     (sessions / "garbage.json").write_text("{not json")
 
     records = read_sessions(sessions)
     statuses = {r.session_id: r.status for r in records}
     assert statuses == {"live": "running", "dead": "orphaned", "done": "completed"}
-    matched = running_by_branch(records, repo, "git", ["main", "feat/x", "other"], None)
+    matched = running_by_branch(records, repo, ["main", "feat/x", "other"], None)
     assert list(matched) == ["feat/x"]
     assert matched["feat/x"].container_name == "c-live"
 
 
-def test_main_checkout_decision(git_repo: Path, tmp_path: Path) -> None:
-    from project_sandbox_tui.sandbox import CheckoutConflict, uses_main_checkout
-    from project_sandbox_tui.vcs import Branch, detect
-    from tests.conftest import run
-
-    def branch(name: str) -> Branch:
-        return next(b for b in detect(git_repo).list_branches() if b.name == name)
-
-    assert uses_main_checkout(git_repo, branch("main"), None)  # checked out in the repo
-    assert not uses_main_checkout(git_repo, branch("feature/x"), None)  # not checked out
-
-    # checked out in project-sandbox's own worktree → reuse it via --branch
-    ps_wt = workspace_path(git_repo, "git", "feature/x", None)
-    run("git", "worktree", "add", "-q", str(ps_wt), "feature/x", cwd=git_repo)
-    assert not uses_main_checkout(git_repo, branch("feature/x"), None)
-
-    # checked out in some other worktree → conflict
-    run("git", "branch", "other", cwd=git_repo)
-    run("git", "worktree", "add", "-q", str(tmp_path / "mine"), "other", cwd=git_repo)
-    with pytest.raises(CheckoutConflict, match="another worktree"):
-        uses_main_checkout(git_repo, branch("other"), None)
-
-
-def test_main_checkout_argv_omits_worktree_flags(tmp_path: Path) -> None:
-    spec = LaunchSpec(branch="main", agent="claude", main_checkout=True)
+def test_working_copy_argv_omits_workspace_flags(tmp_path: Path) -> None:
+    spec = LaunchSpec(branch=WORKING_COPY, agent="claude")
+    assert spec.main_checkout
     argv = build_argv(make_cfg(), tmp_path, spec)
     for flag in ("--branch", "--worktree-dir", "--keep-workspace"):
         assert flag not in argv
     assert LaunchSpec.from_dict(spec.to_dict()).main_checkout
+    assert not LaunchSpec(branch="main", agent="claude").main_checkout
 
 
-def test_main_checkout_sessions_map_to_current_branch(tmp_path: Path) -> None:
+def test_main_checkout_sessions_map_to_working_copy(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     sessions = tmp_path / "sessions"
     sessions.mkdir()
@@ -198,17 +177,4 @@ def test_main_checkout_sessions_map_to_current_branch(tmp_path: Path) -> None:
         )
     )
     records = read_sessions(sessions)
-    assert running_by_branch(records, repo, "git", ["main"], None) == {}
-    assert list(running_by_branch(records, repo, "git", ["main"], None, main_branch="main")) == [
-        "main"
-    ]
-
-
-def test_jj_working_copy_runs_in_main_checkout(tmp_path: Path) -> None:
-    from project_sandbox_tui.sandbox import uses_main_checkout
-    from project_sandbox_tui.vcs import WORKING_COPY, Branch
-
-    wc = Branch(WORKING_COPY, "jj", "abc", "wip", 0, is_current=True, working_copy=True)
-    assert uses_main_checkout(tmp_path, wc, None)
-    bookmark = Branch("feature", "jj", "def", "x", 0)
-    assert not uses_main_checkout(tmp_path, bookmark, None)
+    assert list(running_by_branch(records, repo, ["main"], None)) == [WORKING_COPY]

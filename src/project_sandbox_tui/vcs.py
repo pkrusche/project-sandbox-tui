@@ -1,4 +1,4 @@
-"""Branch / bookmark discovery and creation for git and jj repositories."""
+"""Bookmark discovery and creation for jj repositories."""
 
 from __future__ import annotations
 
@@ -8,9 +8,6 @@ import subprocess
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
-
-Kind = Literal["git", "jj"]
 
 
 class VcsError(RuntimeError):
@@ -20,15 +17,12 @@ class VcsError(RuntimeError):
 @dataclass(frozen=True)
 class Branch:
     name: str
-    kind: Kind
-    head: str  # short commit hash / change id
+    head: str  # short change id
     subject: str  # first line of the tip's description
     timestamp: int  # committer time (unix seconds), 0 if unknown
-    is_current: bool = False
-    # git only: where the branch is checked out (main checkout or a worktree)
-    checkout_path: Path | None = None
-    # jj only: the pseudo-branch for the working copy (``@``), always listed
-    # first; sessions on it run in the repository's own workspace.
+    is_current: bool = False  # on the working-copy commit or its parent
+    # The pseudo-branch for the working copy (``@``), always listed first;
+    # sessions on it run in the repository's own workspace.
     working_copy: bool = False
 
     @property
@@ -66,8 +60,8 @@ _INVALID_NAME = re.compile(r"[\s\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.
 def validate_branch_name(name: str) -> str | None:
     """Return an error message for an unusable branch name, else None.
 
-    Applies the intersection of git's ref rules and what is sensible for a jj
-    bookmark that project-sandbox will turn into a worktree directory.
+    Applies git's ref rules (bookmarks are exported to git) plus what is
+    sensible for a bookmark that project-sandbox turns into a workspace directory.
     """
     if not name:
         return "branch name is empty"
@@ -76,97 +70,19 @@ def validate_branch_name(name: str) -> str | None:
     return None
 
 
-def workspace_path(repo: Path, kind: Kind, branch: str, worktree_dir: Path | None) -> Path:
-    """Mirror project-sandbox's worktree/workspace location for ``branch``.
+def workspace_path(repo: Path, branch: str, worktree_dir: Path | None) -> Path:
+    """Mirror project-sandbox's workspace location for ``branch``.
 
-    Must match ``project_sandbox.worktree.path_for`` / ``jj_workspace.path_for``:
-    sibling ``<repo>-worktrees`` (git) or ``<repo>-workspaces`` (jj), slashes
-    replaced by ``-`` plus a 6-hex sha256 suffix when the name contained one.
+    Must match ``project_sandbox.jj_workspace.path_for``: sibling
+    ``<repo>-workspaces``, slashes replaced by ``-`` plus a 6-hex sha256 suffix
+    when the name contained one.
     """
     repo = repo.resolve()
-    suffix_dir = "worktrees" if kind == "git" else "workspaces"
-    root = worktree_dir or (repo.parent / f"{repo.name}-{suffix_dir}")
+    root = worktree_dir or (repo.parent / f"{repo.name}-workspaces")
     safe = branch.replace("/", "-")
     if "/" in branch:
         safe = f"{safe}-{hashlib.sha256(branch.encode()).hexdigest()[:6]}"
     return root / safe
-
-
-class Backend(Protocol):
-    kind: Kind
-    root: Path
-
-    def list_branches(self) -> list[Branch]: ...
-
-    def create_branch(self, name: str, start: str) -> None: ...
-
-    def default_start(self) -> str: ...
-
-    def diff(self, base: str, target: str) -> str: ...
-
-
-class GitBackend:
-    kind: Kind = "git"
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-
-    def list_branches(self) -> list[Branch]:
-        fmt = "%00".join(
-            (
-                "%(refname:lstrip=2)",
-                "%(objectname:short)",
-                "%(contents:subject)",
-                "%(committerdate:unix)",
-                "%(HEAD)",
-                "%(worktreepath)",
-            )
-        )
-        out = _run(
-            ["git", "for-each-ref", f"--format={fmt}", "refs/heads"],
-            self.root,
-        )
-        branches: list[Branch] = []
-        for line in out.splitlines():
-            parts = line.split("\0")
-            if len(parts) != 6:
-                continue
-            name, head, subject, ts, current, checkout = parts
-            branches.append(
-                Branch(
-                    name=name,
-                    kind="git",
-                    head=head,
-                    subject=subject,
-                    timestamp=int(ts) if ts.isdigit() else 0,
-                    is_current=current.strip() == "*",
-                    checkout_path=Path(checkout) if checkout else None,
-                )
-            )
-        return branches
-
-    def create_branch(self, name: str, start: str) -> None:
-        _run(["git", "branch", "--no-track", "--", name, start or "HEAD"], self.root)
-
-    def diff(self, base: str, target: str) -> str:
-        """Compare branch tips without external diff drivers or working-tree changes."""
-        return _run(
-            [
-                "git",
-                "--no-pager",
-                "diff",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-                f"refs/heads/{base}",
-                f"refs/heads/{target}",
-                "--",
-            ],
-            self.root,
-        )
-
-    def default_start(self) -> str:
-        return main_branch({b.name for b in self.list_branches()}) or "HEAD"
 
 
 _JJ_TEMPLATE = (
@@ -190,8 +106,6 @@ _JJ_WORKING_COPY_TEMPLATE = (
 
 
 class JjBackend:
-    kind: Kind = "jj"
-
     def __init__(self, root: Path) -> None:
         self.root = root
 
@@ -212,7 +126,6 @@ class JjBackend:
             branches.append(
                 Branch(
                     name=name,
-                    kind="jj",
                     head=head,
                     subject=subject,
                     timestamp=int(ts) if ts.isdigit() else 0,
@@ -227,7 +140,6 @@ class JjBackend:
         head, subject, ts = ([*out.rstrip("\n").split("\0"), "", ""])[:3]
         return Branch(
             name=WORKING_COPY,
-            kind="jj",
             head=head,
             subject=subject or "(no description set)",
             timestamp=int(ts) if ts.isdigit() else 0,
@@ -259,19 +171,22 @@ def main_branch(names: Collection[str], configured: str = "") -> str | None:
     return next((c for c in ("main", "master", "trunk") if c in names), None)
 
 
-def detect(path: Path) -> Backend:
-    """Find the repository containing ``path``; jj wins for colocated repos."""
+def detect(path: Path) -> JjBackend:
+    """Find the jj repository containing ``path``."""
     path = path.resolve()
     for candidate in (path, *path.parents):
         if (candidate / ".jj").is_dir():
             return JjBackend(candidate)
         if (candidate / ".git").exists():
-            return GitBackend(candidate)
-    raise VcsError(f"{path} is not inside a git or jj repository")
+            raise VcsError(
+                f"{candidate} is a git repository without jj; "
+                "run `jj git init --colocate` there first"
+            )
+    raise VcsError(f"{path} is not inside a jj repository")
 
 
 def sort_branches(branches: list[Branch]) -> list[Branch]:
-    """jj working copy first, then the current branch, then most recently committed."""
+    """Working copy first, then the current bookmarks, then most recently committed."""
     return sorted(
         branches, key=lambda b: (not b.working_copy, not b.is_current, -b.timestamp, b.name)
     )

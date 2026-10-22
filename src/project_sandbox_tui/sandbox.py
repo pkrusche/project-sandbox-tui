@@ -2,7 +2,7 @@
 
 The TUI never talks to a container runtime for normal operation; everything
 goes through the ``project-sandbox`` CLI so isolation, credential handling and
-worktree teardown stay in one place.
+workspace teardown stay in one place.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from project_sandbox_tui.config import Config, ConfigError
-from project_sandbox_tui.vcs import Branch, Kind, workspace_path
+from project_sandbox_tui.vcs import WORKING_COPY, workspace_path
 
 Mode = Literal["interactive", "background"]
 
@@ -30,10 +30,6 @@ class LaunchSpec:
     mode: Mode = "interactive"
     prompt_text: str = ""
     timeout: int = 0  # seconds, 0 = none
-    # Run in the repository's own checkout instead of a worktree (git only):
-    # used when the branch is the one checked out there, which git cannot
-    # check out a second time.
-    main_checkout: bool = False
     # Octopus integration: the result branch is ``branch``; ``inputs`` were merged
     # (or stacked onto ``base``) by sbx-tui before the session (see octopus.py).
     operation: str = ""  # "" | "merge" | "rebase"
@@ -49,7 +45,6 @@ class LaunchSpec:
             "mode": self.mode,
             "prompt_text": self.prompt_text,
             "timeout": self.timeout,
-            "main_checkout": self.main_checkout,
             "operation": self.operation,
             "inputs": list(self.inputs),
             "base": self.base,
@@ -65,11 +60,15 @@ class LaunchSpec:
             mode="background" if raw.get("mode") == "background" else "interactive",
             prompt_text=str(raw.get("prompt_text", "")),
             timeout=int(raw.get("timeout") or 0),
-            main_checkout=bool(raw.get("main_checkout")),
             operation=str(raw.get("operation") or ""),
             inputs=[str(i) for i in raw.get("inputs") or [] if isinstance(i, str)],
             base=str(raw.get("base") or ""),
         )
+
+    @property
+    def main_checkout(self) -> bool:
+        """Sessions on the working copy run in the repository's own workspace (no ``--branch``)."""
+        return self.branch == WORKING_COPY
 
     def label(self) -> str:
         parts = [self.agent]
@@ -92,33 +91,6 @@ class RunPaths:
     def transcript(self) -> Path:
         # project-sandbox writes a Markdown transcript beside the --log file.
         return self.log.with_suffix(".md")
-
-
-class CheckoutConflict(RuntimeError):
-    """The branch is checked out somewhere project-sandbox cannot use."""
-
-
-def uses_main_checkout(repo: Path, branch: Branch, worktree_dir: Path | None) -> bool:
-    """Decide whether a session on ``branch`` must run in the main checkout.
-
-    git refuses to check a branch out twice, so ``--branch`` fails for the
-    branch checked out in the repository itself; that one runs without
-    ``--branch``. A branch checked out in project-sandbox's own worktree is
-    reused as usual. Any other worktree is a conflict the user has to resolve.
-    """
-    if branch.working_copy:
-        return True  # jj working copy: run in the repository's own workspace
-    if branch.kind != "git" or branch.checkout_path is None:
-        return False
-    where = branch.checkout_path.resolve()
-    if where == repo.resolve():
-        return True
-    if where == workspace_path(repo, "git", branch.name, worktree_dir).resolve():
-        return False
-    raise CheckoutConflict(
-        f"{branch.name} is checked out in another worktree ({where}); "
-        "switch that worktree to a different branch first"
-    )
 
 
 def build_argv(
@@ -160,7 +132,7 @@ def build_argv(
     if s.cpus:
         argv += ["--cpus", str(s.cpus)]
 
-    # branch / worktree (project-sandbox rejects the worktree flags without --branch)
+    # branch / workspace (project-sandbox rejects the workspace flags without --branch)
     if not spec.main_checkout:
         argv += ["--branch", spec.branch]
         if p.worktree_dir:
@@ -300,21 +272,16 @@ def read_sessions(directory: Path | None = None) -> list[SessionRecord]:
 def running_by_branch(
     records: list[SessionRecord],
     repo: Path,
-    kind: Kind,
     branches: list[str],
     worktree_dir: Path | None,
-    main_branch: str | None = None,
 ) -> dict[str, SessionRecord]:
-    """Map branch name → running session, matching on the worktree path.
+    """Map branch name → running session, matching on the workspace path.
 
     A session whose workspace is the repository itself (started without
-    ``--branch``) belongs to ``main_branch``, the branch checked out there.
+    ``--branch``) belongs to the working copy.
     """
-    by_path = {
-        str(workspace_path(repo, kind, name, worktree_dir).resolve()): name for name in branches
-    }
-    if main_branch is not None:
-        by_path[str(repo.resolve())] = main_branch
+    by_path = {str(workspace_path(repo, name, worktree_dir).resolve()): name for name in branches}
+    by_path[str(repo.resolve())] = WORKING_COPY
     out: dict[str, SessionRecord] = {}
     for rec in records:
         if not rec.running or not rec.workspace_path:

@@ -23,9 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 
-def path_for(repo: Path, branch: str, kind: str, root: str | None) -> Path:
-    suffix = "worktrees" if kind == "git" else "workspaces"
-    base = Path(root) if root else repo.parent / f"{repo.name}-{suffix}"
+def path_for(repo: Path, branch: str, root: str | None) -> Path:
+    base = Path(root) if root else repo.parent / f"{repo.name}-workspaces"
     safe = branch.replace("/", "-")
     if "/" in branch:
         safe = f"{safe}-{hashlib.sha256(branch.encode()).hexdigest()[:6]}"
@@ -45,8 +44,7 @@ def main() -> int:
     args, _unknown = p.parse_known_args()
 
     repo = Path(args.project)
-    kind = "jj" if (repo / ".jj").is_dir() else "git"
-    workspace = path_for(repo, args.branch, kind, args.worktree_dir) if args.branch else repo
+    workspace = path_for(repo, args.branch, args.worktree_dir) if args.branch else repo
     prompt = args.prompt_text or ""
     sleep = float(m.group(1)) if (m := re.search(r"sleep:([\d.]+)", prompt)) else 0.0
     code = int(m.group(1)) if (m := re.search(r"exit:(\d+)", prompt)) else 0

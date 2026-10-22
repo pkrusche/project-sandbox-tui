@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -24,74 +23,57 @@ def run(*args: str, cwd: Path, env_extra: dict[str, str] | None = None) -> str:
 @pytest.fixture(autouse=True)
 def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
-    (tmp_path / "gitconfig").write_text(
-        "[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n"
-    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # also isolates jj's config
     return tmp_path
 
 
+def jj(repo: Path, *args: str) -> str:
+    return run("jj", *args, cwd=repo)
+
+
+def add_bookmark(repo: Path, name: str, path: str, text: str, start: str = "main") -> None:
+    """Commit ``path`` on top of ``start`` as bookmark ``name``; @ goes back onto main."""
+    jj(repo, "new", "--quiet", start)
+    (repo / path).write_text(text)
+    jj(repo, "commit", "--quiet", "-m", f"{name}: {path}")
+    jj(repo, "bookmark", "create", "--quiet", name, "-r", "@-")
+    jj(repo, "new", "--quiet", "main")
+
+
 @pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
+def repo(tmp_path: Path) -> Path:
+    """main ("first commit") and feature/x on top of it ("add b"); @ is empty on main."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    run("git", "init", "-q", cwd=repo)
+    jj(repo, "git", "init", "--quiet")
     (repo / "a.txt").write_text("a\n")
-    run("git", "add", "a.txt", cwd=repo)
-    run(
-        "git",
-        "commit",
-        "-q",
-        "-m",
-        "first commit",
-        cwd=repo,
-        env_extra={
-            "GIT_AUTHOR_DATE": "2020-01-01T00:00:00Z",
-            "GIT_COMMITTER_DATE": "2020-01-01T00:00:00Z",
-        },
-    )
-    run("git", "checkout", "-q", "-b", "feature/x", cwd=repo)
+    jj(repo, "commit", "--quiet", "-m", "first commit")
+    jj(repo, "bookmark", "create", "--quiet", "main", "-r", "@-")
     (repo / "b.txt").write_text("b\n")
-    run("git", "add", "b.txt", cwd=repo)
-    run(
-        "git",
-        "commit",
-        "-q",
-        "-m",
-        "add b",
-        cwd=repo,
-        env_extra={
-            "GIT_AUTHOR_DATE": "2020-01-01T00:00:01Z",
-            "GIT_COMMITTER_DATE": "2020-01-01T00:00:01Z",
-        },
-    )
-    run("git", "checkout", "-q", "main", cwd=repo)
+    jj(repo, "commit", "--quiet", "-m", "add b")
+    jj(repo, "bookmark", "create", "--quiet", "feature/x", "-r", "@-")
+    jj(repo, "new", "--quiet", "main")
     return repo
 
 
 @pytest.fixture
 def jj_repo(tmp_path: Path) -> Path:
-    if shutil.which("jj") is None:
-        pytest.skip("jj not installed")
     repo = tmp_path / "jjrepo"
     repo.mkdir()
-    run("jj", "git", "init", "--quiet", cwd=repo)
+    jj(repo, "git", "init", "--quiet")
     (repo / "a.txt").write_text("a\n")
-    run("jj", "commit", "--quiet", "-m", "first commit", cwd=repo)
-    run("jj", "bookmark", "create", "--quiet", "main", "-r", "@-", cwd=repo)
+    jj(repo, "commit", "--quiet", "-m", "first commit")
+    jj(repo, "bookmark", "create", "--quiet", "main", "-r", "@-")
     return repo
 
 
 @pytest.fixture
 def jj_repo_no_bookmarks(tmp_path: Path) -> Path:
-    if shutil.which("jj") is None:
-        pytest.skip("jj not installed")
     repo = tmp_path / "jjbare"
     repo.mkdir()
-    run("jj", "git", "init", "--quiet", cwd=repo)
+    jj(repo, "git", "init", "--quiet")
     (repo / "a.txt").write_text("a\n")
-    run("jj", "describe", "--quiet", "-m", "work in progress", cwd=repo)
+    jj(repo, "describe", "--quiet", "-m", "work in progress")
     return repo
 
 

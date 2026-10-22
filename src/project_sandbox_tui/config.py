@@ -77,7 +77,7 @@ class Project:
     build_version: str = ""  # --python / --rust version for the generated build
     worktree_dir: str = ""  # --worktree-dir
     keep_workspace: bool = True  # --keep-workspace
-    default_branch_start: str = ""  # start revision for new branches ("" = main/trunk)
+    default_branch_start: str = ""  # start revision for new bookmarks ("" = main/trunk/@-)
     main_branch: str = ""  # cleanup removes work fully merged into it ("" = main/master/trunk)
 
 
@@ -417,10 +417,10 @@ base_image = "python:3.12-slim"
 # docker_context = "."                 # -> --docker-context
 # build = "python-uv"                  # python-uv | rust-cargo | node-npm
 # build_version = "3.12"               # -> --python / --rust for the generated build
-# worktree_dir = ""                    # -> --worktree-dir (default: sibling <repo>-worktrees)
+# worktree_dir = ""                    # -> --worktree-dir (default: sibling <repo>-workspaces)
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new branches
-# main_branch = "main"                 # cleanup offers workspaces/branches fully merged into this
+# main_branch = "main"                 # cleanup offers workspaces/bookmarks fully merged into this
 
 # [defaults]
 # agent = "claude"                     # claude | codex | opencode | pi | bash

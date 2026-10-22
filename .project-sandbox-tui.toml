@@ -7,7 +7,7 @@
 # docker_context = "."                 # -> --docker-context
 build = "python-uv"                  # python-uv | rust-cargo | node-npm
 # build_version = "3.12"               # -> --python / --rust for the generated build
-# worktree_dir = ""                    # -> --worktree-dir (default: sibling <repo>-worktrees)
+# worktree_dir = ""                    # -> --worktree-dir (default: sibling <repo>-workspaces)
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new branches
 

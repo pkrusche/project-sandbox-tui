@@ -18,6 +18,7 @@ from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import detect
 from project_sandbox_tui.widgets import CycleField
+from tests.conftest import add_bookmark
 
 
 def run_app(
@@ -50,14 +51,15 @@ def row_texts(app: SandboxTUI) -> list[list[str]]:
     return [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
 
 
-def test_list_navigation_and_filter(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        assert [r[1] for r in row_texts(app)] == ["main ●", "feature/x"]
-        assert app.selected_branch_name() == "main"
+        assert [r[1] for r in row_texts(app)] == ["@ working copy ●", "main ●", "feature/x"]
+        assert "2 bookmarks ·" in str(app.main.query_one("#header").render())
+        assert app.selected_branch_name() == "@"
         await pilot.press("j")
-        assert app.selected_branch_name() == "feature/x"
-        await pilot.press("g", "g")
         assert app.selected_branch_name() == "main"
+        await pilot.press("g", "g")
+        assert app.selected_branch_name() == "@"
         await pilot.press("G")
         assert app.selected_branch_name() == "feature/x"
 
@@ -67,7 +69,7 @@ def test_list_navigation_and_filter(git_repo: Path, fake_cfg: Callable[..., Conf
         await pilot.press("enter")  # keep filter, back to list
         assert app.filter_text == "ma"
         await pilot.press("escape")  # clear filter
-        assert len(row_texts(app)) == 2
+        assert len(row_texts(app)) == 3
 
         await pilot.press("question_mark")
         assert isinstance(app.screen, HelpScreen)
@@ -75,10 +77,10 @@ def test_list_navigation_and_filter(git_repo: Path, fake_cfg: Callable[..., Conf
         assert not isinstance(app.screen, HelpScreen)
         assert app.is_running
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
-def test_create_branch(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_create_branch(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("n")
         assert isinstance(app.screen, NewBranchScreen)
@@ -89,14 +91,14 @@ def test_create_branch(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
         await pilot.press("enter")
         await wait_until(pilot, lambda: app.selected_branch_name() == "topic/new")
 
-    run_app(git_repo, fake_cfg(), scenario)
-    assert "topic/new" in {b.name for b in detect(git_repo).list_branches()}
+    run_app(repo, fake_cfg(), scenario)
+    assert "topic/new" in {b.name for b in detect(repo).list_branches()}
 
 
 @pytest.mark.parametrize("mode", ["r", "i"])
 @pytest.mark.parametrize("multiple", [False, True])
 def test_launch_inputs_remain_visible_when_focused(
-    git_repo: Path, fake_cfg: Callable[..., Config], mode: str, multiple: bool
+    repo: Path, fake_cfg: Callable[..., Config], mode: str, multiple: bool
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         if multiple:
@@ -117,12 +119,12 @@ def test_launch_inputs_remain_visible_when_focused(
         # Focus changes must leave the other one-line fields readable too.
         assert all(field.content_size.height == 1 for field in inputs)
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
 @pytest.mark.parametrize("mode", ["r", "i"])
 def test_launch_form_shows_base_branch(
-    git_repo: Path, fake_cfg: Callable[..., Config], mode: str
+    repo: Path, fake_cfg: Callable[..., Config], mode: str
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j")
@@ -132,17 +134,15 @@ def test_launch_form_shows_base_branch(
         assert isinstance(form, LaunchScreen)
         assert str(form.query_one("#start-branch", Static).render()) == selected
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
-def test_background_run_notifies_and_shows_log(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
+def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     cfg = fake_cfg()
     cfg.models = {"codex": ["gpt-x"]}
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("j", "r")  # feature/x, unsupervised
+        await pilot.press("G", "r")  # feature/x, unsupervised
         form = app.screen
         assert isinstance(form, LaunchScreen)
         assert isinstance(app.focused, TextArea)
@@ -180,13 +180,13 @@ def test_background_run_notifies_and_shows_log(
         await pilot.press("c")
         assert "feature/x" not in app.jobs.jobs
 
-    run_app(git_repo, cfg, scenario)
+    run_app(repo, cfg, scenario)
     # the choice became the new default for this repo
-    assert LastUsed.load(git_repo).agent == "codex"
+    assert LastUsed.load(repo).agent == "codex"
 
 
 def test_launch_form_keys_do_not_trigger_list_actions(
-    git_repo: Path, fake_cfg: Callable[..., Config]
+    repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("i")
@@ -196,10 +196,10 @@ def test_launch_form_keys_do_not_trigger_list_actions(
         await pilot.press("escape")
         assert not isinstance(app.screen, LaunchScreen)
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
-def test_missing_image_config_is_reported(git_repo: Path) -> None:
+def test_missing_image_config_is_reported(repo: Path) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("r")
         form = app.screen
@@ -208,15 +208,13 @@ def test_missing_image_config_is_reported(git_repo: Path) -> None:
         form.query_one("#prompt", TextArea).text = "go"
         await pilot.press("ctrl+enter")
         await pilot.pause(0.1)
-        assert "main" not in app.jobs.jobs
+        assert "@" not in app.jobs.jobs
 
-    run_app(git_repo, Config(), scenario)
-    assert LastUsed.load(git_repo).agent == ""  # failed launch did not become the default
+    run_app(repo, Config(), scenario)
+    assert LastUsed.load(repo).agent == ""  # failed launch did not become the default
 
 
-def test_filter_box_is_visible_above_footer(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
+def test_filter_box_is_visible_above_footer(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         sheet = app.main.query_one("#cheatsheet")
         box = app.main.query_one("#filter")
@@ -234,32 +232,11 @@ def test_filter_box_is_visible_above_footer(
         assert box.region.height == 1 and footer.region.height == 1
         assert box.region.y < footer.region.y  # stacked, not drawn on top of each other
 
-    run_app(git_repo, fake_cfg(), scenario)
-
-
-def test_run_on_current_git_branch_uses_main_checkout(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
-    async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        assert app.selected_branch_name() == "main"  # the checked-out branch
-        await pilot.press("r")
-        form = app.screen
-        assert isinstance(form, LaunchScreen) and form.main_checkout
-        form.query_one("#prompt", TextArea).text = "sleep:3"
-        await pilot.press("ctrl+enter")
-        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
-        argv = app.jobs.jobs["main"].argv
-        assert "--branch" not in argv and "--keep-workspace" not in argv
-        # the fake's session runs in the repo itself and is attributed to main
-        await wait_until(pilot, lambda: "main" in app.sessions)
-        app.jobs.stop("main", app.sessions)
-        await wait_until(pilot, lambda: not app.jobs.jobs["main"].running)
-
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
 def test_enter_does_not_launch_unsupervised_run(
-    git_repo: Path, fake_cfg: Callable[..., Config]
+    repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("r")
@@ -274,32 +251,10 @@ def test_enter_does_not_launch_unsupervised_run(
         assert app.screen is form  # still in the form; focus moved on
         await pilot.press("escape")
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
-def test_launch_rechecks_checkout_after_form_opens(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
-    from tests.conftest import run
-
-    async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("r")
-        form = app.screen
-        assert isinstance(form, LaunchScreen) and form.main_checkout
-        # Another terminal switches the checkout while the form is open.
-        run("git", "checkout", "-q", "feature/x", cwd=git_repo)
-        form.query_one("#prompt", TextArea).text = "sleep:0.1"
-        await pilot.press("ctrl+enter")
-        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
-        assert "--branch" in app.jobs.jobs["main"].argv
-        await wait_until(pilot, lambda: not app.jobs.jobs["main"].running)
-
-    run_app(git_repo, fake_cfg(), scenario)
-
-
-def test_external_launch_rechecks_busy_state(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
+def test_external_launch_rechecks_busy_state(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     from project_sandbox_tui.jobs import JobManager
     from project_sandbox_tui.sandbox import LaunchSpec
 
@@ -309,32 +264,32 @@ def test_external_launch_rechecks_busy_state(
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("i")
         assert isinstance(app.screen, LaunchScreen)
-        other = JobManager(git_repo, cfg)
-        reserved = other.record_external(LaunchSpec(branch="main", agent="codex"), ["other"])
+        other = JobManager(repo, cfg)
+        reserved = other.record_external(LaunchSpec(branch="@", agent="codex"), ["other"])
         await pilot.press("enter")
-        assert app.jobs.jobs["main"].started_at == reserved.started_at
-        assert app.jobs.jobs["main"].spec.agent == "codex"
-        assert LastUsed.load(git_repo).agent == ""
+        assert app.jobs.jobs["@"].started_at == reserved.started_at
+        assert app.jobs.jobs["@"].spec.agent == "codex"
+        assert LastUsed.load(repo).agent == ""
 
-    run_app(git_repo, cfg, scenario)
+    run_app(repo, cfg, scenario)
 
 
 def test_failed_external_launch_releases_reservation(
-    git_repo: Path, fake_cfg: Callable[..., Config]
+    repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     cfg = fake_cfg()
     cfg.ui.terminal_command = "definitely-not-an-installed-terminal {cmd}"
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("i", "enter")
-        assert "main" not in app.jobs.jobs
-        assert LastUsed.load(git_repo).agent == ""
+        assert "@" not in app.jobs.jobs
+        assert LastUsed.load(repo).agent == ""
 
-    run_app(git_repo, cfg, scenario)
+    run_app(repo, cfg, scenario)
 
 
 def test_log_follows_partial_utf8_and_truncation(
-    git_repo: Path, fake_cfg: Callable[..., Config]
+    repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     from textual.widgets import Log
 
@@ -342,7 +297,7 @@ def test_log_follows_partial_utf8_and_truncation(
     from project_sandbox_tui.sandbox import LaunchSpec
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        path = git_repo / "agent.log"
+        path = repo / "agent.log"
         path.write_bytes(b"first\n\xe2\x82")  # partial euro sign at a poll boundary
         job = JobRecord(
             "main",
@@ -350,7 +305,7 @@ def test_log_follows_partial_utf8_and_truncation(
             1,
             "",
             log_path=str(path),
-            stdout_path=str(git_repo / "out"),
+            stdout_path=str(repo / "out"),
         )
         screen = LogScreen(job)
         app.push_screen(screen)
@@ -371,7 +326,7 @@ def test_log_follows_partial_utf8_and_truncation(
         assert log.lines == ["replacement contents", ""]
         await pilot.press("q")
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
 def test_jj_repo_without_bookmarks_runs_in_working_copy(
@@ -381,7 +336,7 @@ def test_jj_repo_without_bookmarks_runs_in_working_copy(
         assert [r[1] for r in row_texts(app)] == ["@ working copy ●"]
         await pilot.press("r")
         form = app.screen
-        assert isinstance(form, LaunchScreen) and form.main_checkout
+        assert isinstance(form, LaunchScreen) and form.current_spec().main_checkout
         assert form.query_one("#branch", Input).value == "@"
         form.query_one("#prompt", TextArea).text = "sleep:3"
         await pilot.press("ctrl+enter")
@@ -402,7 +357,7 @@ def test_jj_working_copy_alongside_bookmarks(
         assert "1 bookmark ·" in str(app.main.query_one("#header").render())
         await pilot.press("r")  # on @: runs in the repo's own workspace
         form = app.screen
-        assert isinstance(form, LaunchScreen) and form.main_checkout
+        assert isinstance(form, LaunchScreen) and form.current_spec().main_checkout
         form.query_one("#prompt", TextArea).text = "sleep:3"
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
@@ -412,7 +367,7 @@ def test_jj_working_copy_alongside_bookmarks(
 
         await pilot.press("j", "r")  # on the bookmark: a separate jj workspace via --branch
         form = app.screen
-        assert isinstance(form, LaunchScreen) and not form.main_checkout
+        assert isinstance(form, LaunchScreen) and not form.current_spec().main_checkout
         form.query_one("#prompt", TextArea).text = "sleep:0.1"
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
@@ -426,18 +381,18 @@ def test_jj_working_copy_alongside_bookmarks(
 
 
 def test_prompt_history_completion_browse_and_search(
-    git_repo: Path, fake_cfg: Callable[..., Config]
+    repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     from project_sandbox_tui.history import PromptHistory
     from project_sandbox_tui.screens.history import HistorySearchScreen
     from project_sandbox_tui.widgets import PromptArea
 
-    history = PromptHistory.for_repo(git_repo)
+    history = PromptHistory.for_repo(repo)
     for p in ("fix the flaky parser test", "write docs for config", "fix lint warnings"):
         history.add(p)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("j", "r")  # feature/x: no previous run, empty prompt
+        await pilot.press("G", "r")  # feature/x: no previous run, empty prompt
         form = app.screen
         assert isinstance(form, LaunchScreen)
         area = form.query_one("#prompt", PromptArea)
@@ -480,13 +435,11 @@ def test_prompt_history_completion_browse_and_search(
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
 
-    run_app(git_repo, fake_cfg(), scenario)
-    assert PromptHistory.for_repo(git_repo).newest_first()[0] == "sleep:0.1 brand new prompt"
+    run_app(repo, fake_cfg(), scenario)
+    assert PromptHistory.for_repo(repo).newest_first()[0] == "sleep:0.1 brand new prompt"
 
 
-def test_cheatsheet_shown_on_start_and_toggles(
-    git_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
+def test_cheatsheet_shown_on_start_and_toggles(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         sheet = app.main.query_one("#cheatsheet")
         assert sheet.region.height > 0
@@ -498,7 +451,7 @@ def test_cheatsheet_shown_on_start_and_toggles(
         await pilot.pause()
         assert sheet.region.height > 0
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
     cfg = fake_cfg()
     cfg.ui.cheatsheet = False
@@ -506,11 +459,11 @@ def test_cheatsheet_shown_on_start_and_toggles(
     async def hidden(app: SandboxTUI, pilot: Any) -> None:
         assert app.main.query_one("#cheatsheet").region.height == 0
 
-    run_app(git_repo, cfg, hidden)
+    run_app(repo, cfg, hidden)
 
 
 def test_enter_that_launches_interactive_session_does_not_leak(
-    git_repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Regression: the Enter that submitted the launch form used to bubble up to the
     App after the form was popped, where it matched the branch list's Enter binding
@@ -528,20 +481,20 @@ def test_enter_that_launches_interactive_session_does_not_leak(
         await pilot.press("i")
         assert isinstance(app.screen, LaunchScreen)
         await pilot.press("enter")  # launch from the agent field
-        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
-        await wait_until(pilot, lambda: not app.jobs.jobs["main"].running)
+        await wait_until(pilot, lambda: "@" in app.jobs.jobs)
+        await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
         await pilot.pause(0.3)
         assert app.screen is app.main, f"stray screen after session: {app.screen!r}"
         assert not isinstance(app.screen, LogScreen)
         await pilot.press("question_mark")  # and the list still takes keys
         assert isinstance(app.screen, HelpScreen)
 
-    run_app(git_repo, cfg, scenario)
+    run_app(repo, cfg, scenario)
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
 def test_interactive_session_in_detached_tmux_session(
-    git_repo: Path, fake_cfg: Callable[..., Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, fake_cfg: Callable[..., Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import subprocess
     import sys
@@ -554,10 +507,10 @@ def test_interactive_session_in_detached_tmux_session(
     cfg = fake_cfg()
     cfg.sandbox.command = f"{sys.executable} {agent}"
     cfg.ui.terminal = "tmux"
-    name = launchers.session_name(git_repo, "main")
+    name = launchers.session_name(repo, "main")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("i")
+        await pilot.press("j", "i")  # main
         form = app.screen
         assert isinstance(form, LaunchScreen)
         assert "opens in tmux" in str(form.query_one(".title").render())
@@ -575,21 +528,21 @@ def test_interactive_session_in_detached_tmux_session(
         await wait_until(pilot, lambda: subprocess.run(has, capture_output=True).returncode != 0)
 
     try:
-        run_app(git_repo, cfg, scenario)
+        run_app(repo, cfg, scenario)
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True)
 
 
-def test_reload_config(git_repo: Path, tmp_path: Path) -> None:
+def test_reload_config(repo: Path, tmp_path: Path) -> None:
     from project_sandbox_tui.config import load
 
     global_path = tmp_path / "custom.toml"
     global_path.write_text('[defaults]\nagent = "codex"\n')
-    project_path = git_repo / ".project-sandbox-tui.toml"
+    project_path = repo / ".project-sandbox-tui.toml"
     project_path.write_text('[project]\nbase_image = "old"\n')
-    cfg = load(git_repo, global_path)
+    cfg = load(repo, global_path)
     cfg.sandbox.extra_args.append("--dry-run")
-    app = SandboxTUI(git_repo, detect(git_repo), cfg, config_path=global_path, dry_run=True)
+    app = SandboxTUI(repo, detect(repo), cfg, config_path=global_path, dry_run=True)
 
     async def scenario() -> None:
         async with app.run_test(size=(120, 30)) as pilot:
@@ -619,7 +572,7 @@ def test_reload_config(git_repo: Path, tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_modifier_hints(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_modifier_hints(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("left_control")
         assert "ctrl+r reload" in str(app.main.query_one("#cheatsheet", Static).content)
@@ -646,25 +599,17 @@ def test_modifier_hints(git_repo: Path, fake_cfg: Callable[..., Config]) -> None
 # ---------------------------------------------------------------- octopus
 
 
-def _add_git_branch(repo: Path, name: str, path: str, text: str) -> None:
-    from tests.conftest import run
-
-    run("git", "checkout", "-q", "-b", name, "main", cwd=repo)
-    (repo / path).write_text(text)
-    run("git", "add", path, cwd=repo)
-    run("git", "commit", "-q", "-m", f"{name}: {path}", cwd=repo)
-    run("git", "checkout", "-q", "main", cwd=repo)
-
-
-def test_selection_keys(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    add_bookmark(repo, "fix/y", "y.txt", "y\n")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         names = [r[1] for r in row_texts(app)]
-        assert len(names) == 3
-        await pilot.press("space")  # mark the first row and move down
-        assert app.selection() == [app.branches[0].name]
-        assert row_texts(app)[0][1].startswith("+ ")
+        assert len(names) == 4
+        await pilot.press("space")  # the working copy cannot be marked
+        assert app.selection() == []
+        await pilot.press("j", "space")  # mark the first bookmark and move down
+        assert app.selection() == [app.branches[1].name]
+        assert row_texts(app)[1][1].startswith("+ ")
         await pilot.press("space")
         assert len(app.selection()) == 2
         assert "2 selected" in str(app.main.query_one("#header").render())
@@ -680,16 +625,16 @@ def test_selection_keys(git_repo: Path, fake_cfg: Callable[..., Config]) -> None
         await pilot.press("escape")
         assert app.selection() == []
         # one branch is not enough
-        await pilot.press("space", "r")
+        await pilot.press("j", "space", "r")
         assert not isinstance(app.screen, LaunchScreen)
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
-@pytest.mark.parametrize("target", ["main", "topic/from-form"])
-def test_launch_branch_field(git_repo: Path, fake_cfg: Callable[..., Config], target: str) -> None:
+@pytest.mark.parametrize("target", ["@", "main", "topic/from-form"])
+def test_launch_branch_field(repo: Path, fake_cfg: Callable[..., Config], target: str) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("j", "r")
+        await pilot.press("G", "r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         field = form.query_one("#branch", Input)
@@ -698,18 +643,18 @@ def test_launch_branch_field(git_repo: Path, fake_cfg: Callable[..., Config], ta
         form.query_one("#prompt", TextArea).text = "exit:0"
         await pilot.pause()
         assert form.current_spec().branch == target
-        assert form.current_spec().main_checkout == (target == "main")
+        assert form.current_spec().main_checkout == (target == "@")
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: target in app.jobs.jobs)
         assert app.jobs.jobs[target].spec.branch == target
-        if target != "main":
-            branches = {b.name: b for b in detect(git_repo).list_branches()}
+        if target.startswith("topic/"):
+            branches = {b.name: b for b in detect(repo).list_branches()}
             assert branches[target].head == branches["feature/x"].head
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
-def test_launch_command_preview_scrolls(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_launch_command_preview_scrolls(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("r")
         form = app.screen
@@ -727,18 +672,19 @@ def test_launch_command_preview_scrolls(git_repo: Path, fake_cfg: Callable[..., 
         assert scroll.scroll_y > 0
         await pilot.press("escape")
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)
 
 
-def test_cleanup_workspaces_key(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_cleanup_workspaces_key(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     from project_sandbox_tui.screens.dialogs import CleanupScreen, MessageScreen
     from project_sandbox_tui.vcs import workspace_path
     from tests.conftest import run
 
-    path = workspace_path(git_repo, "git", "feature/x", None)
-    run("git", "worktree", "add", str(path), "feature/x", cwd=git_repo)
-    dirty = git_repo.parent / "dirty"
-    run("git", "worktree", "add", "--detach", str(dirty), "main", cwd=git_repo)
+    path = workspace_path(repo, "feature/x", None)
+    path.parent.mkdir()
+    run("jj", "workspace", "add", str(path), "--name", "feature/x", "-r", "feature/x", cwd=repo)
+    dirty = repo.parent / "dirty"
+    run("jj", "workspace", "add", str(dirty), "--name", "dirty", "-r", "main", cwd=repo)
     (dirty / "untracked").write_text("keep")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
@@ -747,7 +693,7 @@ def test_cleanup_workspaces_key(git_repo: Path, fake_cfg: Callable[..., Config])
         assert isinstance(app.screen, CleanupScreen)
         assert [(ws.name, ws.removable) for ws in app.screen.workspaces] == [
             ("feature/x", True),
-            ("dirty (detached)", False),
+            ("dirty", False),
         ]
         assert app.screen.selected == {0}
         await pilot.press("escape")
@@ -769,46 +715,44 @@ def test_cleanup_workspaces_key(git_repo: Path, fake_cfg: Callable[..., Config])
         assert dirty.exists()
         assert app.is_running
 
-        (dirty / "untracked").unlink()
-        run("git", "worktree", "remove", str(dirty), cwd=git_repo)
+        run("jj", "workspace", "forget", "dirty", cwd=repo)
         await pilot.press("W")  # nothing left: just a message
         await wait_until(pilot, lambda: isinstance(app.screen, MessageScreen))
         assert isinstance(app.screen, MessageScreen)
-        assert "No worktrees found" in app.screen.body
+        assert "No workspaces found" in app.screen.body
         await pilot.press("q")
         assert app.is_running
 
-    run_app(git_repo, fake_cfg(), scenario)
-    assert "feature/x" in run("git", "branch", cwd=git_repo)
+    run_app(repo, fake_cfg(), scenario)
+    assert "feature/x" in run("jj", "bookmark", "list", cwd=repo)
 
 
-def test_octopus_merge_background_git(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     from project_sandbox_tui.history import PromptHistory
-    from project_sandbox_tui.vcs import workspace_path
     from tests.conftest import run
 
-    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+    add_bookmark(repo, "fix/y", "y.txt", "y\n")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        order = [b.name for b in app.branches]
-        await pilot.press("v", "G", "r")  # select all three, unsupervised
+        order = [b.name for b in app.branches if not b.working_copy]
+        await pilot.press("v", "G", "r")  # select all three bookmarks, unsupervised
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.octopus is not None
         assert form.octopus.inputs == order
         result = form.query_one("#result", Input)
         assert result.value.startswith("merge/")
         prompt = form.query_one("#prompt", TextArea)
-        assert prompt.text.startswith("Integrate the branches")
+        assert prompt.text.startswith("Integrate the bookmarks")
         form.query_one("#agent", CycleField).value = "bash"
         await pilot.pause()
-        assert prompt.text.startswith("git status")
+        assert prompt.text.startswith("jj status")
         form.query_one("#operation", CycleField).value = "rebase"
         await pilot.pause()
-        assert "git diff --stat main --" in prompt.text
+        assert "jj diff --stat --from main --to @-" in prompt.text
         form.query_one("#operation", CycleField).value = "merge"
         form.query_one("#agent", CycleField).value = "claude"
         await pilot.pause()
-        assert prompt.text.startswith("Integrate the branches")
+        assert prompt.text.startswith("Integrate the bookmarks")
         # switching to rebase updates the untouched name and prompt
         form.query_one("#operation").focus()
         await pilot.press("l")
@@ -832,12 +776,12 @@ def test_octopus_merge_background_git(git_repo: Path, fake_cfg: Callable[..., Co
         assert app.selection() == []  # cleared after launching
         await wait_until(pilot, lambda: not app.jobs.jobs["merge/all"].running, timeout=15)
 
-    run_app(git_repo, fake_cfg(), scenario)
-    wt = workspace_path(git_repo, "git", "merge/all", None)
-    assert (wt / "b.txt").exists() and (wt / "y.txt").exists()  # merged on the host
-    assert len(run("git", "log", "-1", "--format=%P", cwd=wt).split()) == 3  # octopus
+    run_app(repo, fake_cfg(), scenario)
+    parents = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", '"merge/all"', "-T",
+                  'parents.map(|p| p.bookmarks()).join(",")', cwd=repo)  # fmt: skip
+    assert sorted(parents.split(",")) == ["feature/x", "fix/y", "main"]  # merged on the host
     # history keeps what was typed, not the generated state report
-    newest = PromptHistory.for_repo(git_repo).newest_first()[0]
+    newest = PromptHistory.for_repo(repo).newest_first()[0]
     assert "## Current state" not in newest and newest.endswith("sleep:0.3")
 
 
@@ -879,17 +823,17 @@ def test_octopus_rebase_background_jj(jj_repo: Path, fake_cfg: Callable[..., Con
 
 
 def test_octopus_interactive_resolution(
-    git_repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import contextlib
 
-    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+    add_bookmark(repo, "fix/y", "y.txt", "y\n")
     cfg = fake_cfg()
     cfg.sandbox.command = "true"  # the "agent" exits at once
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         monkeypatch.setattr(app, "suspend", contextlib.nullcontext)
-        await pilot.press("v", "j", "i")
+        await pilot.press("j", "v", "j", "i")  # main and the bookmark below it
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.octopus is not None
         assert "interactive session · merge 2 branches" in str(form.query_one("#title").render())
@@ -902,15 +846,15 @@ def test_octopus_interactive_resolution(
         await wait_until(pilot, lambda: not job.running)
         assert app.screen is app.main
 
-    run_app(git_repo, cfg, scenario)
+    run_app(repo, cfg, scenario)
 
 
-def test_cleanup_force_delete(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_cleanup_force_delete(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     from project_sandbox_tui.screens.dialogs import CleanupScreen, ConfirmScreen
     from tests.conftest import run
 
-    dirty = git_repo.parent / "dirty"
-    run("git", "worktree", "add", "--detach", str(dirty), "main", cwd=git_repo)
+    dirty = repo.parent / "dirty"
+    run("jj", "workspace", "add", str(dirty), "--name", "dirty", "-r", "main", cwd=repo)
     (dirty / "untracked").write_text("lost")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
@@ -919,11 +863,11 @@ def test_cleanup_force_delete(git_repo: Path, fake_cfg: Callable[..., Config]) -
         await pilot.press("D")
         await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
         assert isinstance(app.screen, ConfirmScreen)
-        assert "uncommitted or untracked files" in app.screen.body
+        assert "uncommitted changes" in app.screen.body
         assert f"Delete directory and all contents: {dirty}" in app.screen.body
         assert "  untracked" in app.screen.body
         assert "  a.txt" in app.screen.body
-        assert "Unregister worktree:" in app.screen.body
+        assert "Unregister workspace: dirty" in app.screen.body
         await pilot.press("n")  # cancelled: nothing happens
         await pilot.pause(0.2)
         assert dirty.exists()
@@ -936,15 +880,15 @@ def test_cleanup_force_delete(git_repo: Path, fake_cfg: Callable[..., Config]) -
         await wait_until(pilot, lambda: not dirty.exists())
         assert app.is_running
 
-    run_app(git_repo, fake_cfg(), scenario)
-    assert "dirty" not in run("git", "worktree", "list", cwd=git_repo)
+    run_app(repo, fake_cfg(), scenario)
+    assert "dirty" not in run("jj", "workspace", "list", cwd=repo)
 
 
-def test_diff_selection(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_diff_selection(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     from project_sandbox_tui.screens.diff import DiffScreen
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("j", "d")
+        await pilot.press("G", "d")
         assert isinstance(app.screen, DiffScreen)
         assert (app.screen.base, app.screen.target) == ("main", "feature/x")
         await app.workers.wait_for_complete()
@@ -965,4 +909,4 @@ def test_diff_selection(git_repo: Path, fake_cfg: Callable[..., Config]) -> None
         assert isinstance(app.screen, DiffScreen)
         assert (app.screen.base, app.screen.target) == ("feature/x", "main")
 
-    run_app(git_repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario)

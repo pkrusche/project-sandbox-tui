@@ -2,20 +2,21 @@
 
 A minimal vim/ranger-style terminal UI for
 [project-sandbox](https://github.com/pkrusche/project-sandbox). It lists the
-branches (git) or bookmarks (jj) of a repository and runs **one sandbox per
-branch**, either interactively in your terminal or unsupervised in the
-background with a prompt, and notifies you when background work is done.
+bookmarks of a [jj](https://github.com/jj-vcs/jj) repository and runs **one
+sandbox per bookmark**, either interactively in your terminal or unsupervised in
+the background with a prompt, and notifies you when background work is done.
 
 ```
- sbx-tui   ~/workspace/myproject  (git)   4 branches · 1 running
+ sbx-tui   ~/workspace/myproject   4 bookmarks · 1 running
    branch            head      subject                       status       agent              when
-   main ●            5cf8bea   Initial import
- ▶ feature/parser    c692d0c   Add streaming parser          running      claude/opus/high   12m
- ✓ fix/flaky-tests   8643f47   Stabilise integration tests   completed    codex/gpt-5.4      2m ago
- ✗ spike/tui         a1e2e23   Try a ranger-style layout     failed (1)   claude/sonnet      1h ago
+   @ working copy ●  qzmvtlno  (no description set)
+   main ●            kxyrwpsn  Initial import
+ ▶ feature/parser    sutnpmvo  Add streaming parser          running      claude/opus/high   12m
+ ✓ fix/flaky-tests   rlvkpnrz  Stabilise integration tests   completed    codex/gpt-5.4      2m ago
+ ✗ spike/tui         zsuskuln  Try a ranger-style layout     failed (1)   claude/sonnet      1h ago
 
    general               sessions                   branches
-   j k    down / up      i    interactive           n    new branch
+   j k    down / up      i    interactive           n    new bookmark
    gg G   top / bottom   r    unsupervised run      v ␣  select → merge/rebase
    ^d ^u  half page      x    stop (again: force)   o    open in editor
    /      filter         l ⏎  log / transcript      P    show command
@@ -29,8 +30,20 @@ key footer takes its place), and `ui.cheatsheet = false` starts with it
 hidden.
 
 The TUI only ever shells out to the `project-sandbox` CLI (`--branch`,
-`--agent/--model/--effort`, `--prompt-text --log --json-summary`). Isolation,
-credentials and worktree teardown stay in project-sandbox.
+`--agent/--model/--effort`, `--prompt-text --log --json-summary`) and to `jj`.
+Isolation, credentials and workspace teardown stay in project-sandbox.
+
+## Requirements
+
+sbx-tui works with jj repositories only; git support was removed. `jj` must be
+on your `PATH`. To use it with an existing git repository, colocate jj with it
+first:
+
+```sh
+cd ~/workspace/myproject && jj git init --colocate
+```
+
+Git branches then show up as jj bookmarks.
 
 ## Install
 
@@ -62,10 +75,10 @@ sbx-tui                  # the real thing
 | `r` | unsupervised run: prompt + optional timeout, runs in the background |
 | `x` | stop a background run: SIGINT for a clean teardown; each further press escalates to SIGTERM, then SIGKILL plus `container stop` |
 | `l` / `enter` | log view: transcript (`.md`), agent log, captured output (`tab` cycles, `f` toggles follow) |
-| `n` | new branch / bookmark (name + start revision) |
+| `n` | new bookmark (name + start revision) |
 | `v` · `space` | select branches: `v` starts a range at the cursor (`v` again keeps it), `space` marks one and moves on; `esc` clears. With two or more selected, `r` / `i` merge or rebase them, see [Merging and rebasing several branches](#merging-and-rebasing-several-branches) |
 | `d` | diff one selected branch (or the highlighted row) against main; two selected branches compare tips in selection order. Uses `project.main_branch`, or main/master/trunk. Scroll with `j`/`k`, `ctrl+d`/`ctrl+u`, `gg`/`G`; `q`/`esc` returns |
-| `o` | open the branch's worktree in your editor |
+| `o` | open the bookmark's workspace in your editor |
 | `P` | preview the full `project-sandbox` command |
 | `c` · `C` | clear a finished status · force-forget a record stuck as running (signals nothing) |
 | `R` · `?` · `q` | refresh · help · quit |
@@ -99,22 +112,16 @@ A branch counts as busy when either
   `~/.local/state/project-sandbox-tui/<repo>-<hash>/jobs/`, so a second TUI
   instance or a restarted one sees them), or
 - project-sandbox has a `running` session record whose workspace is that
-  branch's worktree, or the repository itself for the branch checked out
-  there. This also catches sessions you started from a shell, as long as they
-  used `--branch` or ran in the main checkout.
+  bookmark's jj workspace, or the repository itself for `@`. This also catches
+  sessions you started from a shell, as long as they used `--branch` or ran in
+  the repository itself.
 
-Sessions normally run in a project-sandbox worktree (`--branch`). git cannot
-check a branch out twice, so the branch checked out in your main checkout runs
-there instead, without `--branch` (the launch form says "in the main
-checkout"). A branch checked out in some other worktree is refused until you
-switch that worktree away from it. jj workspaces have no such restriction.
-
-In a jj repository the first row is always `@ working copy`, followed by the
-bookmarks. Sessions on `@` run in the repository's own workspace, on the
-working-copy commit, without `--branch`. Sessions on a bookmark get their own jj
-workspace as usual, so `@` and each bookmark are separate sandboxes. With no
-bookmarks yet, `n` offers `@` as the start revision; otherwise it prefers
-`main`/`master`/`trunk`, falling back to `@-`.
+The first row is always `@ working copy`, followed by the bookmarks. Sessions on
+`@` run in the repository's own workspace, on the working-copy commit, without
+`--branch`. Sessions on a bookmark get their own jj workspace (`--branch`), so
+`@` and each bookmark are separate sandboxes. With no bookmarks yet, `n` offers
+`@` as the start revision; otherwise it prefers `main`/`master`/`trunk`, falling
+back to `@-`.
 
 Background runs are detached from the TUI: quitting leaves them running, and the
 next start re-adopts them and notifies about any that finished meanwhile.
@@ -123,50 +130,44 @@ next start re-adopts them and notifies about any that finished meanwhile.
 
 ```sh
 sbx-tui --cleanup-workspaces --dry-run   # preview
-sbx-tui --cleanup-workspaces             # remove idle clean / merged workspaces and branches
+sbx-tui --cleanup-workspaces             # remove idle clean / merged workspaces and bookmarks
 ```
 
-In the TUI, `W` lists every workspace and merged branch it found with its path
+In the TUI, `W` lists every workspace and merged bookmark it found with its path
 and status (the reason wraps onto its own line; long lists scroll). Removable
 ones are preselected; the others are shown greyed out with the reason they are
 kept. Toggle with `space` (`a` selects all / none), press `enter` to remove the
 selection, `esc` to cancel. The CLI removes everything removable and prints the
-same list: `removed` / `would remove` / `deleted branch` lines, plus a `kept`
+same list: `removed` / `would remove` / `deleted bookmark` lines, plus a `kept`
 line with the reason for each of the rest.
 
-Workspaces come from the VCS itself (`git worktree list` / `jj workspace list`),
-so worktrees of deleted branches, detached worktrees and jj workspaces in any
-location or with any name are included. The workspace the TUI runs in is never
-listed. Workspaces are always kept when they have a running TUI job or
-project-sandbox session, uncommitted or untracked files (for jj: changes in `@`,
-or files too large to snapshot), are locked, or hold the repository itself (jj's
-`default` workspace).
+Workspaces come from `jj workspace list`, so workspaces of deleted bookmarks and
+workspaces in any location or with any name are included. The workspace the TUI
+runs in is never listed. Workspaces are always kept when they have a running TUI
+job or project-sandbox session, uncommitted changes in `@` or files too large to
+snapshot, or hold the repository itself (the `default` workspace).
 
 The main branch (`project.main_branch`, default: the first of `main` / `master`
 / `trunk`) relaxes the rules for work that is fully merged:
 
-- A workspace whose commits are all in the main branch (git: `HEAD` is an
-  ancestor; jj: only an empty, undescribed `@` is not in `::main`) may also be
-  removed when it only has ignored files (they are deleted) or when its directory
-  is missing (it is just unregistered). Its branch / bookmark is deleted with it,
-  except the main branch itself.
-- Branches / bookmarks fully merged into the main branch that have no workspace
-  are listed as rows of their own.
+- A workspace whose commits are all in the main branch (only empty revisions
+  are outside `::main`) may also be removed when it only has ignored files
+  (they are deleted) or when its directory is missing (it is just unregistered).
+  Its bookmark is deleted with it, except the main bookmark itself.
+- Bookmarks fully merged into the main branch that have no workspace are listed
+  as rows of their own.
 
 Unmerged workspaces with ignored files or a missing directory are kept. Removal
-re-checks each selected row, unregisters workspaces (`git worktree remove` /
-`jj workspace forget`), and deletes branches with `git update-ref -d` (only if the
-branch has not moved) / `jj bookmark delete` (which also deletes a tracked remote
+re-checks each selected row, unregisters workspaces (`jj workspace forget`), and
+deletes bookmarks with `jj bookmark delete` (which also deletes a tracked remote
 bookmark on the next `jj git push`). Job history is kept.
 
-To get rid of a kept workspace anyway (e.g. a stale jj working copy), highlight
-it and press `D`. After a confirmation this deletes its directory with everything
+To get rid of a kept workspace anyway (e.g. a stale working copy), highlight it
+and press `D`. After a confirmation this deletes its directory with everything
 in it (uncommitted, untracked and ignored files included) and unregisters it
-(`git worktree remove --force --force`, which also handles locked worktrees /
-`jj workspace forget`). Branches and bookmarks are kept. Workspaces with a
-running session and the repository itself (jj's `default` workspace) can never
-be force-deleted, and for jj only a directory that really is a workspace of this
-repository is deleted.
+(`jj workspace forget`). Bookmarks are kept. Workspaces with a running session
+and the repository itself (the `default` workspace) can never be force-deleted,
+and only a directory that really is a workspace of this repository is deleted.
 
 ## Merging and rebasing several branches
 
@@ -187,16 +188,14 @@ On launch sbx-tui does the mechanical part on your machine, then starts the
 session on the result branch, with the agent asked to resolve what is left
 **and review the integration** (semantic conflicts, tests):
 
-| | jj | git |
-|---|---|---|
-| merge | `jj new A B C` (conflicts are recorded in the commit) + bookmark `result` on it | worktree for `result` at `A`, octopus `git merge B C`; on conflicts one branch at a time, stopping at the first conflict |
-| rebase | each bookmark's own commits `jj duplicate`d onto the previous tip, starting at `base` | worktree for `result` at `base`, `git cherry-pick` of each branch's own commits, stopping at the first conflict |
+| | |
+|---|---|
+| merge | `jj new A B C` (conflicts are recorded in the commit) + bookmark `result` on it |
+| rebase | each bookmark's own commits `jj duplicate`d onto the previous tip, starting at `base`, + bookmark `result` on the last one |
 
 The inputs are never modified. A "Current state" section (what was merged,
-which files or commits conflict, what is still to apply) is appended to the
-prompt; for `i` it is shown before the session starts. Git commands run on
-your machine with hooks disabled, because the sandbox can write to `.git`.
-The templates can be replaced per repo in `[prompts]` (`octopus_merge`,
+which files or commits conflict) is appended to the prompt; for `i` it is shown
+before the session starts. The templates can be replaced per repo in `[prompts]` (`octopus_merge`,
 `octopus_rebase`; placeholders `{inputs}`, `{result}`, `{base}`, `{first}`,
 `{rest}`).
 
@@ -267,8 +266,8 @@ extra_args = []
 base_image = "python:3.12-slim"   # or: dockerfile = "Dockerfile" / build = "python-uv"
 build_version = ""                # --python / --rust for a generated build
 worktree_dir = ""
-keep_workspace = true             # reuse the worktree across runs
-default_branch_start = ""         # "" = main/master/trunk, else HEAD (git) / @- (jj)
+keep_workspace = true             # reuse the workspace across runs
+default_branch_start = ""         # "" = main/master/trunk, else @-
 main_branch = ""                  # cleanup removes work merged into it ("" = main/master/trunk)
 
 [ui]
@@ -293,7 +292,7 @@ you've launched something.
 
 ```sh
 uv sync
-uv run pytest                 # unit, Textual Pilot and pty tests; jj tests skip if jj is missing
+uv run pytest                 # unit, Textual Pilot and pty tests; needs jj on PATH
 uv run ruff check .           # lint
 uv run ruff format --check .  # formatting (drop --check to apply)
 uv run ty check               # types (src and tests; warnings are errors)

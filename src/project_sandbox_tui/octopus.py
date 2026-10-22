@@ -5,20 +5,12 @@ the result branch to a normal session whose prompt asks the agent to resolve
 what is left and review the integration. The ``bash`` agent instead summarizes
 changes and fails when conflicts remain.
 
-- jj merge:  ``jj new --no-edit A B C`` + bookmark ``result`` on it. jj records
+- merge:  ``jj new --no-edit A B C`` + bookmark ``result`` on it. jj records
   conflicts in the commit; the session starts on top of it.
-- jj rebase: ``jj duplicate`` each input's own commits onto the previous tip
-  (starting at ``base``), bookmark ``result`` on the last duplicate. Inputs are
-  never rewritten.
-- git merge: worktree for ``result`` (created at the first input) at
-  project-sandbox's own worktree path, then ``git merge`` of the others: one
-  octopus merge if it is clean, otherwise one at a time, stopping at the first
-  conflict so the session resolves it in place.
-- git rebase: worktree for ``result`` at ``base``, then ``git cherry-pick`` of
-  each input's own commits, stopping at the first conflict.
+- rebase: ``jj duplicate`` each input's own commits onto the previous tip
+  (starting at ``base``), bookmark ``result`` on the last duplicate.
 
-Inputs are only read. Host-side git runs with hooks disabled: the sandbox has
-``.git`` mounted read-write, so a hook written by an agent must never run here.
+Inputs are never rewritten.
 """
 
 from __future__ import annotations
@@ -30,13 +22,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from project_sandbox_tui.vcs import Kind, VcsError, validate_branch_name, workspace_path
+from project_sandbox_tui.vcs import validate_branch_name
 
 Operation = Literal["merge", "rebase"]
 OPERATIONS: tuple[str, ...] = ("merge", "rebase")
-
-# Disable hooks for every git command run on the host (see module docstring).
-_GIT = ["git", "-c", "core.hooksPath=/dev/null"]
 
 
 @dataclass
@@ -52,12 +41,9 @@ class OctopusState:
     """What the TUI managed to do; appended to the agent's prompt."""
 
     plan: OctopusPlan
-    kind: Kind
     clean: bool
     steps: list[str] = field(default_factory=list)  # what was done, in order
     conflicts: list[str] = field(default_factory=list)  # paths or commits with conflicts
-    pending: list[str] = field(default_factory=list)  # inputs / commits still to apply
-    workspace: Path | None = None  # git: the pre-created worktree
 
     def summary(self) -> str:
         what = "merge" if self.plan.operation == "merge" else "rebase"
@@ -72,9 +58,6 @@ class OctopusState:
         if self.conflicts:
             lines += ["", "Conflicts to resolve:"]
             lines += [f"- `{c}`" for c in self.conflicts]
-        if self.pending:
-            lines += ["", "Still to apply after resolving, in this order:"]
-            lines += [f"- `{p}`" for p in self.pending]
         if self.clean:
             lines += ["", "No conflicts were reported; review the result anyway."]
         return "\n".join(lines)
@@ -96,8 +79,8 @@ def default_result_name(operation: str, inputs: list[str], max_len: int = 60) ->
     return name
 
 
-DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
-    ("merge", "jj"): (
+DEFAULT_TEMPLATES: dict[str, str] = {
+    "merge": (
         "Integrate the bookmarks {inputs} into the bookmark `{result}`.\n\n"
         "sbx-tui has created the merge commit (`jj new {inputs_plain}`) and pointed "
         "`{result}` at it; your working copy sits on top of it. jj records conflicts in "
@@ -111,21 +94,7 @@ DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
         "Finish with a short summary: each conflict and how you resolved it, and any "
         "follow-ups."
     ),
-    ("merge", "git"): (
-        "Integrate the branches {inputs} into the branch `{result}`.\n\n"
-        "sbx-tui has created `{result}` from `{first}` in this worktree and started "
-        "merging the others; see the state below (`git status` shows any merge in "
-        "progress).\n\n"
-        "1. Resolve the conflicts, commit the merge, then merge the remaining branches "
-        "listed below one at a time (`git merge --no-ff <branch>`), resolving as you go.\n"
-        "2. Review the integrated result for semantic conflicts the VCS cannot see "
-        "(renamed APIs, duplicated logic, changed assumptions between branches).\n"
-        "3. Run the test suite and fix integration breakage.\n\n"
-        "Do not modify the branches {inputs}, and do not push.\n"
-        "Finish with a short summary: each conflict and how you resolved it, and any "
-        "follow-ups."
-    ),
-    ("rebase", "jj"): (
+    "rebase": (
         "Build `{result}` as a linear history on top of `{base}` containing the work "
         "of {inputs}, in that order.\n\n"
         "sbx-tui has duplicated each bookmark's own commits onto the previous one "
@@ -140,33 +109,12 @@ DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
         "Do not modify or move the input bookmarks {inputs}, and do not push.\n"
         "Finish with a short summary of conflicts, resolutions and follow-ups."
     ),
-    ("rebase", "git"): (
-        "Build `{result}` as a linear history on top of `{base}` containing the commits "
-        "of {inputs}, in that order.\n\n"
-        "sbx-tui has created `{result}` at `{base}` in this worktree and started "
-        "cherry-picking each branch's own commits; see the state below (`git status` "
-        "shows a cherry-pick in progress).\n\n"
-        "1. Resolve the conflict and `git cherry-pick --continue`; then cherry-pick the "
-        "remaining commits listed below, oldest first, resolving as you go.\n"
-        "2. Review the stack: each commit should still make sense on its new base.\n"
-        "3. Run the test suite on the final commit and fix breakage.\n\n"
-        "Do not modify the branches {inputs}, and do not push.\n"
-        "Finish with a short summary of conflicts, resolutions and follow-ups."
-    ),
 }
 
 
-def bash_prompt(kind: str, plan: OctopusPlan) -> str:
+def bash_prompt(plan: OctopusPlan) -> str:
     """Summarize the integration without resolving it; fail on conflicts."""
     baseline = plan.base if plan.operation == "rebase" else plan.inputs[0]
-    if kind == "git":
-        return (
-            "git status --short &&\n"
-            f"git diff --stat {shlex.quote(baseline)} -- &&\n"
-            "conflicts=$(git diff --name-only --diff-filter=U) &&\n"
-            'printf "Conflicts:\n%s\n" "$conflicts" &&\n'
-            '[ -z "$conflicts" ]'
-        )
     # Include conflicts in intermediate commits, even if the final tree is clean.
     return (
         "jj status &&\n"
@@ -235,9 +183,6 @@ def _revset_symbol(name: str) -> str:
     return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-# ---------------------------------------------------------------- jj
-
-
 def _jj(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return _run(["jj", "--no-pager", "--color=never", *args], repo, check=check)
 
@@ -258,7 +203,7 @@ def _jj_new_heads(repo: Path, before: set[str], within: str) -> list[str]:
     return [h for h in _jj_ids(repo, f"heads({within})") if h not in before]
 
 
-def _jj_merge(repo: Path, plan: OctopusPlan) -> OctopusState:
+def _merge(repo: Path, plan: OctopusPlan) -> OctopusState:
     symbols = [_revset_symbol(i) for i in plan.inputs]
     common = " & ".join(f"children({s})" for s in symbols)
     before = set(_jj_ids(repo, f"heads({common})"))
@@ -270,7 +215,7 @@ def _jj_merge(repo: Path, plan: OctopusPlan) -> OctopusState:
     merge = created[0]
     _jj(repo, "bookmark", "create", plan.result, "-r", merge)
     conflicts = _jj_conflicted_paths(repo, merge)
-    state = OctopusState(plan, "jj", clean=not conflicts, conflicts=conflicts)
+    state = OctopusState(plan, clean=not conflicts, conflicts=conflicts)
     state.steps.append(
         f"Created merge commit {merge[:12]} of {', '.join(f'`{i}`' for i in plan.inputs)}"
         f" and bookmark `{plan.result}` on it."
@@ -292,12 +237,12 @@ def _jj_duplicate(repo: Path, revset: str, onto: str) -> None:
         raise OctopusError(detail[-1] if detail else "jj duplicate failed")
 
 
-def _jj_rebase(repo: Path, plan: OctopusPlan) -> OctopusState:
+def _rebase(repo: Path, plan: OctopusPlan) -> OctopusState:
     base = _revset_symbol(plan.base)
     if not _jj_ids(repo, base):
         raise OctopusError(f"no such revision: {plan.base}")
     tip = _jj_ids(repo, base)[0]
-    state = OctopusState(plan, "jj", clean=True)
+    state = OctopusState(plan, clean=True)
     done: list[str] = []
     for name in plan.inputs:
         own = f"({base}..{_revset_symbol(name)})"
@@ -326,112 +271,11 @@ def _jj_rebase(repo: Path, plan: OctopusPlan) -> OctopusState:
     return state
 
 
-# ---------------------------------------------------------------- git
-
-
-def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return _run([*_GIT, *args], path, check=check)
-
-
-def _git_unmerged(path: Path) -> list[str]:
-    out = _git(path, "diff", "--name-only", "--diff-filter=U").stdout
-    return [line for line in out.splitlines() if line]
-
-
-def _git_worktree(repo: Path, plan: OctopusPlan, start: str, worktree_dir: Path | None) -> Path:
-    path = workspace_path(repo, "git", plan.result, worktree_dir)
-    if path.exists():
-        raise OctopusError(f"{path} already exists; remove it or pick another result name")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _git(repo, "worktree", "add", "-b", plan.result, str(path), start)
-    return path
-
-
-def _git_merge(repo: Path, plan: OctopusPlan, worktree_dir: Path | None) -> OctopusState:
-    first, rest = plan.inputs[0], plan.inputs[1:]
-    path = _git_worktree(repo, plan, first, worktree_dir)
-    state = OctopusState(plan, "git", clean=True, workspace=path)
-    state.steps.append(f"Created branch `{plan.result}` at `{first}` in worktree {path}.")
-    message = f"Merge {', '.join(rest)} into {plan.result}"
-    if len(rest) > 1:
-        octopus = _git(path, "merge", "--no-ff", "--no-edit", "-m", message, *rest, check=False)
-        if octopus.returncode == 0:
-            state.steps.append(f"Octopus-merged {', '.join(f'`{r}`' for r in rest)} cleanly.")
-            return state
-        # The octopus strategy refuses conflicts; start over one branch at a time.
-        _git(path, "merge", "--abort", check=False)
-        _git(path, "reset", "--hard", "HEAD")
-        state.steps.append("The octopus merge had conflicts; merging one branch at a time.")
-    for index, name in enumerate(rest):
-        merged = _git(path, "merge", "--no-ff", "--no-edit", name, check=False)
-        if merged.returncode == 0:
-            state.steps.append(f"Merged `{name}` cleanly.")
-            continue
-        state.clean = False
-        state.conflicts = _git_unmerged(path)
-        state.pending = rest[index + 1 :]
-        state.steps.append(f"Merging `{name}` stopped with conflicts (merge in progress).")
-        return state
-    return state
-
-
-def _git_rebase(repo: Path, plan: OctopusPlan, worktree_dir: Path | None) -> OctopusState:
-    if _git(
-        repo, "rev-parse", "--verify", "--quiet", plan.base + "^{commit}", check=False
-    ).returncode:
-        raise OctopusError(f"no such revision: {plan.base}")
-    path = _git_worktree(repo, plan, plan.base, worktree_dir)
-    state = OctopusState(plan, "git", clean=True, workspace=path)
-    state.steps.append(f"Created branch `{plan.result}` at `{plan.base}` in worktree {path}.")
-    picked: list[str] = []
-    queue: list[tuple[str, list[str]]] = []
-    for name in plan.inputs:
-        exclude = [f"^{p}" for p in picked]
-        rev_range = f"{plan.base}..{name}"
-        out = _git(repo, "rev-list", "--reverse", "--no-merges", rev_range, *exclude).stdout
-        queue.append((name, out.split()))
-        picked.append(name)
-    for index, (name, commits) in enumerate(queue):
-        if not commits:
-            state.steps.append(f"`{name}` has no commits of its own on top of `{plan.base}`.")
-            continue
-        for position, commit in enumerate(commits):
-            res = _git(path, "cherry-pick", commit, check=False)
-            if res.returncode == 0:
-                continue
-            if not _git_unmerged(path):
-                # Nothing conflicts: the change is already on the stack (empty pick).
-                _git(path, "cherry-pick", "--skip", check=False)
-                state.steps.append(f"Skipped {commit[:12]} of `{name}`: already applied.")
-                continue
-            state.clean = False
-            state.conflicts = _git_unmerged(path)
-            later = [c[:12] + f" ({name})" for c in commits[position + 1 :]]
-            later += [c[:12] + f" ({n})" for n, cs in queue[index + 1 :] for c in cs]
-            state.pending = later
-            state.steps.append(
-                f"Cherry-picking {commit[:12]} of `{name}` stopped with conflicts "
-                "(cherry-pick in progress)."
-            )
-            return state
-        state.steps.append(f"Cherry-picked {len(commits)} commit(s) of `{name}`.")
-    return state
-
-
 # ---------------------------------------------------------------- entry point
 
 
-def prepare(
-    kind: Kind, repo: Path, plan: OctopusPlan, worktree_dir: Path | None = None
-) -> OctopusState:
+def prepare(repo: Path, plan: OctopusPlan) -> OctopusState:
     """Do the mechanical merge / rebase on the host. Raises OctopusError before
-    anything is changed for invalid input; VCS failures later surface as
-    OctopusError too (the result branch may then exist and can be inspected)."""
-    try:
-        if kind == "jj":
-            return _jj_merge(repo, plan) if plan.operation == "merge" else _jj_rebase(repo, plan)
-        if plan.operation == "merge":
-            return _git_merge(repo, plan, worktree_dir)
-        return _git_rebase(repo, plan, worktree_dir)
-    except VcsError as exc:
-        raise OctopusError(str(exc)) from exc
+    anything is changed for invalid input; jj failures later surface as
+    OctopusError too (the result bookmark may then exist and can be inspected)."""
+    return _merge(repo, plan) if plan.operation == "merge" else _rebase(repo, plan)

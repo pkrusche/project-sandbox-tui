@@ -34,20 +34,18 @@ _MODAL_CSS = """
 
 
 class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
-    """Ask for a branch name and start revision."""
+    """Ask for a bookmark name and start revision."""
 
     DEFAULT_CSS = _MODAL_CSS.format(name="NewBranchScreen")
     BINDINGS = [Binding("escape", "cancel", show=False)]
 
-    def __init__(self, default_start: str, kind: str) -> None:
+    def __init__(self, default_start: str) -> None:
         super().__init__()
         self.default_start = default_start
-        self.kind = kind
 
     def compose(self) -> ComposeResult:
-        noun = "bookmark" if self.kind == "jj" else "branch"
         with Vertical():
-            yield Static(f"new {noun}", classes="title")
+            yield Static("new bookmark", classes="title")
             yield Static("name", classes="row-label")
             yield Input(placeholder="feature/my-change", id="name")
             yield Static("start at", classes="row-label")
@@ -151,7 +149,7 @@ class ForceRemove:
 
 
 class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
-    """List every workspace and merged branch; removable ones are preselected, the rest say why."""
+    """List every workspace and merged bookmark; removable ones are preselected, others say why."""
 
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="CleanupScreen")
@@ -177,11 +175,11 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
 
     def compose(self) -> ComposeResult:
         removable = sum(ws.removable for ws in self.workspaces)
-        branches = sum(ws.path is None for ws in self.workspaces)
+        bookmarks = sum(ws.path is None for ws in self.workspaces)
         kept = len(self.workspaces) - removable
-        summary = f"{len(self.workspaces) - branches} workspaces"
-        if branches:
-            summary += f" · {branches} merged branches"
+        summary = f"{len(self.workspaces) - bookmarks} workspaces"
+        if bookmarks:
+            summary += f" · {bookmarks} merged bookmarks"
         summary += f" · {removable} can be removed"
         if kept:
             summary += f" · {kept} kept (reason shown)"
@@ -201,7 +199,7 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
         ws = self.workspaces[index]
         label = Text("[x] " if index in self.selected else "[ ] " if ws.removable else "    ")
         label.append(ws.name, style="bold" if ws.removable else "bold dim")
-        label.append(f"  {ws.path}" if ws.path else "  branch", style="dim")
+        label.append(f"  {ws.path}" if ws.path else "  bookmark", style="dim")
         # The reason gets its own line(s): long ones wrap instead of being cut off.
         label.append(f"\n    {ws.status}", style="green" if ws.removable else "yellow")
         return label
@@ -303,7 +301,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
         (
             "branches",
             (
-                ("n", "new branch / bookmark"),
+                ("n", "new bookmark"),
                 (
                     "v / space",
                     "select a range / mark (esc clears); r or i then merges or rebases them",

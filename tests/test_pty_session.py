@@ -62,14 +62,14 @@ class Tui:
         os.close(self.fd)
 
 
-def start_tui(git_repo: Path, command: str, **env_extra: str) -> Tui:
-    (git_repo / ".project-sandbox-tui.toml").write_text(
+def start_tui(repo: Path, command: str, **env_extra: str) -> Tui:
+    (repo / ".project-sandbox-tui.toml").write_text(
         f'[project]\nbase_image = "img"\n[sandbox]\ncommand = "{command}"\n'
         '[ui]\nnotify_command = "true"\nbell = false\n'
     )
     pythonpath = os.pathsep.join(p for p in (str(SRC), os.environ.get("PYTHONPATH", "")) if p)
     env = {**os.environ, "TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra}
-    tui = Tui(git_repo, env)
+    tui = Tui(repo, env)
     try:
         assert tui.wait_for(b"unsupervised", 20), "TUI did not start"
         tui.send(b"?")
@@ -94,10 +94,8 @@ def assert_responsive(tui: Tui) -> None:
     ["clean", "raw", "nonblock"],
 )
 @pytest.mark.parametrize("exit_code", ["0", "3"])
-def test_tui_takes_keys_after_interactive_session(
-    git_repo: Path, mode: str, exit_code: str
-) -> None:
-    tui = start_tui(git_repo, f"{sys.executable} {AGENT}", FAKE_MODE=mode, FAKE_EXIT=exit_code)
+def test_tui_takes_keys_after_interactive_session(repo: Path, mode: str, exit_code: str) -> None:
+    tui = start_tui(repo, f"{sys.executable} {AGENT}", FAKE_MODE=mode, FAKE_EXIT=exit_code)
     try:
         tui.send(b"i")
         tui.pump(1.0)
@@ -114,8 +112,8 @@ def test_tui_takes_keys_after_interactive_session(
         tui.close()
 
 
-def test_tui_recovers_when_sandbox_command_is_missing(git_repo: Path, tmp_path: Path) -> None:
-    tui = start_tui(git_repo, str(tmp_path / "no-such-project-sandbox"))
+def test_tui_recovers_when_sandbox_command_is_missing(repo: Path, tmp_path: Path) -> None:
+    tui = start_tui(repo, str(tmp_path / "no-such-project-sandbox"))
     try:
         tui.send(b"i")
         tui.pump(1.0)

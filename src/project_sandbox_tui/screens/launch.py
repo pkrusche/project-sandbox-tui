@@ -18,7 +18,7 @@ from project_sandbox_tui import octopus as octopus_mod
 from project_sandbox_tui.config import AGENTS, EFFORTS, Config, LastUsed, LaunchDefaults
 from project_sandbox_tui.config import resolve_model as _resolve_model
 from project_sandbox_tui.history import PromptHistory
-from project_sandbox_tui.sandbox import CheckoutConflict, LaunchSpec, Mode
+from project_sandbox_tui.sandbox import LaunchSpec, Mode
 from project_sandbox_tui.screens.history import HistorySearchScreen
 from project_sandbox_tui.vcs import validate_branch_name
 from project_sandbox_tui.widgets import CycleField, KeyHints, PromptArea, modifier_key
@@ -29,7 +29,6 @@ class OctopusSetup:
     """Extra launch-form state for integrating several branches (see octopus.py)."""
 
     inputs: list[str]  # merge / stacking order
-    kind: str  # "git" | "jj"
     existing: set[str]  # branch names, for validating the result name
     default_base: str
     templates: dict[str, str]  # operation -> prompt template
@@ -78,12 +77,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         preview: Callable[[LaunchSpec], str],
         prompt_text: str = "",
         *,
-        main_checkout: bool = False,
         branch_label: str | None = None,
         prompt_history: PromptHistory | None = None,
         opens_in: str = "",
         branches: list[str] | None = None,
-        main_checkout_for: Callable[[str], bool] | None = None,
         octopus: OctopusSetup | None = None,
     ) -> None:
         super().__init__()
@@ -94,12 +91,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.defaults = defaults
         self.preview_fn = preview
         self.initial_prompt = prompt_text
-        self.main_checkout = main_checkout
         self.branch_label = branch_label or branch
         self.prompt_history = prompt_history
         self.opens_in = opens_in
         self.branches = branches or [branch]
-        self.main_checkout_for = main_checkout_for
         self.octopus = octopus
         self._auto_prompt = ""  # last template-rendered prompt (octopus only)
         self._auto_result = ""  # last generated result name (octopus only)
@@ -229,7 +224,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             base if operation == "rebase" else "",
         )
         if self._value("#agent", self.defaults.agent) == "bash":
-            return octopus_mod.bash_prompt(self.octopus.kind, plan)
+            return octopus_mod.bash_prompt(plan)
         return octopus_mod.render_prompt(self.octopus.templates[operation], plan)
 
     def _octopus_changed(self) -> None:
@@ -291,19 +286,12 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         operation, base = "", ""
         inputs: list[str] = []
         if self.octopus is not None:
-            # the result branch is created by the TUI; it never is the main checkout
             operation = self._value("#operation", "merge")
             inputs = list(self.octopus.inputs)
             branch = self._value("#result", self.branch)
             base = self._value("#base", "") if operation == "rebase" else ""
-            main_checkout = False
         else:
             branch = self.query_one("#branch", Input).value.strip()
-            main_checkout = (
-                self.main_checkout_for(branch)
-                if self.main_checkout_for
-                else self.main_checkout and branch == self.branch
-            )
         return LaunchSpec(
             branch=branch,
             agent=agent,
@@ -312,7 +300,6 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             mode=self.mode,
             prompt_text=prompt,
             timeout=timeout,
-            main_checkout=main_checkout,
             operation=operation,
             inputs=inputs,
             base=base,
@@ -405,11 +392,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 self.notify(error, severity="warning")
                 self.query_one("#branch").focus()
                 return
-        try:
-            spec = self.current_spec()
-        except CheckoutConflict as exc:
-            self.notify(str(exc), severity="error")
-            return
+        spec = self.current_spec()
         if spec.mode == "background" and not spec.prompt_text.strip():
             self.notify("an unsupervised run needs a prompt", severity="warning")
             self.query_one("#prompt").focus()

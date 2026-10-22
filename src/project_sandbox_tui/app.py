@@ -46,14 +46,12 @@ from project_sandbox_tui.config import (
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.sandbox import (
-    CheckoutConflict,
     LaunchSpec,
     Mode,
     SessionRecord,
     build_argv,
     read_sessions,
     running_by_branch,
-    uses_main_checkout,
 )
 from project_sandbox_tui.screens.dialogs import (
     CleanupScreen,
@@ -67,8 +65,8 @@ from project_sandbox_tui.screens.diff import DiffScreen
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import (
-    Backend,
     Branch,
+    JjBackend,
     VcsError,
     main_branch,
     sort_branches,
@@ -101,12 +99,11 @@ def human_age(seconds: float) -> str:
     return f"{seconds // 86400}d"
 
 
-def count_label(count: int, kind: str) -> str:
-    """'1 branch', '3 bookmarks', 'no bookmarks' (the working-copy row is not counted)."""
-    singular, plural = ("bookmark", "bookmarks") if kind == "jj" else ("branch", "branches")
+def count_label(count: int) -> str:
+    """'1 bookmark', '3 bookmarks', 'no bookmarks' (the working-copy row is not counted)."""
     if count == 0:
-        return f"no {plural}"
-    return f"{count} {singular if count == 1 else plural}"
+        return "no bookmarks"
+    return f"{count} bookmark{'' if count == 1 else 's'}"
 
 
 def _ts(value: str) -> float:
@@ -218,7 +215,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "branches",
         (
-            ("n", "new branch"),
+            ("n", "new bookmark"),
             ("v ␣", "select → merge/rebase"),
             ("d", "diff branches"),
             ("o", "open in editor"),
@@ -318,7 +315,7 @@ class SandboxTUI(App[None]):
     def __init__(
         self,
         repo: Path,
-        backend: Backend,
+        backend: JjBackend,
         cfg: Config,
         jobs: JobManager | None = None,
         sessions_dir: Path | None = None,
@@ -403,12 +400,7 @@ class SandboxTUI(App[None]):
         self.branches = sort_branches(branches)
         records = await asyncio.to_thread(read_sessions, self.sessions_dir)
         self.sessions = running_by_branch(
-            records,
-            self.repo,
-            self.backend.kind,
-            [b.name for b in self.branches],
-            self.worktree_dir,
-            main_branch=self.main_checkout_branch(),
+            records, self.repo, [b.name for b in self.branches], self.worktree_dir
         )
         for job in self.jobs.refresh(self.sessions):
             self._announce(job)
@@ -473,9 +465,8 @@ class SandboxTUI(App[None]):
         header = Text()
         header.append(" sbx-tui ", style="bold reverse")
         header.append(f"  {self.repo}", style="bold")
-        header.append(f"  ({self.backend.kind})", style="dim")
         count = sum(1 for b in self.branches if not b.working_copy)
-        stats = f"{count_label(count, self.backend.kind)} · {running} running"
+        stats = f"{count_label(count)} · {running} running"
         if busy_other:
             stats += f" · {busy_other} external"
         if self.filter_text:
@@ -487,31 +478,8 @@ class SandboxTUI(App[None]):
         header.append(f"   {stats}", style="dim")
         self.main.query_one("#header", Static).update(header)
 
-    def main_checkout_branch(self) -> str | None:
-        """The branch whose sessions run in the repository itself, if any.
-
-        git: the branch checked out there. jj: the working-copy row.
-        """
-        for b in self.branches:
-            if b.working_copy:
-                return b.name
-        if self.backend.kind != "git":
-            return None
-        repo = self.repo.resolve()
-        for b in self.branches:
-            if b.checkout_path is not None and b.checkout_path.resolve() == repo:
-                return b.name
-        return None
-
     def branch(self, name: str) -> Branch | None:
         return next((b for b in self.branches if b.name == name), None)
-
-    def _main_checkout(self, name: str) -> bool:
-        """Whether a session on ``name`` runs in the main checkout (raises on conflict)."""
-        branch = self.branch(name)
-        if branch is None:
-            return False
-        return uses_main_checkout(self.repo, branch, self.worktree_dir)
 
     def selected_branch_name(self) -> str | None:
         table = self.table
@@ -699,11 +667,6 @@ class SandboxTUI(App[None]):
         if reason:
             self.notify(reason, severity="warning")
             return
-        try:
-            main_checkout = self._main_checkout(name)
-        except CheckoutConflict as exc:
-            self.notify(str(exc), severity="error", timeout=8)
-            return
         last = LastUsed.load(self.repo)
         defaults = resolve_launch_defaults(self.cfg, last)
         previous = self.jobs.jobs.get(name)
@@ -718,14 +681,12 @@ class SandboxTUI(App[None]):
             defaults,
             self._form_preview,
             prompt,
-            main_checkout=main_checkout,
             branch_label=branch.label if branch is not None else name,
             opens_in=launchers.describe(self.cfg.ui.terminal_mode())
             if mode == "interactive"
             else "",
             prompt_history=self.prompt_history,
             branches=[b.name for b in self.branches],
-            main_checkout_for=self._main_checkout,
         )
         known_branches = {b.name for b in self.branches}
 
@@ -743,7 +704,6 @@ class SandboxTUI(App[None]):
                 severity="warning",
             )
             return
-        kind = self.backend.kind
         try:
             default_base = self.default_start or self.backend.default_start()
         except VcsError:
@@ -754,12 +714,10 @@ class SandboxTUI(App[None]):
         }
         setup = OctopusSetup(
             inputs=chosen,
-            kind=kind,
             existing={b.name for b in self.branches if not b.working_copy},
             default_base=default_base,
             templates={
-                op: overrides[op] or octopus.DEFAULT_TEMPLATES[(op, kind)]
-                for op in octopus.OPERATIONS
+                op: overrides[op] or octopus.DEFAULT_TEMPLATES[op] for op in octopus.OPERATIONS
             },
         )
         last = LastUsed.load(self.repo)
@@ -813,9 +771,7 @@ class SandboxTUI(App[None]):
                     timeout=8,
                 )
             self.notify(f"{spec.branch}: preparing {operation} of {len(spec.inputs)} branches…")
-            state = await asyncio.to_thread(
-                octopus.prepare, self.backend.kind, self.repo, plan, self.worktree_dir
-            )
+            state = await asyncio.to_thread(octopus.prepare, self.repo, plan)
         except (octopus.OctopusError, BusyError, VcsError) as exc:
             self.notify(f"{spec.branch}: {exc}", severity="error", timeout=10)
             await self.refresh_data()
@@ -843,7 +799,7 @@ class SandboxTUI(App[None]):
         banner: str = "",
     ) -> None:
         try:
-            # The checkout and external sessions may have changed while the
+            # Bookmarks and external sessions may have changed while the
             # launch form was open. Recheck immediately before starting.
             self.branches = sort_branches(self.backend.list_branches())
             if new_branch_start is not None:
@@ -852,14 +808,11 @@ class SandboxTUI(App[None]):
                 self._pending_select = spec.branch
             if self.branch(spec.branch) is None:
                 raise VcsError(f"{spec.branch} no longer exists")
-            spec.main_checkout = self._main_checkout(spec.branch)
             self.sessions = running_by_branch(
                 read_sessions(self.sessions_dir),
                 self.repo,
-                self.backend.kind,
                 [b.name for b in self.branches],
                 self.worktree_dir,
-                main_branch=self.main_checkout_branch(),
             )
             if spec.mode == "background":
                 job = self.jobs.start_background(spec, self.sessions)
@@ -868,7 +821,7 @@ class SandboxTUI(App[None]):
                 self._launch_external(spec)
             else:
                 self._launch_interactive(spec, banner)
-        except (BusyError, ConfigError, CheckoutConflict, VcsError, launchers.LaunchError) as exc:
+        except (BusyError, ConfigError, VcsError, launchers.LaunchError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
         except OSError as exc:
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
@@ -954,7 +907,7 @@ class SandboxTUI(App[None]):
                 start = self.backend.default_start()
             except VcsError:
                 start = ""
-        self.push_screen(NewBranchScreen(start, self.backend.kind), self._new_branch_chosen)
+        self.push_screen(NewBranchScreen(start), self._new_branch_chosen)
 
     def _new_branch_chosen(self, result: tuple[str, str] | None) -> None:
         self._create_branch(result)
@@ -987,16 +940,14 @@ class SandboxTUI(App[None]):
         name = self._require_branch()
         if name is None:
             return
-        path = workspace_path(self.repo, self.backend.kind, name, self.worktree_dir)
+        path = workspace_path(self.repo, name, self.worktree_dir)
         branch = self.branch(name)
-        if branch is not None and branch.checkout_path is not None:
-            path = branch.checkout_path  # git: wherever the branch is checked out
         if not path.exists():
             if branch is not None and branch.is_current:
                 path = self.repo
             else:
                 self.notify(
-                    f"{name}: no worktree yet (run a session with keep_workspace)",
+                    f"{name}: no workspace yet (run a session with keep_workspace)",
                     severity="warning",
                 )
                 return
@@ -1036,10 +987,9 @@ class SandboxTUI(App[None]):
                 agent=d.agent,
                 model=d.model,
                 effort=d.effort,
-                main_checkout=self._main_checkout(name),
             )
             body = self._spec_preview(spec)
-        except (ConfigError, CheckoutConflict) as exc:
+        except ConfigError as exc:
             body = f"! {exc}"
         self.push_screen(MessageScreen(f"interactive command for {name}", body))
 
@@ -1061,8 +1011,7 @@ class SandboxTUI(App[None]):
             self.notify(f"cleanup failed: {exc}", severity="error", timeout=8)
             return
         if not found:
-            noun = "worktrees" if self.backend.kind == "git" else "workspaces"
-            body = f"No {noun} found besides {self.repo}."
+            body = f"No workspaces found besides {self.repo}."
             self.push_screen(MessageScreen("nothing to clean up", body))
             return
         chosen = await self.push_screen_wait(CleanupScreen(found))
@@ -1091,7 +1040,7 @@ class SandboxTUI(App[None]):
 
     async def _force_remove_workspace(self, ws: Workspace) -> None:
         try:
-            body = await asyncio.to_thread(force_removal_details, ws, self.backend.kind)
+            body = await asyncio.to_thread(force_removal_details, ws)
         except OSError as exc:
             self.notify(f"cannot list files for deletion: {exc}", severity="error", timeout=8)
             return

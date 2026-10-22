@@ -22,7 +22,7 @@ for isolation, credentials and runtime handling.
 | TUI framework | **Textual** | Async event loop (needed for watching background jobs), `App.suspend()` for handing the terminal to an interactive agent, easy custom keybindings, testable with `Pilot` |
 | CLI parsing | `argparse` | House style |
 | Config format | TOML, read with stdlib `tomllib`; never written back (templates via `--init`) | Readable, comment-friendly |
-| VCS | git branches **and** jj bookmarks, auto-detected (`.jj/` → jj) | project-sandbox already does this for `--branch` |
+| VCS | jj bookmarks only (a `.jj/` directory is required; plain git repos are rejected with a `jj git init --colocate` hint) | One model to support; jj workspaces have no "checked out twice" restriction |
 | Process model | Background sessions are detached child processes (`start_new_session=True`) with a job record on disk | Jobs survive a TUI restart; TUI re-adopts them on launch |
 | Notifications | Pluggable command; defaults: `osascript -e 'display notification …'` on macOS, `notify-send` on Linux; plus in-TUI status + terminal bell | No extra dependencies |
 | Interactive sessions | Default: suspend the TUI and run `project-sandbox` in the same terminal; optional `terminal_command` template to launch in tmux / a new Terminal window | Simplest possible default, power-user escape hatch |
@@ -60,7 +60,7 @@ extra_args = []              # appended verbatim
 notify_command = ""          # "" = platform default; supports {title} {message}
 terminal = "inline"          # inline | tmux | zellij | screen | custom
 terminal_command = ""        # with terminal = "custom"; supports {cmd} {branch} {repo}
-editor_command = ""          # for `o` (open worktree), GUI editors; "" = $EDITOR in this terminal
+editor_command = ""          # for `o` (open workspace), GUI editors; "" = $EDITOR in this terminal
 refresh_seconds = 3
 bell = true
 
@@ -114,22 +114,22 @@ project-sandbox-tui/
 │   ├── __main__.py           # python -m project_sandbox_tui
 │   ├── cli.py                # argparse: sbx-tui [REPO] [--config] [--init] [--print-config] [--dry-run]
 │   ├── config.py             # dataclasses + TOML load/merge/validate, state dirs, last-used defaults
-│   ├── vcs.py                # Branch model; git + jj backends (list, create, current, checkout path)
-│   ├── sandbox.py            # LaunchSpec, argv builder, main-checkout rule, session records
+│   ├── vcs.py                # Branch model; jj backend (list, create, diff, working copy)
+│   ├── sandbox.py            # LaunchSpec, argv builder, session records
 │   ├── jobs.py               # JobRecord, JobManager: spawn detached, poll, adopt, stop, json-summary
 │   ├── notify.py             # platform notification
 │   ├── app.py                # Textual App + MainScreen (branch list, bindings, actions)
 │   ├── widgets.py            # CycleField (h/l choice field)
 │   └── screens/
 │       ├── launch.py         # agent/model/effort (+ prompt, timeout) form with live command preview
-│       ├── dialogs.py        # new branch, help, message/preview
+│       ├── dialogs.py        # new bookmark, help, message/preview
 │       └── log.py            # tail of a job's transcript / log / captured output
 └── tests/
     ├── fake_project_sandbox.py  # stand-in CLI: session records, log, transcript, summary
     ├── test_cli.py
     ├── test_config.py
-    ├── test_vcs.py           # against temp git and jj repos
-    ├── test_sandbox.py       # golden argv, main-checkout rule, session matching
+    ├── test_vcs.py           # against temp jj repos
+    ├── test_sandbox.py       # golden argv, working-copy rule, session matching
     ├── test_jobs.py          # lifecycle, adoption, stop escalation, external sessions
     └── test_app.py           # Textual Pilot: keybindings, launch forms, one-job-per-branch guard
 ```
@@ -139,12 +139,11 @@ project-sandbox-tui/
 The authoritative definitions are `vcs.Branch`, `sandbox.LaunchSpec` and
 `jobs.JobRecord`. In short:
 
-- `Branch`: name, kind (git/jj), head, subject, timestamp, `is_current`
-  (git: checked out in the repo; jj: the working-copy row, or a bookmark on `@` or `@-`),
-  `working_copy` (jj's `@` row), and for git the
-  `checkout_path` where it is checked out, if anywhere.
+- `Branch`: name, head, subject, timestamp, `is_current` (the working-copy row,
+  or a bookmark on `@` or `@-`) and `working_copy` (the `@` row).
 - `LaunchSpec`: branch, agent, model, effort, mode (interactive/background),
-  prompt text, timeout, and `main_checkout` (run without `--branch`, see §4).
+  prompt text, timeout; `main_checkout` is derived (`branch == "@"`: run without
+  `--branch`, see §4).
 - `JobRecord`: the spec plus pid, argv, log/summary/stdout paths, status
   (running, completed, failed, rate_limited, timeout, interrupted, orphaned),
   exit code, session id, container name, observed runtime, `notified`, and for sessions opened
@@ -157,7 +156,7 @@ The authoritative definitions are `vcs.Branch`, `sandbox.LaunchSpec` and
 ```
 project-sandbox <repo> <base_image | --dockerfile … | --python-uv|--rust-cargo|--node-npm>
   [--runtime <runtime>] [--memory …] [--cpus …]
-  --branch <name> [--worktree-dir …] [--keep-workspace]   # omitted in the main checkout
+  --branch <name> [--worktree-dir …] [--keep-workspace]   # omitted for the working copy @
   --agent <agent> [--model <model>] [--effort <effort>]
   [--internet-proxy <url>] [--agent-proxy <url>] [--ca-cert <pem>]… [--extra-domain …]…
   [--no-forward-credentials] [--api-key-env …]… [--api-key-env-file …]
@@ -169,19 +168,16 @@ project-sandbox <repo> <base_image | --dockerfile … | --python-uv|--rust-cargo
 The launch form previews the command live, and `P` shows the full command for
 the selected branch. `sbx-tui --dry-run` appends `--dry-run` to every call.
 
-**Main checkout.** git cannot check a branch out twice, so `--branch` fails for
-the branch checked out in the repository itself. Sessions on that branch run in
-the main checkout, without `--branch` and the worktree flags (which
-project-sandbox rejects without `--branch`). A branch checked out in
-project-sandbox's own worktree is reused via `--branch`. A branch checked out in
-any other worktree is refused with a message. jj workspaces are unaffected.
+**Working copy.** Sessions on the `@ working copy` row run in the repository's
+own workspace, without `--branch` and the workspace flags (which project-sandbox
+rejects without `--branch`). Every bookmark gets its own jj workspace via
+`--branch`.
 
 ### Background (`jobs.py`)
 
 1. Guard: refuse if a `JobRecord` with `status == running` exists for the
    branch, **or** a project-sandbox session record is `running` with that
-   branch's worktree as its workspace (or the repo itself, for the branch
-   checked out there). Records are read directly from
+   bookmark's jj workspace as its workspace (or the repo itself, for `@`). Records are read directly from
    `$XDG_STATE_HOME/project-sandbox/sessions/`; they carry no branch name.
 2. `subprocess.Popen(argv, stdin=DEVNULL, stdout/stderr → log, start_new_session=True)`;
    write `JobRecord`.
@@ -399,3 +395,11 @@ Known limitations / next steps:
 - Not yet implemented: ahead/behind vs trunk, a dirty marker, `--prompt FILE` / TODO-item
   prompts (to tie in with sbx-loop), remote bookmarks, and switching between repos.
 - No licence has been chosen yet (no `LICENSE` file, no `license` field in `pyproject.toml`).
+
+jj only (2026-10-22): git support was removed. `vcs.detect` requires a `.jj` directory
+and points plain git repositories at `jj git init --colocate`; `GitBackend`, the `Backend`
+protocol and `Branch.kind` / `checkout_path` are gone, and so are the git main-checkout
+rule (`uses_main_checkout`, `CheckoutConflict`), the git octopus merge / cherry-pick
+paths with their hook guard, and git worktree cleanup. `LaunchSpec.main_checkout` is now
+derived from `branch == "@"`, and sessions in the repository itself always belong to the
+`@` row. Mentions of git in the entries above are historical.

@@ -15,12 +15,12 @@ from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.screens.dialogs import CleanupScreen, NewBranchScreen
 
 
-@pytest.mark.parametrize("kind, start", [("jj", "@-"), ("git", "main")])
-def test_new_branch_inputs_remain_visible_when_focused(kind: str, start: str) -> None:
+@pytest.mark.parametrize("start", ["@-", "main"])
+def test_new_branch_inputs_remain_visible_when_focused(start: str) -> None:
     async def scenario() -> None:
         app: App[None] = App()
         async with app.run_test(size=(80, 24)) as pilot:
-            app.push_screen(NewBranchScreen(start, kind))
+            app.push_screen(NewBranchScreen(start))
             await pilot.pause()
             name = app.screen.query_one("#name", Input)
             revision = app.screen.query_one("#start", Input)
