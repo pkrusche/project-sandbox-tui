@@ -24,6 +24,7 @@ def run(*args: str, cwd: Path, env_extra: dict[str, str] | None = None) -> str:
 def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # also isolates jj's config
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))  # never the real ~/.codex
     return tmp_path
 
 

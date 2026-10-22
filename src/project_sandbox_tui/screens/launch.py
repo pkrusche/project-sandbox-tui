@@ -14,6 +14,7 @@ from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Input, Static, TextArea
 
+from project_sandbox_tui import models as models_mod
 from project_sandbox_tui import octopus as octopus_mod
 from project_sandbox_tui.config import AGENTS, EFFORTS, Config, LastUsed, LaunchDefaults
 from project_sandbox_tui.config import resolve_model as _resolve_model
@@ -22,6 +23,8 @@ from project_sandbox_tui.sandbox import LaunchSpec, Mode
 from project_sandbox_tui.screens.history import HistorySearchScreen
 from project_sandbox_tui.vcs import validate_branch_name
 from project_sandbox_tui.widgets import CycleField, KeyHints, PromptArea, modifier_key
+
+CUSTOM_MODEL = "custom (enter model name)"
 
 
 @dataclass
@@ -98,6 +101,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.octopus = octopus
         self._auto_prompt = ""  # last template-rendered prompt (octopus only)
         self._auto_result = ""  # last generated result name (octopus only)
+        self.model_store = models_mod.load_store()  # downloaded catalog, if any
         if octopus is not None:
             self.branch = octopus_mod.default_result_name("merge", octopus.inputs)
             self._auto_result = self.branch
@@ -146,15 +150,26 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                     classes="prompt-hint",
                 )
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
-            with Horizontal(classes="field"):
-                yield Static("model", classes="field-label")
+            yield CycleField(
+                "model",
+                self._model_options(self.defaults.agent, self.defaults.model),
+                self.defaults.model,
+                empty_label="agent default",
+                id="model",
+            )
+            with Horizontal(classes="field", id="custom-model-row") as custom_model_row:
+                custom_model_row.display = False
+                yield Static("name", classes="field-label")
                 yield Input(
                     value=self.defaults.model,
-                    placeholder="agent default",
-                    suggester=self._suggester(self.defaults.agent),
+                    placeholder="model name (blank uses agent default)",
                     select_on_focus=False,
-                    id="model",
+                    id="custom-model",
                 )
+            model_hint = models_mod.store_hint(self.defaults.agent, self.model_store)
+            hint_widget = Static(model_hint, id="model-hint", classes="prompt-hint")
+            hint_widget.display = bool(model_hint)
+            yield hint_widget
             yield CycleField("effort", ("", *EFFORTS), self.defaults.effort, id="effort")
             if self.mode == "background":
                 with Horizontal(classes="field"):
@@ -270,9 +285,11 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             hint = f"{count} prompts in history · ctrl+p/n browse · ctrl+r search · ctrl+l clear"
         self.query_one("#prompt-hint", Static).update(KeyHints(hint))
 
-    def _suggester(self, agent: str) -> SuggestFromList | None:
-        models = self.cfg.models.get(agent) or []
-        return SuggestFromList(models, case_sensitive=False) if models else None
+    def _model_options(self, agent: str, current: str) -> list[str]:
+        if agent == "bash":
+            return [""]
+        models = models_mod.suggestions(agent, self.cfg.models.get(agent), self.model_store)
+        return list(dict.fromkeys(["", *([current] if current else []), *models, CUSTOM_MODEL]))
 
     # ------------------------------------------------------------ state
 
@@ -283,6 +300,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             timeout = int(raw) if raw.isdigit() else 0
         prompt = self.query_one("#prompt", TextArea).text if self.mode == "background" else ""
         agent = self.query_one("#agent", CycleField).value
+        model = self.query_one("#model", CycleField).value
+        if model == CUSTOM_MODEL:
+            model = self.query_one("#custom-model", Input).value.strip()
         operation, base = "", ""
         inputs: list[str] = []
         if self.octopus is not None:
@@ -295,7 +315,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         return LaunchSpec(
             branch=branch,
             agent=agent,
-            model=self.query_one("#model", Input).value.strip(),
+            model=model if agent != "bash" else "",
             effort=self.query_one("#effort", CycleField).value,
             mode=self.mode,
             prompt_text=prompt,
@@ -316,9 +336,17 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     @on(CycleField.Changed, "#agent")
     def _agent_changed(self, event: CycleField.Changed) -> None:
-        model = self.query_one("#model", Input)
-        model.suggester = self._suggester(event.value)
-        model.value = _resolve_model(self.cfg, self.last, event.value)
+        model = self.query_one("#model", CycleField)
+        current = "" if event.value == "bash" else _resolve_model(self.cfg, self.last, event.value)
+        model.options = self._model_options(event.value, current)
+        model.value = current
+        model.refresh()
+        self.query_one("#custom-model", Input).value = current
+        self._update_custom_model()
+        hint = self.query_one("#model-hint", Static)
+        text = models_mod.store_hint(event.value, self.model_store)
+        hint.update(text)
+        hint.display = bool(text)
         self._octopus_changed()
         self._update_preview()
 
@@ -327,6 +355,17 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     @on(Input.Changed, "#base")
     def _octopus_field_changed(self) -> None:
         self._octopus_changed()
+
+    def _update_custom_model(self) -> None:
+        self.query_one("#custom-model-row").display = (
+            self.query_one("#agent", CycleField).value != "bash"
+            and self.query_one("#model", CycleField).value == CUSTOM_MODEL
+        )
+
+    @on(CycleField.Changed, "#model")
+    def _model_changed(self) -> None:
+        self._update_custom_model()
+        self._changed()
 
     @on(CycleField.Changed, "#effort")
     @on(Input.Changed)

@@ -120,7 +120,7 @@ class Config:
     project: Project = field(default_factory=Project)
     ui: UI = field(default_factory=UI)
     prompts: Prompts = field(default_factory=Prompts)
-    models: dict[str, list[str]] = field(default_factory=dict)  # per-agent suggestions
+    models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
     sources: list[Path] = field(default_factory=list)  # files that were loaded
 
     # ---------------------------------------------------------- helpers
@@ -464,9 +464,11 @@ refresh_seconds = 3
 bell = true
 cheatsheet = true             # key cheat-sheet under the branch list (H toggles)
 
-[models]
-claude = ["opus", "sonnet", "haiku"]
-codex = ["gpt-5.4", "gpt-5.4-mini"]
+# [models]                   # extra launch-form suggestions, listed first. Built in:
+#                             # Claude aliases, Codex's own list (~/.codex/models_cache.json)
+#                             # and the list from `sbx-tui --update-models`
+# claude = ["opus", "sonnet"]
+# codex = ["gpt-5.5"]
 
 # [prompts]                   # templates for merging / rebasing selected branches (v / space,
 #                             # then r); placeholders {inputs} {result} {base} {first} {rest}

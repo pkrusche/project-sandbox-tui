@@ -354,6 +354,11 @@ Changes from the original plan, made after reading the project-sandbox source:
 - **Extra network flags**: `agent_proxy`, `agent_proxy_key_env`, `extra_domains`,
   `allow_github` and `no_firewall`.
 - **Models**: `[models]` only feeds autocomplete. A blank model means the agent's own default.
+- **Model list** (`models.py`): suggestions merge `[models]`, Claude aliases, Codex's
+  `models_cache.json` and a filtered models.dev catalog stored in
+  `state_home()/models.json`. Downloaded only by `--update-models` / first `--init`
+  (HTTPS or local file, 20 MB cap, validated, atomic replace); nothing third-party is
+  bundled. Next: a picker popup with prices/context, and effort choices per model.
 - **`--dry-run`** on `sbx-tui` adds `--dry-run` to every project-sandbox call.
 
 Interactive-session fix (2026-10-22): after an interactive session the TUI ignored keys.
