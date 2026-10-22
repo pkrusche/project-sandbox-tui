@@ -938,3 +938,31 @@ def test_cleanup_force_delete(git_repo: Path, fake_cfg: Callable[..., Config]) -
 
     run_app(git_repo, fake_cfg(), scenario)
     assert "dirty" not in run("git", "worktree", "list", cwd=git_repo)
+
+
+def test_diff_selection(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui.screens.diff import DiffScreen
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "d")
+        assert isinstance(app.screen, DiffScreen)
+        assert (app.screen.base, app.screen.target) == ("main", "feature/x")
+        await app.workers.wait_for_complete()
+        await pilot.press("q")
+        app.marked = ["feature/x"]
+        await pilot.press("d")
+        assert isinstance(app.screen, DiffScreen)
+        assert (app.screen.base, app.screen.target) == ("main", "feature/x")
+        await pilot.press("escape")
+        app.marked = ["feature/x", "main"]
+        await pilot.press("d")
+        assert isinstance(app.screen, DiffScreen)
+        assert (app.screen.base, app.screen.target) == ("feature/x", "main")
+        await pilot.press("q")
+        app.cfg.project.main_branch = "feature/x"
+        app.marked = ["main"]
+        await pilot.press("d")
+        assert isinstance(app.screen, DiffScreen)
+        assert (app.screen.base, app.screen.target) == ("feature/x", "main")
+
+    run_app(git_repo, fake_cfg(), scenario)

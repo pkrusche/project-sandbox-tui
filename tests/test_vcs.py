@@ -64,6 +64,10 @@ def test_jj_list_and_create(jj_repo: Path) -> None:
         ("trailing/", False),
         ("x.lock", False),
         ("a:b", False),
+        ("topic/.hidden", False),
+        ("topic.lock/child", False),
+        ("a\x00b", False),
+        ("a\x7fb", False),
     ],
 )
 def test_validate_branch_name(name: str, ok: bool) -> None:
@@ -114,11 +118,6 @@ def test_branch_names_are_unambiguous_with_matching_tags(git_repo: Path) -> None
     assert {b.name for b in vcs.detect(git_repo).list_branches()} == {"main", "feature/x"}
 
 
-@pytest.mark.parametrize("name", ["topic/.hidden", "topic.lock/child", "a\x00b", "a\x7fb"])
-def test_invalid_branch_components(name: str) -> None:
-    assert vcs.validate_branch_name(name)
-
-
 def test_jj_always_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
     backend = vcs.detect(jj_repo_no_bookmarks)
     [wc] = backend.list_branches()
@@ -129,3 +128,73 @@ def test_jj_always_offers_the_working_copy(jj_repo_no_bookmarks: Path) -> None:
     branches = vcs.sort_branches(backend.list_branches())
     assert [b.name for b in branches] == ["@", "feature"]  # still listed, and first
     assert backend.default_start() == "@-"  # bookmarks exist, none named main/master/trunk
+
+
+def test_sort_branches_priorities_and_ties() -> None:
+    def branch(
+        name: str,
+        timestamp: int = 0,
+        *,
+        is_current: bool = False,
+        working_copy: bool = False,
+    ) -> vcs.Branch:
+        return vcs.Branch(
+            name,
+            "jj",
+            "abc",
+            "subject",
+            timestamp,
+            is_current=is_current,
+            working_copy=working_copy,
+        )
+
+    branches = [
+        branch("z", 10),
+        branch("a", 10),
+        branch("newest", 20),
+        branch("current", 1, is_current=True),
+        branch("old", 1),
+        branch("@", working_copy=True),
+    ]
+    original = branches.copy()
+    assert [b.name for b in vcs.sort_branches(branches)] == [
+        "@",
+        "current",
+        "newest",
+        "a",
+        "z",
+        "old",
+    ]
+    assert branches == original
+    assert vcs.sort_branches([]) == []
+
+
+def test_git_diff_tips(git_repo: Path) -> None:
+    backend = vcs.detect(git_repo)
+    diff = backend.diff("main", "feature/x")
+    assert "diff --git" in diff
+    assert "+" in diff
+    assert backend.diff("main", "main") == ""
+    assert backend.diff("feature/x", "main") != diff
+    # Diverging main contributes deletions to a tip-to-tip comparison.
+    from tests.conftest import run
+
+    (git_repo / "main-only.txt").write_text("main only\n")
+    run("git", "add", "main-only.txt", cwd=git_repo)
+    run("git", "commit", "-qm", "advance main", cwd=git_repo)
+    assert "-main only" in backend.diff("main", "feature/x")
+    with pytest.raises(vcs.VcsError):
+        backend.diff("missing", "main")
+
+
+def test_jj_diff_tips(jj_repo: Path) -> None:
+    from tests.conftest import run
+
+    backend = vcs.detect(jj_repo)
+    run("jj", "new", "main", cwd=jj_repo)
+    (jj_repo / "diff-file").write_text("new content\n")
+    run("jj", "bookmark", "create", "feature", cwd=jj_repo)
+    diff = backend.diff("main", "feature")
+    assert "diff --git" in diff
+    assert "+new content" in diff
+    assert backend.diff("main", "main") == ""

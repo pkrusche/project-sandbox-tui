@@ -16,8 +16,8 @@ from project_sandbox_tui.config import Config, Project, Sandbox
 FAKE = Path(__file__).with_name("fake_project_sandbox.py")
 
 
-def run(*args: str, cwd: Path) -> str:
-    env = {**os.environ, "JJ_USER": "Test", "JJ_EMAIL": "test@example.com"}
+def run(*args: str, cwd: Path, env_extra: dict[str, str] | None = None) -> str:
+    env = {**os.environ, "JJ_USER": "Test", "JJ_EMAIL": "test@example.com", **(env_extra or {})}
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout
 
 
@@ -39,12 +39,33 @@ def git_repo(tmp_path: Path) -> Path:
     run("git", "init", "-q", cwd=repo)
     (repo / "a.txt").write_text("a\n")
     run("git", "add", "a.txt", cwd=repo)
-    run("git", "commit", "-q", "-m", "first commit", cwd=repo)
-    time.sleep(1.1)  # distinct committer timestamps for sort order
+    run(
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "first commit",
+        cwd=repo,
+        env_extra={
+            "GIT_AUTHOR_DATE": "2020-01-01T00:00:00Z",
+            "GIT_COMMITTER_DATE": "2020-01-01T00:00:00Z",
+        },
+    )
     run("git", "checkout", "-q", "-b", "feature/x", cwd=repo)
     (repo / "b.txt").write_text("b\n")
     run("git", "add", "b.txt", cwd=repo)
-    run("git", "commit", "-q", "-m", "add b", cwd=repo)
+    run(
+        "git",
+        "commit",
+        "-q",
+        "-m",
+        "add b",
+        cwd=repo,
+        env_extra={
+            "GIT_AUTHOR_DATE": "2020-01-01T00:00:01Z",
+            "GIT_COMMITTER_DATE": "2020-01-01T00:00:01Z",
+        },
+    )
     run("git", "checkout", "-q", "main", cwd=repo)
     return repo
 
@@ -86,8 +107,8 @@ def fake_cfg() -> Callable[..., Config]:
 
 
 def wait_for(predicate: Callable[[], bool], timeout: float = 10.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.05)

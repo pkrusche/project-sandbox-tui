@@ -33,8 +33,8 @@ class Tui:
         self.buf = bytearray()
 
     def pump(self, seconds: float) -> None:
-        end = time.time() + seconds
-        while time.time() < end:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
             ready, _, _ = select.select([self.fd], [], [], 0.05)
             if ready:
                 try:
@@ -43,8 +43,8 @@ class Tui:
                     return
 
     def wait_for(self, needle: bytes, seconds: float = 10) -> bool:
-        end = time.time() + seconds
-        while time.time() < end:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
             if needle in self.buf:
                 return True
             self.pump(0.1)
@@ -70,12 +70,16 @@ def start_tui(git_repo: Path, command: str, **env_extra: str) -> Tui:
     pythonpath = os.pathsep.join(p for p in (str(SRC), os.environ.get("PYTHONPATH", "")) if p)
     env = {**os.environ, "TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra}
     tui = Tui(git_repo, env)
-    assert tui.wait_for(b"unsupervised", 20), "TUI did not start"
-    tui.send(b"?")
-    assert tui.wait_for(b"this help"), "TUI does not take keys before the session"
-    tui.send(b"x")
-    tui.pump(0.5)
-    return tui
+    try:
+        assert tui.wait_for(b"unsupervised", 20), "TUI did not start"
+        tui.send(b"?")
+        assert tui.wait_for(b"this help"), "TUI does not take keys before the session"
+        tui.send(b"x")
+        tui.pump(0.5)
+        return tui
+    except BaseException:
+        tui.close()
+        raise
 
 
 def assert_responsive(tui: Tui) -> None:
@@ -86,9 +90,10 @@ def assert_responsive(tui: Tui) -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "exit_code"),
-    [("clean", "0"), ("raw", "0"), ("nonblock", "0"), ("clean", "3"), ("raw", "3")],
+    "mode",
+    ["clean", "raw", "nonblock"],
 )
+@pytest.mark.parametrize("exit_code", ["0", "3"])
 def test_tui_takes_keys_after_interactive_session(
     git_repo: Path, mode: str, exit_code: str
 ) -> None:

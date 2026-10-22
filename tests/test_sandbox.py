@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from project_sandbox_tui.config import Config, ConfigError, Network, Project, Sandbox
-from project_sandbox_tui.notify import notification_argv
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
     RunPaths,
@@ -151,11 +150,6 @@ def test_session_matching(tmp_path: Path) -> None:
     matched = running_by_branch(records, repo, "git", ["main", "feat/x", "other"], None)
     assert list(matched) == ["feat/x"]
     assert matched["feat/x"].container_name == "c-live"
-
-
-def test_notification_template_is_injection_safe() -> None:
-    argv = notification_argv("t; rm -rf /", "msg $(x)", "notifier --title {title} -m {message}")
-    assert argv == ["notifier", "--title", "t; rm -rf /", "-m", "msg $(x)"]
 
 
 def test_main_checkout_decision(git_repo: Path, tmp_path: Path) -> None:

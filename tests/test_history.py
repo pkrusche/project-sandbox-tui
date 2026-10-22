@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from project_sandbox_tui.history import PromptHistory
 
 
@@ -41,10 +43,76 @@ def test_instances_merge_instead_of_overwriting(tmp_path: Path) -> None:
     assert PromptHistory(tmp_path / "h.json").entries == ["from a", "from b"]
 
 
-def test_corrupt_or_missing_file_is_empty(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "{not json",
+        "[]",
+        "null",
+        '"text"',
+        '{"prompts": null}',
+        '{"prompts": "text"}',
+        '{"prompts": [3, null, "  "]}',
+    ],
+)
+def test_corrupt_file_is_empty(tmp_path: Path, raw: str) -> None:
+    path = tmp_path / "h.json"
+    path.write_text(raw)
+    assert PromptHistory(path).entries == []
+
+
+def test_missing_file_is_empty(tmp_path: Path) -> None:
     assert PromptHistory(tmp_path / "missing.json").entries == []
-    bad = tmp_path / "bad.json"
-    bad.write_text("{not json")
-    assert PromptHistory(bad).entries == []
-    bad.write_text('{"prompts": ["ok", 3, "  ", null]}')
-    assert PromptHistory(bad).entries == ["ok"]
+
+
+def test_mixed_entries_are_filtered(tmp_path: Path) -> None:
+    path = tmp_path / "h.json"
+    path.write_text('{"prompts": ["ok", 3, "  ", null]}')
+    assert PromptHistory(path).entries == ["ok"]
+
+
+def test_blank_prompt_does_not_create_files(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "h.json"
+    history = PromptHistory(path)
+    history.add(" \n\t")
+    assert history.entries == []
+    assert not path.parent.exists()
+
+
+@pytest.mark.parametrize("operation", ["write_text", "replace"])
+def test_failed_write_preserves_history_and_cleans_temporary_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    path = tmp_path / "h.json"
+    history = PromptHistory(path)
+    history.add("saved")
+
+    def fail(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, operation, fail)
+        history.add("unsaved")
+    assert history.entries == ["saved"]
+    assert PromptHistory(path).entries == ["saved"]
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_nonpositive_history_limit_is_rejected(tmp_path: Path, limit: int) -> None:
+    with pytest.raises(ValueError, match="max_entries"):
+        PromptHistory(tmp_path / "h.json", max_entries=limit)
+
+
+def test_queries_respect_prefix_case_and_require_all_search_terms(tmp_path: Path) -> None:
+    history = PromptHistory(tmp_path / "h.json")
+    history.add("Fix café tests")
+    assert history.suggest("fix") is None
+    assert history.with_prefix("fix") == []
+    assert history.search("CAFÉ missing") == []
+    assert history.search("CAFÉ tests") == ["Fix café tests"]
+    newest = history.newest_first()
+    newest.clear()
+    assert history.entries == ["Fix café tests"]

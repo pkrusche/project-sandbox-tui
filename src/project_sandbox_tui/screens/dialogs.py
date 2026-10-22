@@ -308,6 +308,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                     "v / space",
                     "select a range / mark (esc clears); r or i then merges or rebases them",
                 ),
+                ("d", "diff vs main / two branches"),
                 ("o", "open in your editor"),
                 ("P", "show the sandbox command"),
                 ("W", "clean up workspaces"),

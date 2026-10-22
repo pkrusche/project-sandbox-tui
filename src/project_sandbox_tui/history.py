@@ -21,6 +21,8 @@ MAX_ENTRIES = 500
 
 class PromptHistory:
     def __init__(self, path: Path, max_entries: int = MAX_ENTRIES) -> None:
+        if max_entries <= 0:
+            raise ValueError("max_entries must be positive")
         self.path = path
         self.max_entries = max_entries
         self.entries: list[str] = self._read()  # oldest → newest
@@ -62,10 +64,14 @@ class PromptHistory:
                 entries.append(text)
                 entries = entries[-self.max_entries :]
                 tmp = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
-                tmp.write_text(
-                    json.dumps({"version": 1, "prompts": entries}, indent=1), encoding="utf-8"
-                )
-                tmp.replace(self.path)
+                try:
+                    tmp.write_text(
+                        json.dumps({"version": 1, "prompts": entries}, indent=1), encoding="utf-8"
+                    )
+                    tmp.replace(self.path)
+                finally:
+                    with contextlib.suppress(OSError):
+                        tmp.unlink(missing_ok=True)
         except OSError:
             return  # history is a convenience, never fatal
         self.entries = entries
