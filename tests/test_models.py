@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from project_sandbox_tui import models as m
 from project_sandbox_tui.cli import main
-from project_sandbox_tui.config import Config
-from project_sandbox_tui.screens.launch import LaunchScreen
+from project_sandbox_tui.config import AGENTS, Config
+from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.widgets import CycleField
 
 TODAY = date(2026, 10, 22)
@@ -449,5 +449,43 @@ def test_launch_form_preserves_custom_model(git_repo: Path, fake_cfg: Any) -> No
         form.query_one("#agent", CycleField).value = cfg.defaults.agent
         await pilot.pause()
         assert model.value == "custom-model"
+
+    run_form(git_repo, cfg, check)
+
+
+@pytest.mark.parametrize("agent", [agent for agent in AGENTS if agent != "bash"])
+def test_launch_form_accepts_free_text_model(git_repo: Path, fake_cfg: Any, agent: str) -> None:
+    cfg = fake_cfg()
+    cfg.defaults.agent = agent
+
+    async def check(form: LaunchScreen, pilot: Any) -> None:
+        model = form.query_one("#model", CycleField)
+        row = form.query_one("#custom-model-row")
+        name = form.query_one("#custom-model", Input)
+        assert not row.display
+        model.focus()
+        await pilot.press("left", "tab")  # default wraps to custom; Tab edits its name
+        assert model.value == CUSTOM_MODEL
+        assert row.display and form.focused is name
+        await pilot.press(*" provider/my-model-v2 ")
+        assert form.current_spec().model == "provider/my-model-v2"
+        assert "--model provider/my-model-v2" in str(form.query_one("#preview", Static).render())
+
+        await pilot.press("shift+tab", "right")  # back to agent default
+        assert not row.display
+        assert form.current_spec().model == ""
+        await pilot.press("left", "tab")
+        assert name.value == " provider/my-model-v2 "
+        await pilot.press("ctrl+u")  # blank custom name uses the agent default
+        assert form.current_spec().model == ""
+        assert "--model" not in str(form.query_one("#preview", Static).render())
+
+        name.value = "provider/my-model-v2"
+        form.query_one("#agent", CycleField).value = "bash"
+        await pilot.pause()
+        assert not row.display
+        assert model.options == [""]
+        assert form.current_spec().model == ""
+        assert "--model" not in str(form.query_one("#preview", Static).render())
 
     run_form(git_repo, cfg, check)

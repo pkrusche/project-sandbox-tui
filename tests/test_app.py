@@ -14,7 +14,7 @@ from textual.widgets import Input, Static, TextArea
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
 from project_sandbox_tui.screens.dialogs import HelpScreen, NewBranchScreen
-from project_sandbox_tui.screens.launch import LaunchScreen
+from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import detect
 from project_sandbox_tui.widgets import CycleField
@@ -104,6 +104,8 @@ def test_launch_inputs_remain_visible_when_focused(
         await pilot.press(mode)
         form = app.screen
         assert isinstance(form, LaunchScreen)
+        form.query_one("#model", CycleField).value = CUSTOM_MODEL
+        await pilot.pause()
         inputs = list(form.query(Input))
         for field in inputs:
             field.focus()
@@ -153,8 +155,10 @@ def test_background_run_notifies_and_shows_log(
         await pilot.press("shift+tab", "shift+tab", "shift+tab", "shift+tab", "l")  # agent → codex
         assert form.current_spec().agent == "codex"
         assert form.current_spec().model == ""  # agent default until chosen
-        form.query_one("#model", CycleField).options.append("gpt-x")
-        form.query_one("#model", CycleField).value = "gpt-x"
+        model = form.query_one("#model", CycleField)
+        model.focus()
+        await pilot.press("left", "tab")  # custom model
+        await pilot.press(*"gpt-x")
         preview = str(form.query_one("#preview").render())
         assert "--agent codex" in preview and "--prompt-text" in preview
         await pilot.press("ctrl+enter")
@@ -183,7 +187,9 @@ def test_background_run_notifies_and_shows_log(
 
     run_app(git_repo, cfg, scenario)
     # the choice became the new default for this repo
-    assert LastUsed.load(git_repo).agent == "codex"
+    last = LastUsed.load(git_repo)
+    assert last.agent == "codex"
+    assert last.model_by_agent["codex"] == "gpt-x"
 
 
 def test_launch_form_keys_do_not_trigger_list_actions(

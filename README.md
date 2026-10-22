@@ -81,8 +81,11 @@ in the prompt or moves to the next field elsewhere. `esc` cancels.
 
 ### Model suggestions
 
-The model field cycles with `h`/`l` or `←`/`→`, including an agent default option. Choices come from, in
-this order:
+The model field cycles with `h`/`l` or `←`/`→`, including an agent default option.
+For any agent except `bash`, choose `custom (enter model name)` and press `tab`
+to type a model name. A blank name uses the agent default. Custom names are
+remembered per agent after launch, like other model choices. Suggested choices
+come from, in this order:
 
 1. `[models]` in your configuration,
 2. Claude Code's aliases (`opus`, `sonnet`, `haiku`, `opusplan`, `best`, `fable`,

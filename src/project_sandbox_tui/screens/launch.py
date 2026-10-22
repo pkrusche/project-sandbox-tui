@@ -24,6 +24,8 @@ from project_sandbox_tui.screens.history import HistorySearchScreen
 from project_sandbox_tui.vcs import validate_branch_name
 from project_sandbox_tui.widgets import CycleField, KeyHints, PromptArea, modifier_key
 
+CUSTOM_MODEL = "custom (enter model name)"
+
 
 @dataclass
 class OctopusSetup:
@@ -160,6 +162,15 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 empty_label="agent default",
                 id="model",
             )
+            with Horizontal(classes="field", id="custom-model-row") as custom_model_row:
+                custom_model_row.display = False
+                yield Static("name", classes="field-label")
+                yield Input(
+                    value=self.defaults.model,
+                    placeholder="model name (blank uses agent default)",
+                    select_on_focus=False,
+                    id="custom-model",
+                )
             model_hint = models_mod.store_hint(self.defaults.agent, self.model_store)
             hint_widget = Static(model_hint, id="model-hint", classes="prompt-hint")
             hint_widget.display = bool(model_hint)
@@ -280,8 +291,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.query_one("#prompt-hint", Static).update(KeyHints(hint))
 
     def _model_options(self, agent: str, current: str) -> list[str]:
+        if agent == "bash":
+            return [""]
         models = models_mod.suggestions(agent, self.cfg.models.get(agent), self.model_store)
-        return list(dict.fromkeys(["", *([current] if current else []), *models]))
+        return list(dict.fromkeys(["", *([current] if current else []), *models, CUSTOM_MODEL]))
 
     # ------------------------------------------------------------ state
 
@@ -292,6 +305,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             timeout = int(raw) if raw.isdigit() else 0
         prompt = self.query_one("#prompt", TextArea).text if self.mode == "background" else ""
         agent = self.query_one("#agent", CycleField).value
+        model = self.query_one("#model", CycleField).value
+        if model == CUSTOM_MODEL:
+            model = self.query_one("#custom-model", Input).value.strip()
         operation, base = "", ""
         inputs: list[str] = []
         if self.octopus is not None:
@@ -311,7 +327,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         return LaunchSpec(
             branch=branch,
             agent=agent,
-            model=self.query_one("#model", CycleField).value,
+            model=model if agent != "bash" else "",
             effort=self.query_one("#effort", CycleField).value,
             mode=self.mode,
             prompt_text=prompt,
@@ -334,10 +350,12 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     @on(CycleField.Changed, "#agent")
     def _agent_changed(self, event: CycleField.Changed) -> None:
         model = self.query_one("#model", CycleField)
-        current = _resolve_model(self.cfg, self.last, event.value)
+        current = "" if event.value == "bash" else _resolve_model(self.cfg, self.last, event.value)
         model.options = self._model_options(event.value, current)
         model.value = current
         model.refresh()
+        self.query_one("#custom-model", Input).value = current
+        self._update_custom_model()
         hint = self.query_one("#model-hint", Static)
         text = models_mod.store_hint(event.value, self.model_store)
         hint.update(text)
@@ -351,7 +369,17 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     def _octopus_field_changed(self) -> None:
         self._octopus_changed()
 
+    def _update_custom_model(self) -> None:
+        self.query_one("#custom-model-row").display = (
+            self.query_one("#agent", CycleField).value != "bash"
+            and self.query_one("#model", CycleField).value == CUSTOM_MODEL
+        )
+
     @on(CycleField.Changed, "#model")
+    def _model_changed(self) -> None:
+        self._update_custom_model()
+        self._changed()
+
     @on(CycleField.Changed, "#effort")
     @on(Input.Changed)
     @on(TextArea.Changed)
