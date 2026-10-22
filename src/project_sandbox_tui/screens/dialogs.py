@@ -74,9 +74,14 @@ class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
 
 
 class MessageScreen(ModalScreen[None]):
-    """Show a block of plain text; any key closes."""
+    """Show scrollable plain text; navigation scrolls, other keys close."""
 
-    DEFAULT_CSS = _MODAL_CSS.format(name="MessageScreen")
+    DEFAULT_CSS = (
+        _MODAL_CSS.format(name="MessageScreen")
+        + """
+    MessageScreen .message-body { height: auto; max-height: 60vh; }
+    """
+    )
 
     def __init__(self, title: str, body: str) -> None:
         super().__init__()
@@ -86,13 +91,26 @@ class MessageScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self.title_text, classes="title")
-            yield Static(Text(self.body))
-            yield Static("any key to close", classes="hint")
+            with VerticalScroll(classes="message-body"):
+                yield Static(Text(self.body))
+            yield Static("↑/↓, pgup/pgdn scroll · any other key to close", classes="hint")
 
     def on_key(self, event: events.Key) -> None:
         # Consume the key so it cannot also trigger a binding on the screen below.
         event.stop()
         event.prevent_default()
+        scroll = self.query_one(VerticalScroll)
+        actions = {
+            "up": scroll.scroll_up,
+            "down": scroll.scroll_down,
+            "pageup": scroll.scroll_page_up,
+            "pagedown": scroll.scroll_page_down,
+            "home": scroll.scroll_home,
+            "end": scroll.scroll_end,
+        }
+        if event.key in actions:
+            actions[event.key]()
+            return
         if not modifier_key(event.key):
             self.dismiss(None)
 
@@ -295,9 +313,9 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
             (
                 ("i", "interactive (ui.terminal)"),
                 ("r", "unsupervised run"),
-                ("x", "stop; again: SIGTERM, SIGKILL + container"),
-                ("l / enter", "log / transcript"),
-                ("c / C", "clear status / forget run"),
+                ("x", "stop selected; repeat"),
+                ("l / enter", "log (one branch)"),
+                ("c / C", "clear / forget selected"),
             ),
         ),
         (
@@ -305,12 +323,12 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
             (
                 ("n", "new branch / bookmark"),
                 (
-                    "v / space",
-                    "select a range / mark (esc clears); r or i then merges or rebases them",
+                    "v V space",
+                    "select a range / mark; r/i merge or rebase; esc clears",
                 ),
-                ("d", "diff vs main / two branches"),
-                ("o", "open in your editor"),
-                ("P", "show the sandbox command"),
+                ("d", "diff main / two branches"),
+                ("o", "open selected in editor"),
+                ("P", "show selected commands"),
                 ("W", "clean up workspaces"),
             ),
         ),

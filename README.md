@@ -65,7 +65,7 @@ sbx-tui                  # the real thing
 | `x` | stop a background run: SIGINT for a clean teardown; each further press escalates to SIGTERM, then SIGKILL plus `container stop` |
 | `l` / `enter` | log view: transcript (`.md`), agent log, captured output (`tab` cycles, `f` toggles follow) |
 | `n` | new branch / bookmark (name + start revision) |
-| `v` · `space` | select branches: `v` starts a range at the cursor (`v` again keeps it), `space` marks one and moves on; `esc` clears. With two or more selected, `r` / `i` merge or rebase them, see [Merging and rebasing several branches](#merging-and-rebasing-several-branches) |
+| `v` / `V` · `space` | select branches: `v` / `V` starts a range at the cursor (press again to keep it), `space` marks one and moves on; `esc` clears. With two or more selected, `r` / `i` merge or rebase them, see [Merging and rebasing several branches](#merging-and-rebasing-several-branches) |
 | `d` | diff one selected branch (or the highlighted row) against main; two selected branches compare tips in selection order. Uses `project.main_branch`, or main/master/trunk. Scroll with `j`/`k`, `ctrl+d`/`ctrl+u`, `gg`/`G`; `q`/`esc` returns |
 | `o` | open the branch's worktree in your editor |
 | `P` | preview the full `project-sandbox` command |
@@ -73,6 +73,12 @@ sbx-tui                  # the real thing
 | `R` · `?` · `q` | refresh · help · quit |
 | `H` | show / hide the cheat-sheet |
 | `ctrl+r` | reload global and project configuration |
+
+With a range or marks selected, `c`, `C`, `x`, `o`, and `P` apply to every selected
+branch; without a selection they use the highlighted row. The selection stays
+until `esc`, so repeated `x` presses escalate stopping the same runs. `c` skips
+running records with a warning and clears the finished ones. `l` / `enter` needs
+one selected branch (or uses the highlighted row when none are selected).
 
 In the launch form: `tab` (or `j`/`k` on choice fields) moves between fields,
 `h`/`l` cycles agent and effort, `enter` launches an interactive session,

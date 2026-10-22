@@ -657,7 +657,8 @@ def _add_git_branch(repo: Path, name: str, path: str, text: str) -> None:
     run("git", "checkout", "-q", "main", cwd=repo)
 
 
-def test_selection_keys(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+@pytest.mark.parametrize("visual_key", ["v", "V"])
+def test_selection_keys(git_repo: Path, fake_cfg: Callable[..., Config], visual_key: str) -> None:
     _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
@@ -672,10 +673,10 @@ def test_selection_keys(git_repo: Path, fake_cfg: Callable[..., Config]) -> None
         await pilot.press("escape")
         assert app.selection() == []
         # visual range: v at the top, G extends to the bottom
-        await pilot.press("g", "g", "v", "G")
+        await pilot.press("g", "g", visual_key, "G")
         assert len(app.selection()) == 3
         assert "VISUAL" in str(app.main.query_one("#header").render())
-        await pilot.press("v")  # end visual, keep the range as marks
+        await pilot.press(visual_key)  # end visual, keep the range as marks
         await pilot.press("g", "g")
         assert len(app.selection()) == 3 and app._visual_anchor is None
         await pilot.press("escape")
@@ -683,6 +684,171 @@ def test_selection_keys(git_repo: Path, fake_cfg: Callable[..., Config]) -> None
         # one branch is not enough
         await pilot.press("space", "r")
         assert not isinstance(app.screen, LaunchScreen)
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("keys", [("v", "j"), ("V", "j"), ("space", "space"), ()])
+def test_clear_selected_statuses(
+    git_repo: Path, fake_cfg: Callable[..., Config], keys: tuple[str, ...]
+) -> None:
+    import os
+
+    from project_sandbox_tui.jobs import JobManager, JobRecord
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        names = [b.name for b in app.branches]
+        for i, name in enumerate(names):
+            app.jobs.save(
+                JobRecord(
+                    branch=name,
+                    spec=LaunchSpec(branch=name, agent="claude", mode="background"),
+                    pid=os.getpid(),
+                    started_at="2026-01-01T00:00:00Z",
+                    status="running" if i == 0 else "completed",
+                    notified=True,
+                )
+            )
+        await app.refresh_data()
+        await pilot.press(*keys)
+        chosen = names[:2] if keys else names[:1]
+        await pilot.press("c")
+        # A running record must not prevent later selected records from clearing.
+        remaining = set(names) - (set(chosen) - {names[0]})
+        assert set(app.jobs.jobs) == remaining
+        assert set(JobManager(git_repo, app.cfg).jobs) == remaining
+        assert any(f"{names[0]} is still running" in str(n.message) for n in app._notifications)
+        for row in app.visible_rows():
+            assert (row.job is None) == (row.branch.name not in remaining)
+
+        await pilot.press("C")
+        assert set(app.jobs.jobs) == set(names) - set(chosen)
+        assert set(JobManager(git_repo, app.cfg).jobs) == set(names) - set(chosen)
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("keys", [("v", "j"), ("V", "j"), ("space", "space"), ()])
+def test_stop_selected_runs(
+    git_repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    keys: tuple[str, ...],
+) -> None:
+    import signal
+
+    from project_sandbox_tui.jobs import JobRecord
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    _add_git_branch(git_repo, "fix/y", "y.txt", "y\n")
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr("project_sandbox_tui.jobs.pid_alive", lambda pid: True)
+    monkeypatch.setattr("os.killpg", lambda pid, sig: signals.append((pid, sig)))
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        names = [b.name for b in app.branches]
+        pids = {name: 1_000_000 + i for i, name in enumerate(names)}
+        for name in names:
+            app.jobs.save(
+                JobRecord(
+                    branch=name,
+                    spec=LaunchSpec(branch=name, agent="claude", mode="background"),
+                    pid=pids[name],
+                    started_at="2026-01-01T00:00:00Z",
+                )
+            )
+        await app.refresh_data()
+        await pilot.press(*keys)
+        chosen = names[:2] if keys else names[:1]
+        await pilot.press("x")
+        assert signals == [(pids[name], signal.SIGINT) for name in chosen]
+        assert app.selection() == (chosen if keys else [])
+        # Retain the selection so escalation reaches the same runs.
+        monkeypatch.setattr(app.jobs, "STOP_DEBOUNCE_S", 0)
+        await pilot.press("x")
+        assert signals[len(chosen) :] == [(pids[name], signal.SIGTERM) for name in chosen]
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_open_selected_worktrees(
+    git_repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    from project_sandbox_tui.vcs import workspace_path
+
+    _add_git_branch(git_repo, "missing", "missing.txt", "missing\n")
+    feature_path = workspace_path(git_repo, "git", "feature/x", None)
+    feature_path.mkdir(parents=True)
+    opened: list[tuple[list[str], Path]] = []
+
+    def editor(argv: list[str], *, cwd: Path) -> int:
+        opened.append((argv, cwd))
+        return 0
+
+    monkeypatch.setenv("VISUAL", "test-editor")
+    monkeypatch.setattr("subprocess.call", editor)
+    monkeypatch.setattr("project_sandbox_tui.terminal.preserved", contextlib.nullcontext)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
+        app.marked = ["missing", "feature/x", "main"]
+        await pilot.press("o")
+        assert opened == [
+            (["test-editor", str(feature_path)], feature_path),
+            (["test-editor", str(git_repo)], git_repo),
+        ]
+        assert any("missing: no worktree yet" in str(n.message) for n in app._notifications)
+
+    run_app(git_repo, fake_cfg(), scenario)
+
+
+def test_log_and_preview_respect_selection(git_repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from textual.containers import VerticalScroll
+
+    from project_sandbox_tui.jobs import JobRecord
+    from project_sandbox_tui.sandbox import LaunchSpec
+    from project_sandbox_tui.screens.dialogs import MessageScreen
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.jobs.save(
+            JobRecord(
+                branch="main",
+                spec=LaunchSpec(branch="main", agent="claude"),
+                pid=0,
+                started_at="2026-01-01T00:00:00Z",
+                status="completed",
+                notified=True,
+            )
+        )
+        await app.refresh_data()
+        await pilot.press("space")  # main selected; cursor on feature/x
+        await pilot.press("l")
+        assert isinstance(app.screen, LogScreen) and app.screen.job.branch == "main"
+        await pilot.press("q", "P")
+        assert isinstance(app.screen, MessageScreen)
+        assert app.screen.title_text == "interactive command for main"
+        assert "--branch feature/x" not in app.screen.body
+        await pilot.press("q", "space")  # both branches marked
+        for key in ("l", "enter"):
+            await pilot.press(key)
+            assert app.screen is app.main
+            assert any("select one branch" in str(n.message) for n in app._notifications)
+        app.cfg.sandbox.extra_args = ["--example"] * 200
+        await pilot.press("P")
+        assert isinstance(app.screen, MessageScreen)
+        assert "main\n" in app.screen.body and "feature/x\n" in app.screen.body
+        assert "--branch feature/x" in app.screen.body
+        await pilot.press("end")
+        await pilot.pause()
+        assert isinstance(app.screen, MessageScreen)
+        assert app.screen.query_one(VerticalScroll).scroll_y > 0
+        await pilot.press("q")
+        assert app.screen is app.main and len(app.selection()) == 2
 
     run_app(git_repo, fake_cfg(), scenario)
 

@@ -170,7 +170,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("G", "app.bottom", show=False),
     Binding("g", "app.g_prefix", show=False),
     Binding("slash", "app.filter", show=False),
-    Binding("v", "app.visual", show=False),
+    Binding("v,V", "app.visual", show=False),
     Binding("space", "app.toggle_mark", show=False),
     Binding("escape", "app.clear_filter", show=False),
     Binding("i", "app.launch('interactive')", show=False),
@@ -219,7 +219,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         "branches",
         (
             ("n", "new branch"),
-            ("v ␣", "select → merge/rebase"),
+            ("v V ␣", "select branches"),
             ("d", "diff branches"),
             ("o", "open in editor"),
             ("P", "show command"),
@@ -288,7 +288,9 @@ class MainScreen(Screen[None]):
         if modifier:
             hints = {
                 "ctrl": "ctrl+d/u half page down/up · ctrl+r reload configuration",
-                "shift": "G bottom · P preview · R refresh · C force-forget · H toggle sheet",
+                "shift": (
+                    "G bottom · V select · P preview · R refresh · C force-forget · H toggle sheet"
+                ),
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the branch list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
@@ -345,7 +347,7 @@ class SandboxTUI(App[None]):
         self.main = MainScreen()
         self.cheatsheet_visible = cfg.ui.cheatsheet
         self.prompt_history = PromptHistory.for_repo(repo)
-        # Branch selection for merging / rebasing several branches: space marks
+        # Branch selection for operations on several branches: space marks
         # rows (kept in marking order), v starts a visual range at the cursor.
         self.marked: list[str] = []
         self._visual_anchor: str | None = None
@@ -553,7 +555,7 @@ class SandboxTUI(App[None]):
         self._render_header(chosen)
 
     def action_visual(self) -> None:
-        """v: start a range at the cursor; v again keeps the range as marks."""
+        """v / V: start a range at the cursor; press again to keep it as marks."""
         if self._visual_anchor is None:
             self._visual_anchor = self.selected_branch_name()
         else:
@@ -665,13 +667,18 @@ class SandboxTUI(App[None]):
             self.notify("no branch selected", severity="warning")
         return name
 
-    def action_diff(self) -> None:
+    def _action_branches(self) -> list[str]:
+        """Use the selection when present, otherwise the highlighted row."""
         chosen = self.selection()
+        if chosen:
+            return chosen
+        name = self._require_branch()
+        return [name] if name is not None else []
+
+    def action_diff(self) -> None:
+        chosen = self._action_branches()
         if not chosen:
-            name = self._require_branch()
-            if name is None:
-                return
-            chosen = [name]
+            return
         if len(chosen) > 2:
             self.notify("select one or two branches to diff", severity="warning")
             return
@@ -974,9 +981,15 @@ class SandboxTUI(App[None]):
         await self.refresh_data()
 
     def action_open_log(self) -> None:
-        name = self._require_branch()
-        if name is None:
+        chosen = self._action_branches()
+        if not chosen:
             return
+        if len(chosen) > 1:
+            self.notify(
+                "select one branch to view its log (esc clears the selection)", severity="warning"
+            )
+            return
+        name = chosen[0]
         job = self.jobs.jobs.get(name)
         if job is None:
             self.notify(f"{name}: no runs yet", severity="information")
@@ -984,9 +997,10 @@ class SandboxTUI(App[None]):
         self.push_screen(LogScreen(job))
 
     def action_open_editor(self) -> None:
-        name = self._require_branch()
-        if name is None:
-            return
+        for name in self._action_branches():
+            self._open_editor(name)
+
+    def _open_editor(self, name: str) -> None:
         path = workspace_path(self.repo, self.backend.kind, name, self.worktree_dir)
         branch = self.branch(name)
         if branch is not None and branch.checkout_path is not None:
@@ -1026,22 +1040,28 @@ class SandboxTUI(App[None]):
             self.notify(f"editor failed: {exc}", severity="error")
 
     def action_preview(self) -> None:
-        name = self._require_branch()
-        if name is None:
+        chosen = self._action_branches()
+        if not chosen:
             return
         d = resolve_launch_defaults(self.cfg, LastUsed.load(self.repo))
-        try:
-            spec = LaunchSpec(
-                branch=name,
-                agent=d.agent,
-                model=d.model,
-                effort=d.effort,
-                main_checkout=self._main_checkout(name),
-            )
-            body = self._spec_preview(spec)
-        except (ConfigError, CheckoutConflict) as exc:
-            body = f"! {exc}"
-        self.push_screen(MessageScreen(f"interactive command for {name}", body))
+        previews = []
+        for name in chosen:
+            try:
+                spec = LaunchSpec(
+                    branch=name,
+                    agent=d.agent,
+                    model=d.model,
+                    effort=d.effort,
+                    main_checkout=self._main_checkout(name),
+                )
+                body = self._spec_preview(spec)
+            except (ConfigError, CheckoutConflict) as exc:
+                body = f"! {exc}"
+            previews.append(f"{name}\n{body}" if len(chosen) > 1 else body)
+        title = (
+            f"interactive command for {chosen[0]}" if len(chosen) == 1 else "interactive commands"
+        )
+        self.push_screen(MessageScreen(title, "\n\n".join(previews)))
 
     def action_cleanup_workspaces(self) -> None:
         self._cleanup_workspaces()
@@ -1115,22 +1135,18 @@ class SandboxTUI(App[None]):
         await self.refresh_data()
 
     def action_stop(self) -> None:
-        name = self._require_branch()
-        if name is None:
-            return
-        self.notify(self.jobs.stop(name, self.sessions))
+        for name in self._action_branches():
+            self.notify(self.jobs.stop(name, self.sessions))
 
     def action_clear_status(self, force: bool = False) -> None:
-        name = self._require_branch()
-        if name is None:
-            return
-        if not self.jobs.clear(name, force=force):
-            self.notify(
-                f"{name} is still running (C forgets the record without stopping it)",
-                severity="warning",
-            )
-        elif force:
-            self.notify(f"{name}: record cleared (no process was signalled)")
+        for name in self._action_branches():
+            if not self.jobs.clear(name, force=force):
+                self.notify(
+                    f"{name} is still running (C forgets the record without stopping it)",
+                    severity="warning",
+                )
+            elif force:
+                self.notify(f"{name}: record cleared (no process was signalled)")
         self._render_table()
 
     async def action_refresh(self) -> None:
