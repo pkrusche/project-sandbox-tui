@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import stat
 import tomllib
 from pathlib import Path
 
 import pytest
 
 from project_sandbox_tui import config as c
+from project_sandbox_tui.jobs import JobManager, JobRecord
+from project_sandbox_tui.sandbox import LaunchSpec
 
 
 def write(path: Path, text: str) -> Path:
@@ -109,6 +112,19 @@ def test_state_dir_is_per_repo(tmp_path: Path) -> None:
     b = c.repo_state_dir(tmp_path / "y" / "repo")
     assert a != b
     assert a.parent == c.state_home()
+
+
+def test_state_dir_is_private(tmp_path: Path) -> None:
+    """Transcripts, prompts and job argv: owner only, also for an existing dir."""
+    repo = tmp_path / "repo"
+    state = c.repo_state_dir(repo)
+    state.mkdir(parents=True)
+    state.chmod(0o755)
+    c.LastUsed(agent="claude").save(repo)
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    jobs = JobManager(repo, c.Config())
+    jobs.save(JobRecord("b", LaunchSpec(branch="b", agent="bash"), pid=1, started_at=""))
+    assert stat.S_IMODE(jobs.jobs_dir.stat().st_mode) == 0o700
 
 
 @pytest.mark.parametrize(

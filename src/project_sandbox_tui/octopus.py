@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -112,13 +113,15 @@ DEFAULT_TEMPLATES: dict[str, str] = {
 }
 
 
-def bash_prompt(plan: OctopusPlan) -> str:
+def bash_prompt(plan: OctopusPlan, bookmarks: Collection[str]) -> str:
     """Summarize the integration without resolving it; fail on conflicts."""
-    baseline = plan.base if plan.operation == "rebase" else plan.inputs[0]
+    baseline = revset_symbol(plan.inputs[0])
+    if plan.operation == "rebase":  # a bookmark, else a revset as typed (trunk())
+        baseline = revset_symbol(plan.base) if plan.base in bookmarks else plan.base
     # Include conflicts in intermediate commits, even if the final tree is clean.
     return (
         "jj status &&\n"
-        f"jj diff --stat --from {shlex.quote(revset_symbol(baseline))} --to @- &&\n"
+        f"jj diff --stat --from {shlex.quote(baseline)} --to @- &&\n"
         "conflicts=$(jj log --no-graph -r '::@- & conflicts()' "
         "-T 'commit_id.short()') &&\n"
         'printf "Conflicted commits:\n%s\n" "$conflicts" &&\n'
@@ -232,11 +235,22 @@ def _jj_duplicate(repo: Path, revset: str, onto: str) -> None:
         raise OctopusError(detail[-1] if detail else "jj duplicate failed")
 
 
+def _resolve_base(repo: Path, base: str) -> str:
+    """The base as one commit id: a bookmark of that name, else a jj revset like
+    ``@-`` or ``trunk()`` (the defaults a new branch starts from)."""
+    ids = _jj_ids(repo, f"present({revset_symbol(base)})")
+    if not ids:
+        proc = _jj(repo, "log", "--no-graph", "-r", base, "-T", 'commit_id ++ "\\n"', check=False)
+        ids = proc.stdout.split() if proc.returncode == 0 else []
+    if not ids:
+        raise OctopusError(f"no such revision: {base}")
+    if len(ids) > 1:
+        raise OctopusError(f"base {base} is {len(ids)} revisions; give a single one")
+    return ids[0]
+
+
 def _rebase(repo: Path, plan: OctopusPlan) -> OctopusState:
-    base = revset_symbol(plan.base)
-    if not _jj_ids(repo, base):
-        raise OctopusError(f"no such revision: {plan.base}")
-    tip = _jj_ids(repo, base)[0]
+    base = tip = _resolve_base(repo, plan.base)
     state = OctopusState(plan, clean=True)
     done: list[str] = []
     for name in plan.inputs:

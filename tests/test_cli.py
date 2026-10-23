@@ -20,7 +20,7 @@ def test_print_config_uses_the_working_copy(repo: Path, capsys: pytest.CaptureFi
     assert main([str(repo), "--print-config"]) == 0
     out = capsys.readouterr().out
     command = out.split("# interactive command for @\n", 1)[1]
-    assert "--branch" not in command and "--agent claude" in command
+    assert "--branch" not in command and "--agent=claude" in command
 
 
 def test_explicit_missing_config_is_an_error(

@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Generator
 from pathlib import Path
 
-from project_sandbox_tui.config import repo_state_dir
+from project_sandbox_tui.config import private_dir, repo_state_dir
 
 MAX_ENTRIES = 500
 
@@ -45,7 +45,7 @@ class PromptHistory:
 
     @contextlib.contextmanager
     def _locked(self) -> Generator[None, None, None]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(self.path.parent)
         with self.path.with_name(self.path.name + ".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:

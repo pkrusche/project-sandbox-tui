@@ -239,7 +239,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             base if operation == "rebase" else "",
         )
         if self._value("#agent", self.defaults.agent) == "bash":
-            return octopus_mod.bash_prompt(plan)
+            return octopus_mod.bash_prompt(plan, self.octopus.existing)
         return octopus_mod.render_prompt(self.octopus.templates[operation], plan)
 
     def _octopus_changed(self) -> None:

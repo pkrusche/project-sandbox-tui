@@ -464,7 +464,7 @@ def test_launch_form_accepts_free_text_model(repo: Path, fake_cfg: Any, agent: s
         assert row.display and form.focused is name
         await pilot.press(*" provider/my-model-v2 ")
         assert form.current_spec().model == "provider/my-model-v2"
-        assert "--model provider/my-model-v2" in str(form.query_one("#preview", Static).render())
+        assert "--model=provider/my-model-v2" in str(form.query_one("#preview", Static).render())
 
         await pilot.press("shift+tab", "right")  # back to agent default
         assert not row.display

@@ -12,6 +12,7 @@ file is shown as a diff against that copy before it takes effect.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import difflib
 import hashlib
@@ -392,7 +393,7 @@ class ProjectTrust:
         if self.current is None:
             raise ConfigError(f"{self.path}: nothing to trust")
         path = trusted_config_path(repo)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private_dir(path.parent)
         tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         try:
             tmp.write_text(self.current, encoding="utf-8")
@@ -415,6 +416,15 @@ def repo_state_dir(repo: Path) -> Path:
     resolved = repo.resolve()
     digest = hashlib.sha256(str(resolved).encode()).hexdigest()[:8]
     return state_home() / f"{resolved.name}-{digest}"
+
+
+def private_dir(path: Path) -> Path:
+    """Create ``path`` for the owner only: state holds transcripts, prompts and job
+    argv. Also tightens a directory an earlier version created with the umask."""
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with contextlib.suppress(OSError):  # e.g. a directory someone else owns
+        path.chmod(0o700)
+    return path
 
 
 @dataclass
@@ -451,7 +461,7 @@ class LastUsed:
     def save(self, repo: Path) -> None:
         path = repo_state_dir(repo) / "last_used.json"
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            private_dir(path.parent)
             tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
             tmp.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
             tmp.replace(path)
@@ -563,7 +573,8 @@ cheatsheet = true             # key cheat-sheet under the branch list (H toggles
 # codex = ["gpt-5.5"]
 
 # [prompts]                   # templates for merging / rebasing selected branches (v / space,
-#                             # then r); placeholders {inputs} {result} {base} {first} {rest}
+#                             # then r); placeholders {inputs} {inputs_plain} {result} {base}
+#                             # {first} {rest}
 # octopus_merge = '''...'''
 # octopus_rebase = '''...'''
 """

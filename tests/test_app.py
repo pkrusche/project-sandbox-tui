@@ -226,7 +226,7 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await pilot.press("left", "tab")  # custom model
         await pilot.press(*"gpt-x")
         preview = str(form.query_one("#preview").render())
-        assert "--agent codex" in preview and "--prompt-text" in preview
+        assert "--agent=codex" in preview and "--prompt-text" in preview
         await pilot.press("ctrl+enter")
         assert not isinstance(app.screen, LaunchScreen)
 
@@ -414,7 +414,7 @@ def test_jj_repo_without_bookmarks_runs_in_working_copy(
         form.query_one("#prompt", TextArea).text = "sleep:3"
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
-        assert "--branch" not in app.jobs.jobs["@"].argv
+        assert not [a for a in app.jobs.jobs["@"].argv if a.startswith("--branch")]
         await wait_until(pilot, lambda: "@" in app.sessions)  # session in the repo itself
         app.jobs.stop("@", app.sessions)
         await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
@@ -434,7 +434,7 @@ def test_jj_working_copy_alongside_bookmarks(
         form.query_one("#prompt", TextArea).text = "sleep:3"
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
-        assert "--branch" not in app.jobs.jobs["@"].argv
+        assert not [a for a in app.jobs.jobs["@"].argv if a.startswith("--branch")]
         await wait_until(pilot, lambda: "@" in app.sessions)
         assert "main" not in app.sessions  # the bookmark stays free for its own sandbox
 
@@ -445,7 +445,7 @@ def test_jj_working_copy_alongside_bookmarks(
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
         argv = app.jobs.jobs["main"].argv
-        assert argv[argv.index("--branch") + 1] == "main"
+        assert "--branch=main" in argv
 
         app.jobs.stop("@", app.sessions)
         await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
@@ -901,7 +901,7 @@ def test_log_and_preview_respect_selection(repo: Path, fake_cfg: Callable[..., C
         await pilot.press("q", "P")
         assert isinstance(app.screen, MessageScreen)
         assert app.screen.title_text == "interactive command for main"
-        assert "--branch feature/x" not in app.screen.body
+        assert "--branch=feature/x" not in app.screen.body
         await pilot.press("q", "space")  # both branches marked
         for key in ("l", "enter"):
             await pilot.press(key)
@@ -911,7 +911,7 @@ def test_log_and_preview_respect_selection(repo: Path, fake_cfg: Callable[..., C
         await pilot.press("P")
         assert isinstance(app.screen, MessageScreen)
         assert "main\n" in app.screen.body and "feature/x\n" in app.screen.body
-        assert "--branch feature/x" in app.screen.body
+        assert "--branch=feature/x" in app.screen.body
         await pilot.press("end")
         await pilot.pause()
         assert isinstance(app.screen, MessageScreen)
@@ -1063,7 +1063,7 @@ def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -
         job = app.jobs.jobs["merge/all"]
         assert job.spec.operation == "merge" and job.spec.inputs == order
         assert "## Current state" in job.spec.prompt_text
-        assert "--branch" in job.argv and "merge/all" in job.argv
+        assert "--branch=merge/all" in job.argv
         assert app.selection() == []  # cleared after launching
         await wait_until(pilot, lambda: not app.jobs.jobs["merge/all"].running, timeout=15)
 

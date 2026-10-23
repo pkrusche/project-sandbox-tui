@@ -21,6 +21,7 @@ credentials and workspace teardown stay in project-sandbox.
 
 ## Requirements
 
+- Linux or macOS (on Windows, use WSL). CI tests Linux with Python 3.12 and 3.14.
 - Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/)
 - `jj` on your `PATH`. Existing git repositories must be colocated first:
   `jj git init --colocate`
@@ -29,8 +30,9 @@ credentials and workspace teardown stay in project-sandbox.
 ## Getting started
 
 ```sh
-uv tool install project-sandbox            # the sandbox itself
-uv tool install /path/to/project-sandbox-tui   # or: uv sync && uv run sbx-tui
+uv tool install project-sandbox   # the sandbox itself
+uv tool install git+https://github.com/pkrusche/project-sandbox-tui
+# from a checkout instead: uv tool install .   (or: uv sync && uv run sbx-tui)
 
 cd ~/workspace/myproject
 sbx-tui doctor      # check jj, project-sandbox and the container runtime
@@ -51,3 +53,7 @@ Press `?` in the TUI for help.
 - [Model suggestions](docs/models.md)
 - [Architecture](docs/architecture.md)
 - [Development](docs/development.md)
+
+## License
+
+[MIT](LICENSE)

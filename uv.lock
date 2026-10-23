@@ -116,15 +116,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "textual", specifier = ">=6.0" },
-    { name = "tomlkit", specifier = ">=0.13" },
+    { name = "textual", specifier = ">=6.0,<9" },
+    { name = "tomlkit", specifier = ">=0.13,<0.16" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.17" },
-    { name = "ty", specifier = ">=0.0.90" },
+    { name = "pytest", specifier = ">=9.1,<10" },
+    { name = "ruff", specifier = "==0.17.1" },
+    { name = "ty", specifier = "==0.0.90" },
 ]
 
 [[package]]

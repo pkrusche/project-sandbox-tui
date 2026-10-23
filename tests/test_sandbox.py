@@ -44,32 +44,28 @@ def test_interactive_argv(tmp_path: Path) -> None:
         "project-sandbox",
         str(repo.resolve()),
         "python:3.12-slim",
-        "--runtime",
-        "docker",
-        "--memory",
-        "16g",
-        "--branch",
-        "feat/x",
-        "--worktree-dir",
-        str(repo / "../wt"),
+        "--runtime=docker",
+        "--memory=16g",
+        "--branch=feat/x",
+        f"--worktree-dir={repo / '../wt'}",
         "--keep-workspace",
-        "--agent",
-        "claude",
-        "--model",
-        "opus",
-        "--effort",
-        "high",
-        "--internet-proxy",
-        "http://proxy:3128",
-        "--ca-cert",
-        str(repo / "certs/root.pem"),
-        "--extra-domain",
-        "pypi.org",
+        "--agent=claude",
+        "--model=opus",
+        "--effort=high",
+        "--internet-proxy=http://proxy:3128",
+        f"--ca-cert={repo / 'certs/root.pem'}",
+        "--extra-domain=pypi.org",
         "--no-forward-credentials",
-        "--api-key-env",
-        "ANTHROPIC_API_KEY",
+        "--api-key-env=ANTHROPIC_API_KEY",
         "--verbose",
     ]
+
+
+def test_values_starting_with_a_dash_stay_values(tmp_path: Path) -> None:
+    spec = LaunchSpec(branch="-x", agent="bash", mode="background", prompt_text="--help")
+    paths = RunPaths(log=tmp_path / "a.log", summary=tmp_path / "a.json", stdout=tmp_path / "a.out")
+    argv = build_argv(make_cfg(), tmp_path, spec, paths)
+    assert "--branch=-x" in argv and "--prompt-text=--help" in argv
 
 
 def test_background_argv(tmp_path: Path) -> None:
@@ -87,18 +83,14 @@ def test_background_argv(tmp_path: Path) -> None:
         timeout=60,
     )
     argv = build_argv(cfg, repo, spec, paths)
-    assert argv[:5] == ["project-sandbox", str(repo.resolve()), "--python-uv", "--python", "3.12"]
-    assert "--model" not in argv and "--effort" not in argv  # bash takes neither
+    assert argv[:4] == ["project-sandbox", str(repo.resolve()), "--python-uv", "--python=3.12"]
+    assert not [a for a in argv if a.startswith(("--model", "--effort"))]  # bash takes neither
     assert "--keep-workspace" not in argv
-    assert argv[-8:] == [
-        "--prompt-text",
-        "do it",
-        "--log",
-        str(paths.log),
-        "--json-summary",
-        str(paths.summary),
-        "--timeout",
-        "60",
+    assert argv[-4:] == [
+        "--prompt-text=do it",
+        f"--log={paths.log}",
+        f"--json-summary={paths.summary}",
+        "--timeout=60",
     ]
 
 
@@ -106,9 +98,8 @@ def test_dockerfile_source(tmp_path: Path) -> None:
     cfg = Config()
     cfg.project = Project(dockerfile="docker/Dockerfile", docker_context=".")
     argv = build_argv(cfg, tmp_path, LaunchSpec(branch="b", agent="codex"))
-    i = argv.index("--dockerfile")
-    assert argv[i + 1] == str(tmp_path / "docker/Dockerfile")
-    assert argv[i + 2 : i + 4] == ["--docker-context", str(tmp_path / ".")]
+    i = argv.index(f"--dockerfile={tmp_path / 'docker/Dockerfile'}")
+    assert argv[i + 1] == f"--docker-context={tmp_path / '.'}"
 
 
 def test_requires_image_and_prompt(tmp_path: Path) -> None:
@@ -157,7 +148,7 @@ def test_working_copy_argv_omits_workspace_flags(tmp_path: Path) -> None:
     assert spec.main_checkout
     argv = build_argv(make_cfg(), tmp_path, spec)
     for flag in ("--branch", "--worktree-dir", "--keep-workspace"):
-        assert flag not in argv
+        assert not [a for a in argv if a.startswith(flag)]
     assert LaunchSpec.from_dict(spec.to_dict()).main_checkout
     assert not LaunchSpec(branch="main", agent="claude").main_checkout
 
