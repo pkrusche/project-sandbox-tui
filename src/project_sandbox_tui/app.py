@@ -352,6 +352,20 @@ class SandboxTUI(App[None]):
         self.marked: list[str] = []
         self._visual_anchor: str | None = None
 
+    def notify(
+        self,
+        message: str,
+        *,
+        title: str = "",
+        severity: SeverityLevel = "information",
+        timeout: float | None = None,
+        markup: bool = False,
+    ) -> None:
+        """Toasts are plain text: they quote branch names, paths and jj/tmux
+        output, whose ``[`` would be read as markup. Screens' ``notify`` passes
+        ``markup=True`` by default, so it is ignored here."""
+        super().notify(message, title=title, severity=severity, timeout=timeout, markup=False)
+
     # ------------------------------------------------------------ layout
 
     @property
@@ -971,10 +985,8 @@ class SandboxTUI(App[None]):
             )
             return
         if self.cfg.ui.editor_command:
-            tokens = [
-                t.replace("{path}", str(path)) for t in shlex.split(self.cfg.ui.editor_command)
-            ]
-            if not any("{path}" in t for t in shlex.split(self.cfg.ui.editor_command)):
+            tokens = launchers.fill_command(self.cfg.ui.editor_command, {"path": str(path)})
+            if "{path}" not in self.cfg.ui.editor_command:
                 tokens.append(str(path))
             try:
                 subprocess.Popen(
@@ -1117,17 +1129,17 @@ class SandboxTUI(App[None]):
                 return False
             load_candidate(trust, self.config_path)  # never offer what cannot load
         except ConfigError as exc:
-            self.notify(f"Project config not trusted: {exc}", severity="error", markup=False)
+            self.notify(f"Project config not trusted: {exc}", severity="error")
             return False
 
         def decided(trusted: bool | None) -> None:
             if not trusted:
-                self.notify(trust.describe(), severity="warning", timeout=10, markup=False)
+                self.notify(trust.describe(), severity="warning", timeout=10)
             else:
                 try:
                     trust.trust(self.repo)
                 except ConfigError as exc:
-                    self.notify(str(exc), severity="error", markup=False)
+                    self.notify(str(exc), severity="error")
             self.call_later(self._reload_config)
 
         body = (

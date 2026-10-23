@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 from unittest.mock import Mock
 
@@ -18,6 +19,12 @@ def test_template_substitutes_once_without_splitting(title: str) -> None:
         "-m",
         message,
     ]
+
+
+def test_template_quotes_text_inside_a_script() -> None:
+    message = "done; $(rm -rf ~)"
+    argv = notify.notification_argv("t", message, "sh -c 'notify-send sbx {message}'")
+    assert argv == ["sh", "-c", f"notify-send sbx {shlex.quote(message)}"]
 
 
 @pytest.mark.parametrize(

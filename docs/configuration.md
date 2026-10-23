@@ -97,6 +97,14 @@ codex = ["gpt-5.5"]
 # octopus_rebase = "…"
 ```
 
+Command placeholders (`{cmd}`, `{branch}`, `{repo}`, `{title}`, `{message}`,
+`{path}`): a placeholder that is a whole argument is passed as that argument,
+unchanged. Inside a longer argument, such as the script of
+`sh -c "cd {repo} && {cmd}"`, it is shell-quoted, because branch names can
+contain `$`, `;` or backticks. `{cmd}` is already a shell command line, so
+`'wezterm start -- sh -c {cmd}'` works, while `alacritty -e {cmd}` would pass
+it as a single word.
+
 ## State directory
 
 `~/.local/state/project-sandbox-tui/` holds, per repository

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import platform
-import re
-import shlex
 import shutil
 import subprocess
+
+from project_sandbox_tui.launchers import fill_command
 
 
 def notification_argv(title: str, message: str, command: str = "") -> list[str] | None:
@@ -14,12 +14,11 @@ def notification_argv(title: str, message: str, command: str = "") -> list[str] 
 
     A configured ``command`` is split with shlex *before* substituting
     ``{title}``/``{message}`` per token, so message text can never inject
-    extra arguments or shell syntax.
+    extra arguments; inside a longer argument it is shell-quoted
+    (see :func:`launchers.fill_command`).
     """
     if command:
-        tokens = shlex.split(command)
-        values = {"{title}": title, "{message}": message}
-        return [re.sub(r"\{(?:title|message)\}", lambda m: values[m[0]], t) for t in tokens]
+        return fill_command(command, {"title": title, "message": message})
     if platform.system() == "Darwin" and shutil.which("osascript"):
         # Pass text as argv so quotes in branch names cannot break the script.
         return [

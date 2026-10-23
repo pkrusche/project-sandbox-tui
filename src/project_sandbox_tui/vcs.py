@@ -86,7 +86,8 @@ def workspace_path(repo: Path, branch: str, worktree_dir: Path | None) -> Path:
 
 
 _JJ_TEMPLATE = (
-    'if(remote, "", name ++ "\\x00" ++ '
+    # stringify: ``name`` prints names that need revset quoting quoted (``"fix-"``)
+    'if(remote, "", stringify(name) ++ "\\x00" ++ '
     "if(normal_target, "
     'normal_target.change_id().shortest(8) ++ "\\x00" ++ '
     'normal_target.description().first_line() ++ "\\x00" ++ '
@@ -98,6 +99,15 @@ _JJ_TEMPLATE = (
 
 
 WORKING_COPY = "@"
+
+
+def revset_symbol(name: str) -> str:
+    """Quote a bookmark name for a jj revset: unquoted, ``fix-`` means the
+    parents of ``fix`` and ``a+b`` does not parse. The working copy stays ``@``."""
+    if name == WORKING_COPY:
+        return name
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
 
 _JJ_WORKING_COPY_TEMPLATE = (
     'change_id.shortest(8) ++ "\\x00" ++ description.first_line() ++ "\\x00" ++ '
@@ -151,12 +161,23 @@ class JjBackend:
         # Not --ignore-working-copy: creating a bookmark is a write and should
         # see the latest snapshot of the user's working copy.
         _run(
-            ["jj", "--no-pager", "--color=never", "bookmark", "create", name, "-r", start or "@-"],
+            [
+                "jj",
+                "--no-pager",
+                "--color=never",
+                "bookmark",
+                "create",
+                revset_symbol(name),  # names like ``fix-`` only parse quoted
+                "-r",
+                start or "@-",
+            ],
             self.root,
         )
 
     def diff(self, base: str, target: str) -> str:
-        return self._jj("diff", "--git", "--from", base, "--to", target)
+        return self._jj(
+            "diff", "--git", "--from", revset_symbol(base), "--to", revset_symbol(target)
+        )
 
     def default_start(self) -> str:
         names = {b.name for b in self.list_branches() if not b.working_copy}

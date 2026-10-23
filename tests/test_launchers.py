@@ -81,6 +81,34 @@ def test_custom_template_substitutes_per_token() -> None:
         launch("custom")
 
 
+def test_custom_template_quotes_embedded_placeholders() -> None:
+    branch = "x;$(touch pwned)`id`"
+    template = 'sh -c "cd {repo} && printf %s {branch} && {cmd}" --title {branch}'
+    argv = launchers.external_launch(
+        "custom", CMD, branch, Path("/my repo"), template, env={}, which=lambda _: None
+    ).argv
+    assert argv[:2] == ["sh", "-c"]
+    # Embedded: quoted values, {cmd} stays a command line.
+    assert argv[2] == (
+        f"cd {shlex.quote('/my repo')} && printf %s {shlex.quote(branch)} && {shlex.join(CMD)}"
+    )
+    assert argv[3:] == ["--title", branch]  # a whole argument is passed as is
+    # The shell sees the branch name as one literal word.
+    printed = subprocess.run(
+        ["sh", "-c", f"printf %s {shlex.quote(branch)}"], capture_output=True, text=True
+    )
+    assert printed.stdout == branch
+
+
+def test_fill_command_does_not_expand_values_again() -> None:
+    values = {"title": "{message}", "message": "m"}
+    assert launchers.fill_command("n {title} '-t={title}'", values) == [
+        "n",
+        "{message}",
+        f"-t={shlex.quote('{message}')}",
+    ]
+
+
 def test_missing_multiplexer_is_reported() -> None:
     with pytest.raises(LaunchError, match="tmux is not on PATH"):
         external_launch("tmux", CMD, "b", REPO, env={}, which=lambda _n: None)

@@ -973,7 +973,7 @@ def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -
         assert prompt.text.startswith("jj status")
         form.query_one("#operation", CycleField).value = "rebase"
         await pilot.pause()
-        assert "jj diff --stat --from main --to @-" in prompt.text
+        assert "jj diff --stat --from '\"main\"' --to @-" in prompt.text
         form.query_one("#operation", CycleField).value = "merge"
         form.query_one("#agent", CycleField).value = "claude"
         await pilot.pause()
@@ -1133,5 +1133,15 @@ def test_diff_selection(repo: Path, fake_cfg: Callable[..., Config]) -> None:
         await pilot.press("d")
         assert isinstance(app.screen, DiffScreen)
         assert (app.screen.base, app.screen.target) == ("feature/x", "main")
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_notifications_are_plain_text(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.notify("bookmark [bold]x[/] failed: a[b")
+        app.main.notify("from a screen: [/oops]")  # Widget.notify passes markup=True
+        await pilot.pause()
+        assert [n.markup for n in app._notifications] == [False, False]
 
     run_app(repo, fake_cfg(), scenario)

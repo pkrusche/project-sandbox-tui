@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from project_sandbox_tui.vcs import validate_branch_name
+from project_sandbox_tui.vcs import revset_symbol, validate_branch_name
 
 Operation = Literal["merge", "rebase"]
 OPERATIONS: tuple[str, ...] = ("merge", "rebase")
@@ -118,7 +118,7 @@ def bash_prompt(plan: OctopusPlan) -> str:
     # Include conflicts in intermediate commits, even if the final tree is clean.
     return (
         "jj status &&\n"
-        f"jj diff --stat --from {shlex.quote(baseline)} --to @- &&\n"
+        f"jj diff --stat --from {shlex.quote(revset_symbol(baseline))} --to @- &&\n"
         "conflicts=$(jj log --no-graph -r '::@- & conflicts()' "
         "-T 'commit_id.short()') &&\n"
         'printf "Conflicted commits:\n%s\n" "$conflicts" &&\n'
@@ -178,11 +178,6 @@ def _run(args: list[str], cwd: Path, check: bool = True) -> subprocess.Completed
     return proc
 
 
-def _revset_symbol(name: str) -> str:
-    """Quote a bookmark name for a jj revset (``/`` and ``-`` are fine, ``+`` is not)."""
-    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def _jj(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return _run(["jj", "--no-pager", "--color=never", *args], repo, check=check)
 
@@ -204,7 +199,7 @@ def _jj_new_heads(repo: Path, before: set[str], within: str) -> list[str]:
 
 
 def _merge(repo: Path, plan: OctopusPlan) -> OctopusState:
-    symbols = [_revset_symbol(i) for i in plan.inputs]
+    symbols = [revset_symbol(i) for i in plan.inputs]
     common = " & ".join(f"children({s})" for s in symbols)
     before = set(_jj_ids(repo, f"heads({common})"))
     message = f"Merge {', '.join(plan.inputs)} into {plan.result}"
@@ -213,7 +208,7 @@ def _merge(repo: Path, plan: OctopusPlan) -> OctopusState:
     if len(created) != 1:
         raise OctopusError("could not identify the new merge commit")
     merge = created[0]
-    _jj(repo, "bookmark", "create", plan.result, "-r", merge)
+    _jj(repo, "bookmark", "create", revset_symbol(plan.result), "-r", merge)
     conflicts = _jj_conflicted_paths(repo, merge)
     state = OctopusState(plan, clean=not conflicts, conflicts=conflicts)
     state.steps.append(
@@ -238,19 +233,19 @@ def _jj_duplicate(repo: Path, revset: str, onto: str) -> None:
 
 
 def _rebase(repo: Path, plan: OctopusPlan) -> OctopusState:
-    base = _revset_symbol(plan.base)
+    base = revset_symbol(plan.base)
     if not _jj_ids(repo, base):
         raise OctopusError(f"no such revision: {plan.base}")
     tip = _jj_ids(repo, base)[0]
     state = OctopusState(plan, clean=True)
     done: list[str] = []
     for name in plan.inputs:
-        own = f"({base}..{_revset_symbol(name)})"
+        own = f"({base}..{revset_symbol(name)})"
         if done:  # skip commits an earlier input already brought in
             own += " ~ ::(" + " | ".join(done) + ")"
         if not _jj_ids(repo, own):
             state.steps.append(f"`{name}` has no commits of its own on top of `{plan.base}`.")
-            done.append(_revset_symbol(name))
+            done.append(revset_symbol(name))
             continue
         before = set(_jj_ids(repo, f"heads(descendants({tip}))"))
         _jj_duplicate(repo, own, tip)
@@ -260,8 +255,8 @@ def _rebase(repo: Path, plan: OctopusPlan) -> OctopusState:
         count = len(_jj_ids(repo, f"{tip}..{created[0]}"))
         state.steps.append(f"Duplicated {count} commit(s) of `{name}` onto {tip[:12]}.")
         tip = created[0]
-        done.append(_revset_symbol(name))
-    _jj(repo, "bookmark", "create", plan.result, "-r", tip)
+        done.append(revset_symbol(name))
+    _jj(repo, "bookmark", "create", revset_symbol(plan.result), "-r", tip)
     conflicted = _jj_ids(repo, f"{base}::{tip} & conflicts()")
     state.conflicts = [c[:12] for c in conflicted]
     state.clean = not conflicted
