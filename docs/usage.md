@@ -29,7 +29,7 @@ The first row is always `@ working copy`, followed by the bookmarks.
 | `f` | fast-forward main to the highlighted bookmark (or one marked bookmark) |
 | `o` | open the bookmark's workspace in your editor |
 | `P` | preview the full `project-sandbox` command |
-| `c` · `C` | clear a finished status · force-forget a record stuck as running |
+| `c` · `C` | clear a finished status · force-forget a record stuck as running (no signal; [restart after a stale record](sessions.md#interactive-sessions)) |
 | `W` | clean up workspaces ([details](cleanup.md)) |
 | `R` · `?` · `q` | refresh · help · quit (background runs keep going) |
 | `H` | show / hide the cheat-sheet |

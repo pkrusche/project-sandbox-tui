@@ -35,6 +35,16 @@ shows `interactive (ext)` while project-sandbox's session record is running. If
 project-sandbox fails, its window stays open until you press Enter. `x` cannot
 stop these sessions; quit the agent in its window.
 
+If a session in a separate Zellij / tmux window dies but the branch still shows
+`interactive (ext)` and blocks another launch, confirm the old session has
+exited, select the branch and press `C` (`Shift+c`) to forget its TUI job record.
+Then press `i` to restart. `C` sends no signal and does not stop any process;
+lowercase `c` only clears finished records.
+
+The TUI polls project-sandbox's session records on each refresh. If a launch
+fails before the TUI sees a running session, the branch can stay busy for up to
+10 minutes; `C` clears the TUI job record immediately.
+
 ## Notifications
 
 When a background run finishes the row updates, a toast appears, the terminal
