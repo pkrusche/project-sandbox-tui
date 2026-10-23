@@ -45,6 +45,26 @@ def test_create_branch(repo: Path) -> None:
         backend.create_branch("topic/new", "main")  # already exists
 
 
+def test_names_with_revset_operators(repo: Path) -> None:
+    """``fix-`` unquoted means "parents of fix": it must name the bookmark."""
+    from tests.conftest import run
+
+    backend = vcs.detect(repo)
+    backend.create_branch("fix", "main")
+    backend.create_branch("fix-", "feature/x")
+    backend.create_branch("a+b", "feature/x")
+    names = {b.name for b in backend.list_branches()}
+    assert {"fix", "fix-", "a+b"} <= names
+
+    def diff_between(base: str, target: str) -> str:
+        return run(*backend.diff_command(base, target), cwd=repo)
+
+    assert diff_between("main", "fix-") == diff_between("main", "feature/x") != ""
+    assert diff_between("fix", "a+b") == diff_between("main", "feature/x")
+    assert vcs.revset_symbol("@") == "@"
+    assert vcs.revset_symbol('a"b\\c') == '"a\\"b\\\\c"'
+
+
 def test_jj_list_and_create(jj_repo: Path) -> None:
     backend = vcs.detect(jj_repo)
     assert [b.name for b in backend.list_branches()] == ["@", "main"]  # working copy first

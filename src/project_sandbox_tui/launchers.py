@@ -9,7 +9,8 @@
   inside a Zellij session.
 - ``screen``  — new screen window when inside screen, otherwise a detached
   screen session (``screen -r …``).
-- ``custom``  — ``ui.terminal_command`` with ``{cmd}``, ``{branch}``, ``{repo}``.
+- ``custom``  — ``ui.terminal_command`` with ``{cmd}``, ``{branch}``, ``{repo}``
+  (see :func:`fill_command` for quoting).
 
 Everything but ``inline`` returns to the branch list immediately; the session's
 liveness then comes from project-sandbox's session record (see jobs.py).
@@ -22,7 +23,7 @@ import re
 import shlex
 import shutil
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,32 @@ class ExternalLaunch:
     argv: list[str]
     message: str  # shown in the TUI once the session has been handed off
     detached: bool  # True: run detached (custom); False: wait briefly and check the exit code
+
+
+def fill_command(
+    template: str, values: Mapping[str, str], shell_text: Collection[str] = ()
+) -> list[str]:
+    """Split a configured command with shlex, then fill ``{placeholders}`` per token.
+
+    A placeholder that is a whole argument is passed as is: it is one argv
+    entry and no shell sees it. Inside a longer argument (``sh -c "cd {repo}
+    && {cmd}"``) it is shell-quoted, since such an argument is usually a
+    script; branch names may contain ``$``, ``;`` or backticks. Keys in
+    ``shell_text`` already hold a command line and are inserted unquoted.
+    Placeholders in a value are never expanded again.
+    """
+    pattern = re.compile("|".join(re.escape("{" + key + "}") for key in values))
+
+    def quoted(match: re.Match[str]) -> str:
+        key = match[0][1:-1]
+        return values[key] if key in shell_text else shlex.quote(values[key])
+
+    def fill(token: str) -> str:
+        if pattern.fullmatch(token):
+            return values[token[1:-1]]
+        return pattern.sub(quoted, token)
+
+    return [fill(t) for t in shlex.split(template)]
 
 
 def session_name(repo: Path, branch: str) -> str:
@@ -93,12 +120,8 @@ def external_launch(
     if mode == "custom":
         if not template:
             raise LaunchError('ui.terminal = "custom" needs ui.terminal_command')
-        argv = [
-            t.replace("{cmd}", shlex.join(cmd))
-            .replace("{branch}", branch)
-            .replace("{repo}", repo_s)
-            for t in shlex.split(template)
-        ]
+        values = {"cmd": shlex.join(cmd), "branch": branch, "repo": repo_s}
+        argv = fill_command(template, values, shell_text={"cmd"})
         return ExternalLaunch(argv, "opened in a new terminal", detached=True)
 
     if mode not in MULTIPLEXERS:

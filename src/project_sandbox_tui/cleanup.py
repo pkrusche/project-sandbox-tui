@@ -63,10 +63,13 @@ def _jj_workspaces(repo: Path, wd: Path | None, bookmarks: set[str]) -> list[_Fo
     """Every jj workspace except the current one."""
     base = ["jj", "--no-pager", "--color=never", "--ignore-working-copy", "workspace", "list"]
     current = 'if(target.current_working_copy(), "1", "0")'
+    name = "stringify(name)"  # ``name`` alone quotes names like ``fix-``
     try:
-        out = _run([*base, "-T", f'name ++ "\\x00" ++ root ++ "\\x00" ++ {current} ++ "\\n"'], repo)
+        out = _run(
+            [*base, "-T", f'{name} ++ "\\x00" ++ root ++ "\\x00" ++ {current} ++ "\\n"'], repo
+        )
     except VcsError:  # jj without the ``root`` template keyword
-        out = _run([*base, "-T", f'name ++ "\\x00\\x00" ++ {current} ++ "\\n"'], repo)
+        out = _run([*base, "-T", f'{name} ++ "\\x00\\x00" ++ {current} ++ "\\n"'], repo)
     store = _jj_store(repo)
     found: list[_Found] = []
     for line in out.splitlines():
@@ -192,7 +195,7 @@ def _merged_bookmarks(
     taken: set[str],
 ) -> list[Workspace]:
     """Bookmarks fully merged into ``main`` that no workspace row covers."""
-    template = 'if(remote || conflict, "", name ++ "\\n")'
+    template = 'if(remote || conflict, "", stringify(name) ++ "\\n")'
     out = _jj(repo, "bookmark", "list", "-r", f"::{_revset_str(main)}", "-T", template)
     found: list[Workspace] = []
     for name in filter(None, out.splitlines()):

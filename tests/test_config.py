@@ -14,6 +14,11 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
+def candidate(repo: Path) -> c.Config:
+    """Load the repository's project config as it would be reviewed."""
+    return c.load_candidate(c.ProjectTrust.check(repo))
+
+
 def test_defaults_without_files(tmp_path: Path) -> None:
     cfg = c.load(tmp_path)
     assert cfg.defaults.agent == "claude"
@@ -33,8 +38,9 @@ def test_project_overrides_global(tmp_path: Path) -> None:
         repo / c.PROJECT_CONFIG_NAME,
         '[defaults]\neffort = "low"\n[project]\nbase_image = "debian:stable"\n',
     )
+    c.ProjectTrust.check(repo).trust(repo)
     cfg = c.load(repo)
-    assert cfg.sources == [g, repo / c.PROJECT_CONFIG_NAME]
+    assert cfg.sources == [g, c.trusted_config_path(repo)]
     assert cfg.defaults.agent == "codex"  # from global
     assert cfg.defaults.effort == "low"  # project wins
     assert cfg.network.internet_proxy == "http://proxy:3128"
@@ -60,7 +66,7 @@ def test_project_overrides_global(tmp_path: Path) -> None:
 def test_invalid_config(tmp_path: Path, text: str, message: str) -> None:
     write(tmp_path / c.PROJECT_CONFIG_NAME, text)
     with pytest.raises(c.ConfigError, match=message):
-        c.load(tmp_path)
+        candidate(tmp_path)
 
 
 def test_templates_parse_and_validate() -> None:
@@ -123,7 +129,7 @@ def test_state_dir_is_per_repo(tmp_path: Path) -> None:
 def test_invalid_commands_and_numeric_settings(tmp_path: Path, text: str, message: str) -> None:
     write(tmp_path / c.PROJECT_CONFIG_NAME, text)
     with pytest.raises(c.ConfigError, match=message):
-        c.load(tmp_path)
+        candidate(tmp_path)
 
 
 def test_terminal_mode_resolution(tmp_path: Path) -> None:
@@ -133,4 +139,40 @@ def test_terminal_mode_resolution(tmp_path: Path) -> None:
     assert ui.terminal_mode() == "custom"  # older configs keep working
     for mode in ("inline", "tmux", "zellij", "screen"):
         write(tmp_path / c.PROJECT_CONFIG_NAME, f'[ui]\nterminal = "{mode}"\n')
-        assert c.load(tmp_path).ui.terminal_mode() == mode
+        assert candidate(tmp_path).ui.terminal_mode() == mode
+
+
+def test_untrusted_project_config_is_ignored(tmp_path: Path) -> None:
+    project = write(tmp_path / c.PROJECT_CONFIG_NAME, '[sandbox]\ncommand = "evil"\n')
+    trust = c.ProjectTrust.check(tmp_path)
+    assert trust.needs_review and trust.trusted is None
+    assert "not trusted yet" in trust.describe()
+    assert '+command = "evil"' in trust.diff()
+    assert c.load(tmp_path).sandbox.command == "project-sandbox"
+    assert c.load(tmp_path).sources == []
+
+    trust.trust(tmp_path)
+    assert not c.ProjectTrust.check(tmp_path).needs_review
+    assert c.load(tmp_path).sandbox.command == "evil"
+
+    project.unlink()  # no project config: the trusted copy is not used either
+    assert not c.ProjectTrust.check(tmp_path).needs_review
+    assert c.load(tmp_path).sandbox.command == "project-sandbox"
+
+
+def test_changed_project_config_keeps_the_trusted_copy(tmp_path: Path) -> None:
+    project = write(tmp_path / c.PROJECT_CONFIG_NAME, '[project]\nbase_image = "a"\n')
+    c.ProjectTrust.check(tmp_path).trust(tmp_path)
+    project.write_text('[project]\nbase_image = "b"\n')
+    trust = c.ProjectTrust.check(tmp_path)
+    assert trust.needs_review
+    assert "changed since it was trusted" in trust.describe()
+    assert '-base_image = "a"' in trust.diff() and '+base_image = "b"' in trust.diff()
+    assert c.load(tmp_path).project.base_image == "a"
+    assert c.load_candidate(trust).project.base_image == "b"
+
+    # Trusting stores what was reviewed, not what the file says by then.
+    project.write_text('[project]\nbase_image = "c"\n')
+    trust.trust(tmp_path)
+    assert c.load(tmp_path).project.base_image == "b"
+    assert c.ProjectTrust.check(tmp_path).needs_review

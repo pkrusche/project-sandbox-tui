@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from project_sandbox_tui import config
 from tests.conftest import jj
 
 pty = pytest.importorskip("pty")
@@ -70,6 +71,7 @@ def start_tui(repo: Path, command: str, **env_extra: str) -> Tui:
         f'[project]\nbase_image = "img"\n[sandbox]\ncommand = "{command}"\n'
         '[ui]\nnotify_command = "true"\nbell = false\n'
     )
+    config.ProjectTrust.check(repo).trust(repo)
     pythonpath = os.pathsep.join(p for p in (str(SRC), os.environ.get("PYTHONPATH", "")) if p)
     env = {**os.environ, "TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra}
     tui = Tui(repo, env)
