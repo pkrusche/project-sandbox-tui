@@ -7,6 +7,7 @@ TUI must take keys again afterwards, however the agent left the terminal.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import select
 import struct
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from project_sandbox_tui import config
+from tests.conftest import jj
 
 pty = pytest.importorskip("pty")
 
@@ -122,6 +124,50 @@ def test_tui_recovers_when_sandbox_command_is_missing(repo: Path, tmp_path: Path
         tui.pump(1.0)
         tui.send(b"\r")
         assert tui.wait_for(b"could not start project-sandbox", 10)
+        assert_responsive(tui)
+    finally:
+        tui.close()
+
+
+@pytest.mark.parametrize("viewer", ["pager", "formatter"])
+def test_diff_uses_host_viewer_and_returns_to_tui(repo: Path, viewer: str) -> None:
+    script = repo.parent / "diff_viewer.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        "if len(sys.argv) == 1:\n"
+        "    assert sys.stdout.isatty()\n"
+        "    diff = sys.stdin.read()\n"
+        "    assert 'diff --git' in diff and '+b' in diff\n"
+        "else:\n"
+        "    assert not (pathlib.Path(sys.argv[1]) / 'b.txt').exists()\n"
+        "    assert (pathlib.Path(sys.argv[2]) / 'b.txt').read_text() == 'b\\n'\n"
+        "print('HOST-DIFF-VIEWER-READY', flush=True)\n"
+        # A pager reads jj's output on stdin; use the controlling tty for keys.
+        "with open('/dev/tty') as tty:\n"
+        "    tty.readline()\n"
+    )
+    command = [sys.executable, str(script)]
+    jj(repo, "config", "set", "--user", "ui.color", "never")
+    if viewer == "pager":
+        jj(repo, "config", "set", "--user", "ui.diff-formatter", ":git")
+        jj(repo, "config", "set", "--user", "ui.pager", json.dumps(command))
+    else:
+        jj(repo, "config", "set", "--user", "ui.paginate", "never")
+        jj(
+            repo,
+            "config",
+            "set",
+            "--user",
+            "ui.diff-formatter",
+            json.dumps([*command, "$left", "$right"]),
+        )
+    tui = start_tui(repo, "true")
+    try:
+        tui.send(b"Gd")
+        assert tui.wait_for(b"HOST-DIFF-VIEWER-READY"), tui.buf.decode(errors="replace")
+        tui.send(b"\r")
+        assert tui.wait_for(b"press Enter to return to sbx-tui")
+        tui.send(b"\r")
         assert_responsive(tui)
     finally:
         tui.close()

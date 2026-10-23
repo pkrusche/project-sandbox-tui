@@ -42,6 +42,7 @@ The first row is always `@ working copy`, followed by the bookmarks.
 | `n` | new bookmark (name + start revision) |
 | `v` / `V` · `space` | select branches: range / single marks; `esc` clears |
 | `d` | diff the branch (or two selected tips) against the main branch |
+| `f` | fast-forward main to the highlighted bookmark (or one marked bookmark) |
 | `o` | open the bookmark's workspace in your editor |
 | `P` | preview the full `project-sandbox` command |
 | `c` · `C` | clear a finished status · force-forget a record stuck as running |
@@ -53,6 +54,17 @@ The first row is always `@ working copy`, followed by the bookmarks.
 With a selection, `c`, `C`, `x`, `o` and `P` apply to every selected branch;
 `l` needs a single one. Two or more selected branches turn `r` / `i` into a
 [merge or rebase](merging.md).
+
+Diffs run `jj diff --from BASE --to TARGET` in the TUI's repository, using the
+host's jj configuration, formatter and pager (including delta). The TUI pauses
+while the viewer is open. Exit the viewer, then press Enter to return to the
+branch list. Short diffs stay visible until you press Enter.
+
+`f` advances `project.main_branch` (or the detected main / master / trunk) only
+when it is an ancestor of the chosen bookmark. Conflicted bookmarks and targets
+with unresolved file conflicts are refused. If both bookmarks already point to
+the same commit, nothing changes. This moves only the local main bookmark;
+it does not push, rewrite commits, or change working-copy files.
 
 ## Launch form
 

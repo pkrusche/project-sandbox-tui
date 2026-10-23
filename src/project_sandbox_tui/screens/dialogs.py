@@ -325,6 +325,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                     "select a range / mark; r/i merge or rebase; esc clears",
                 ),
                 ("d", "diff main / two branches"),
+                ("f", "fast-forward main to one bookmark"),
                 ("o", "open selected in editor"),
                 ("P", "show selected commands"),
                 ("W", "clean up workspaces"),

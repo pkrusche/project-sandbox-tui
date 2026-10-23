@@ -64,7 +64,6 @@ from project_sandbox_tui.screens.dialogs import (
     MessageScreen,
     NewBranchScreen,
 )
-from project_sandbox_tui.screens.diff import DiffScreen
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import (
@@ -179,6 +178,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("l", "app.open_log", show=False),
     Binding("o", "app.open_editor", show=False),
     Binding("d", "app.diff", show=False),
+    Binding("f", "app.fast_forward_main", show=False),
     Binding("P", "app.preview", show=False),
     Binding("W", "app.cleanup_workspaces", show=False),
     Binding("x", "app.stop", show=False),
@@ -221,6 +221,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("n", "new bookmark"),
             ("v V ␣", "select branches"),
             ("d", "diff branches"),
+            ("f", "fast-forward main"),
             ("o", "open in editor"),
             ("P", "show command"),
             ("W", "clean workspaces"),
@@ -231,7 +232,8 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 )
 
 FOOTER = (
-    "j/k move · i interactive · r run · n new · l log · d diff · x stop · o open · ? help · q quit"
+    "j/k move · i interactive · r run · n new · l log · d diff · f advance main · "
+    "x stop · o open · ? help · q quit"
 )
 
 
@@ -661,6 +663,40 @@ class SandboxTUI(App[None]):
         name = self._require_branch()
         return [name] if name is not None else []
 
+    def action_fast_forward_main(self) -> None:
+        chosen = self._action_branches()
+        if not chosen:
+            return
+        if len(chosen) != 1:
+            self.notify("select one bookmark to fast-forward main", severity="warning")
+            return
+        target = chosen[0]
+        branch = self.branch(target)
+        if branch is None or branch.working_copy:
+            self.notify("select a bookmark to fast-forward main", severity="warning")
+            return
+        main = main_branch(
+            {b.name for b in self.branches if not b.working_copy}, self.cfg.project.main_branch
+        )
+        if main is None:
+            self.notify("no main branch found; configure project.main_branch", severity="warning")
+            return
+        self._fast_forward_main(main, target)
+
+    @work(exclusive=True, group="vcs")
+    async def _fast_forward_main(self, main: str, target: str) -> None:
+        try:
+            moved = await asyncio.to_thread(self.backend.fast_forward, main, target)
+        except VcsError as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+        else:
+            self.notify(
+                f"fast-forwarded {main} to {target}"
+                if moved
+                else f"{main} already points to {target}"
+            )
+        await self.refresh_data()
+
     def action_diff(self) -> None:
         chosen = self._action_branches()
         if not chosen:
@@ -678,7 +714,28 @@ class SandboxTUI(App[None]):
             target = chosen[0]
         else:
             base, target = chosen
-        self.push_screen(DiffScreen(self.backend, base, target))
+        self._show_diff(base, target)
+
+    def _show_diff(self, base: str, target: str) -> None:
+        try:
+            with self._suspended():
+                print(f"\n── sbx-tui: diff {base} → {target} ──\n", flush=True)
+                with terminal.preserved():
+                    try:
+                        code = subprocess.call(
+                            self.backend.diff_command(base, target), cwd=self.backend.root
+                        )
+                    except KeyboardInterrupt:
+                        code = 130
+                # Pagers can exit immediately for short diffs. Keep the output
+                # visible until the user is ready to resume the TUI.
+                with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
+                    input("\n── press Enter to return to sbx-tui ──")
+        except OSError as exc:
+            self.notify(f"could not start jj diff: {exc}", severity="error")
+            return
+        if code not in (0, 130):
+            self.notify(f"jj diff exited with {code}", severity="error")
 
     def action_launch(self, mode: Mode) -> None:
         selected = self.selection()
