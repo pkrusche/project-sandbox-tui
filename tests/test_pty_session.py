@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from project_sandbox_tui import config
+
 pty = pytest.importorskip("pty")
 
 AGENT = Path(__file__).with_name("fake_interactive_agent.py")
@@ -67,6 +69,7 @@ def start_tui(repo: Path, command: str, **env_extra: str) -> Tui:
         f'[project]\nbase_image = "img"\n[sandbox]\ncommand = "{command}"\n'
         '[ui]\nnotify_command = "true"\nbell = false\n'
     )
+    config.ProjectTrust.check(repo).trust(repo)
     pythonpath = os.pathsep.join(p for p in (str(SRC), os.environ.get("PYTHONPATH", "")) if p)
     env = {**os.environ, "TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra}
     tui = Tui(repo, env)

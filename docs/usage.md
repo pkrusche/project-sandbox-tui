@@ -6,6 +6,7 @@
 sbx-tui [REPO]               # open the TUI (default: current directory)
 sbx-tui --init               # write global and project config templates, fetch model list if missing
 sbx-tui --print-config       # merged config + the command an interactive session would run
+sbx-tui --trust-config       # review and trust a new or changed .project-sandbox-tui.toml
 sbx-tui --dry-run            # add --dry-run to every project-sandbox call
 sbx-tui --update-models      # refresh the model list, see models.md
 sbx-tui --cleanup-workspaces # remove idle merged workspaces, see cleanup.md

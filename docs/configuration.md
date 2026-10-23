@@ -6,6 +6,22 @@ Global: `~/.config/project-sandbox-tui/config.toml`. Per repo:
 `ctrl+r` reloads both files; invalid config leaves the current settings in
 place, and running sessions keep their launch settings.
 
+## Trusting the project config
+
+The project config comes with the repository, so whoever wrote it can set
+commands that run on your machine (`sandbox.command`, `ui.*_command`) or loosen
+the sandbox (network, credentials, `extra_args`). sbx-tui therefore only loads
+a copy you have reviewed, kept in the state directory
+(`~/.local/state/project-sandbox-tui/<repo>-<hash>/trusted-project-config.toml`):
+
+- When the file is new or has changed, sbx-tui shows it as a diff against the
+  trusted copy at start and on `ctrl+r`; `y` trusts exactly what was shown.
+- Until then a never-trusted file is ignored, and a changed one keeps the
+  previously trusted version in effect. A file that fails to load is not offered.
+- `sbx-tui --trust-config` does the same review in the terminal;
+  `--print-config` and `--cleanup-workspaces` warn about an untrusted file.
+- `sbx-tui --init` trusts the template it writes.
+
 Launch form precedence: last used → project config → global config → built-in.
 
 ```toml

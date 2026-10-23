@@ -13,7 +13,7 @@ from textual.widgets import Input, Static, TextArea
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
-from project_sandbox_tui.screens.dialogs import HelpScreen, NewBranchScreen
+from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen, NewBranchScreen
 from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import detect
@@ -541,12 +541,13 @@ def test_interactive_session_in_detached_tmux_session(
 
 
 def test_reload_config(repo: Path, tmp_path: Path) -> None:
-    from project_sandbox_tui.config import load
+    from project_sandbox_tui.config import ProjectTrust, load
 
     global_path = tmp_path / "custom.toml"
     global_path.write_text('[defaults]\nagent = "codex"\n')
     project_path = repo / ".project-sandbox-tui.toml"
     project_path.write_text('[project]\nbase_image = "old"\n')
+    ProjectTrust.check(repo).trust(repo)
     cfg = load(repo, global_path)
     cfg.sandbox.extra_args.append("--dry-run")
     app = SandboxTUI(repo, detect(repo), cfg, config_path=global_path, dry_run=True)
@@ -559,8 +560,20 @@ def test_reload_config(repo: Path, tmp_path: Path) -> None:
                 '[project]\nbase_image = "new"\ndefault_branch_start = "feature/x"\n'
                 "[ui]\nrefresh_seconds = 7\ncheatsheet = false\n"
             )
+            # A changed project config is reviewed first; declining keeps the trusted copy.
             await pilot.press("ctrl+r")
-            assert app.cfg.defaults.agent == "bash"
+            assert isinstance(app.screen, ConfirmScreen)
+            assert '+base_image = "new"' in app.screen.body
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.cfg.defaults.agent == "bash"  # the global config is not reviewed
+            assert app.cfg.project.base_image == "old"
+            assert any("changed since it was trusted" in str(n.message) for n in app._notifications)
+
+            await pilot.press("ctrl+r")
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
             assert app.cfg.project.base_image == "new"
             assert app.cfg.sandbox.extra_args == ["--dry-run"]
             assert app.jobs.cfg is app.cfg
@@ -570,11 +583,39 @@ def test_reload_config(repo: Path, tmp_path: Path) -> None:
             assert app.cfg.ui.refresh_seconds == 7
             good_cfg, good_timer = app.cfg, app._refresh_timer
             project_path.write_text("[ui]\nrefresh_seconds = 0\n")
+            await pilot.press("ctrl+r")  # invalid: not offered; the trusted copy stays in effect
+            assert not isinstance(app.screen, ConfirmScreen)
+            assert app.cfg.ui.refresh_seconds == 7
+            assert any("Project config not trusted" in str(n.message) for n in app._notifications)
+            good_cfg, good_timer = app.cfg, app._refresh_timer
+            global_path.write_text("[ui]\nrefresh_seconds = 0\n")
+            project_path.write_text('[project]\nbase_image = "new"\n')
+            ProjectTrust.check(repo).trust(repo)
             await pilot.press("ctrl+r")
             assert app.cfg is good_cfg
             assert app.jobs.cfg is good_cfg
             assert app._refresh_timer is good_timer
             assert any("Config reload failed" in str(n.message) for n in app._notifications)
+
+    asyncio.run(scenario())
+
+
+def test_untrusted_project_config_is_reviewed_at_start(repo: Path) -> None:
+    from project_sandbox_tui.config import ProjectTrust, load
+
+    (repo / ".project-sandbox-tui.toml").write_text('[project]\nbase_image = "img"\n')
+    app = SandboxTUI(repo, detect(repo), load(repo))
+    assert not app.cfg.has_image_source()
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmScreen)
+            assert "can set commands that run on this machine" in app.screen.body
+            await pilot.press("y")
+            await pilot.pause()
+            assert app.cfg.project.base_image == "img"
+            assert not ProjectTrust.check(repo).needs_review
 
     asyncio.run(scenario())
 

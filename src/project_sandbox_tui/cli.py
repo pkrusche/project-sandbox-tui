@@ -51,6 +51,12 @@ def build_parser() -> ArgumentParser:
         help="remove idle clean or merged workspaces and merged bookmarks, then exit",
     )
     p.add_argument(
+        "--trust-config",
+        action="store_true",
+        help="show how the repository's .project-sandbox-tui.toml differs from the trusted "
+        "copy and ask whether to trust it, then exit",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="preview workspace cleanup, or append --dry-run to project-sandbox invocations",
@@ -87,16 +93,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"sbx-tui: could not write {path}: {exc}", file=sys.stderr)
                 return 2
             print(f"{'wrote' if written else 'exists'}: {path}")
+            if written and path == config_mod.project_config_path(repo):
+                # sbx-tui wrote it just now: nothing to review
+                config_mod.ProjectTrust.check(repo).trust(repo)
         if models_mod.load_store() is None:
             # not fatal: the launch form works without it
             _update_models(models_mod.DEFAULT_SOURCE, required=False)
         return 0
 
     try:
+        if args.trust_config:
+            return _trust_config(repo, args.config)
+        trust = config_mod.ProjectTrust.check(repo)
         cfg = config_mod.load(repo, args.config)
     except ConfigError as exc:
         print(f"sbx-tui: config error: {exc}", file=sys.stderr)
         return 2
+    headless = args.cleanup_workspaces or args.print_config
+    if trust.needs_review and headless:  # the TUI asks for a review itself
+        print(f"sbx-tui: {trust.describe()} (review: sbx-tui --trust-config)", file=sys.stderr)
     if args.dry_run:
         cfg.sandbox.extra_args.append("--dry-run")
 
@@ -117,6 +132,26 @@ def main(argv: list[str] | None = None) -> int:
     from project_sandbox_tui.app import SandboxTUI  # import Textual only when needed
 
     SandboxTUI(repo, backend, cfg, config_path=args.config, dry_run=args.dry_run).run()
+    return 0
+
+
+def _trust_config(repo: Path, global_path: Path | None) -> int:
+    trust = config_mod.ProjectTrust.check(repo)
+    if not trust.needs_review:
+        state = "trusted" if trust.current is not None else "not present"
+        print(f"{trust.path}: {state}")
+        return 0
+    config_mod.load_candidate(trust, global_path)  # never trust a config that cannot load
+    print(trust.diff(), end="")
+    try:
+        answer = input(f"Trust {trust.path}? It can run commands on this machine. [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        print("not trusted")
+        return 1
+    trust.trust(repo)
+    print(f"trusted: {trust.path}")
     return 0
 
 

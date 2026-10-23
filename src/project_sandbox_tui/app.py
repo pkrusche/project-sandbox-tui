@@ -39,9 +39,12 @@ from project_sandbox_tui.config import (
     Config,
     ConfigError,
     LastUsed,
+    ProjectTrust,
     load,
+    load_candidate,
     remember,
     resolve_launch_defaults,
+    trusted_config_path,
 )
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
@@ -372,6 +375,7 @@ class SandboxTUI(App[None]):
         table.focus()
         await self.refresh_data()
         self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
+        self._review_project_config()
 
     # ------------------------------------------------------------ data
 
@@ -1102,8 +1106,46 @@ class SandboxTUI(App[None]):
     async def action_refresh(self) -> None:
         await self.refresh_data()
 
+    def _review_project_config(self) -> bool:
+        """Show a new or changed project config for review; reload once decided.
+
+        Returns whether a review was opened.
+        """
+        try:
+            trust = ProjectTrust.check(self.repo)
+            if not trust.needs_review:
+                return False
+            load_candidate(trust, self.config_path)  # never offer what cannot load
+        except ConfigError as exc:
+            self.notify(f"Project config not trusted: {exc}", severity="error", markup=False)
+            return False
+
+        def decided(trusted: bool | None) -> None:
+            if not trusted:
+                self.notify(trust.describe(), severity="warning", timeout=10, markup=False)
+            else:
+                try:
+                    trust.trust(self.repo)
+                except ConfigError as exc:
+                    self.notify(str(exc), severity="error", markup=False)
+            self.call_later(self._reload_config)
+
+        body = (
+            "This file comes with the repository. It can set commands that run on this "
+            "machine (sandbox.command, ui.*_command) and loosen the sandbox (network, "
+            f"credentials, extra_args). Trusting it copies it to {trusted_config_path(self.repo)}; "
+            "later changes are shown here again before they take effect.\n\n" + trust.diff()
+        )
+        title = "trust the project config?" if trust.trusted is None else "project config changed"
+        self.push_screen(ConfirmScreen(title, body, "trust"), decided)
+        return True
+
     async def action_reload_config(self) -> None:
         """Reload both config files, keeping the current settings on error."""
+        if not self._review_project_config():
+            await self._reload_config()
+
+    async def _reload_config(self) -> None:
         try:
             cfg = load(self.repo, self.config_path)
         except ConfigError as exc:

@@ -3,11 +3,17 @@
 Resolution order (later wins):  built-in defaults → global config → project config.
 The "last used" launch values live in the state directory, not in TOML, so the
 TUI never rewrites a file the user edits by hand.
+
+The project config comes with the repository, so it can be written by someone
+else; it can set commands that run on the host. Only a copy the user reviewed
+is loaded: trusting the file copies it into the state directory, and a changed
+file is shown as a diff against that copy before it takes effect.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import hashlib
 import json
 import math
@@ -27,6 +33,7 @@ RUNTIMES: tuple[str, ...] = ("auto", "apple-container", "docker", "podman")
 GENERATED_BUILDS: tuple[str, ...] = ("", "python-uv", "rust-cargo", "node-npm")
 
 PROJECT_CONFIG_NAME = ".project-sandbox-tui.toml"
+TRUSTED_CONFIG_NAME = "trusted-project-config.toml"  # in the repo's state directory
 APP_NAME = "project-sandbox-tui"
 
 
@@ -299,21 +306,106 @@ def from_dict(data: dict[str, Any]) -> Config:
 
 
 def load(repo: Path, global_path: Path | None = None) -> Config:
-    """Load global + project config for ``repo`` and validate the result."""
+    """Load global + the trusted project config for ``repo`` and validate the result.
+
+    A project config that changed since it was trusted is ignored in favour of
+    the trusted copy (see :class:`ProjectTrust`); one never trusted is ignored.
+    """
+    trust = ProjectTrust.check(repo)
+    if trust.current is None or trust.trusted is None:
+        return _load(global_path, None, None)
+    return _load(global_path, trust.trusted, trusted_config_path(repo))
+
+
+def load_candidate(trust: ProjectTrust, global_path: Path | None = None) -> Config:
+    """Load the project config under review, to validate it before trusting it."""
+    return _load(global_path, trust.current, trust.path)
+
+
+def _load(
+    global_path: Path | None, project_text: str | None, project_source: Path | None
+) -> Config:
     gpath = global_path or global_config_path()
-    ppath = project_config_path(repo)
     merged: dict[str, Any] = {}
     sources: list[Path] = []
-    for path in (gpath, ppath):
-        if path == gpath and global_path is not None and not path.is_file():
-            raise ConfigError(f"{path}: config file does not exist or is not a file")
-        if path.is_file():
-            merged = deep_merge(merged, _read_toml(path))
-            sources.append(path)
+    if global_path is not None and not gpath.is_file():
+        raise ConfigError(f"{gpath}: config file does not exist or is not a file")
+    if gpath.is_file():
+        merged = _read_toml(gpath)
+        sources.append(gpath)
+    if project_text is not None and project_source is not None:
+        try:
+            merged = deep_merge(merged, tomllib.loads(project_text))
+        except ValueError as exc:
+            raise ConfigError(f"{project_source}: {exc}") from exc
+        sources.append(project_source)
     cfg = from_dict(merged)
     cfg.sources = sources
     cfg.validate()
     return cfg
+
+
+def trusted_config_path(repo: Path) -> Path:
+    return repo_state_dir(repo) / TRUSTED_CONFIG_NAME
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class ProjectTrust:
+    """The repository's project config next to the copy the user last trusted."""
+
+    path: Path  # <repo>/.project-sandbox-tui.toml
+    current: str | None  # its contents; None = the repository has no project config
+    trusted: str | None  # the reviewed copy; None = never trusted
+
+    @classmethod
+    def check(cls, repo: Path) -> ProjectTrust:
+        path = project_config_path(repo)
+        return cls(path, _read_text(path), _read_text(trusted_config_path(repo)))
+
+    @property
+    def needs_review(self) -> bool:
+        return self.current is not None and self.current != self.trusted
+
+    def diff(self) -> str:
+        """What trusting would change: a unified diff against the trusted copy."""
+        before = (self.trusted or "").splitlines(keepends=True)
+        after = (self.current or "").splitlines(keepends=True)
+        lines = difflib.unified_diff(
+            before,
+            after,
+            fromfile="trusted" if self.trusted is not None else "(never trusted)",
+            tofile=str(self.path),
+        )
+        return "".join(line if line.endswith("\n") else line + "\n" for line in lines)
+
+    def trust(self, repo: Path) -> None:
+        """Trust exactly the reviewed text (not whatever the file holds by now)."""
+        if self.current is None:
+            raise ConfigError(f"{self.path}: nothing to trust")
+        path = trusted_config_path(repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(self.current, encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            raise ConfigError(f"cannot write {path}: {exc}") from exc
+
+    def describe(self) -> str:
+        """One line for the user: why the project config is not in effect."""
+        if self.trusted is None:
+            return f"{self.path} is not trusted yet and is ignored"
+        return f"{self.path} changed since it was trusted; using the trusted version"
 
 
 # ---------------------------------------------------------------- state
