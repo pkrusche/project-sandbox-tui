@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -153,17 +154,136 @@ def test_sort_branches_priorities_and_ties() -> None:
 
 
 def test_diff_tips(repo: Path) -> None:
-    from tests.conftest import add_bookmark, jj
+    from tests.conftest import add_bookmark, jj, run
 
+    jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":git")
     backend = vcs.detect(repo)
-    diff = backend.diff("main", "feature/x")
+
+    def diff_between(base: str, target: str) -> str:
+        return run(*backend.diff_command(base, target), cwd=repo)
+
+    diff = diff_between("main", "feature/x")
     assert "diff --git" in diff
     assert "+b" in diff
-    assert backend.diff("main", "main") == ""
-    assert backend.diff("feature/x", "main") != diff
+    assert diff_between("main", "main") == ""
+    assert diff_between("feature/x", "main") != diff
     # Diverging main contributes deletions to a tip-to-tip comparison.
     add_bookmark(repo, "next", "main-only.txt", "main only\n")
     jj(repo, "bookmark", "set", "--quiet", "main", "-r", "next")
-    assert "-main only" in backend.diff("main", "feature/x")
+    assert "-main only" in diff_between("main", "feature/x")
+    with pytest.raises(subprocess.CalledProcessError):
+        diff_between("missing", "main")
+
+
+def test_diff_uses_configured_formatter_and_snapshots_working_copy(repo: Path) -> None:
+    from tests.conftest import jj, run
+
+    jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":summary")
+    (repo / "a.txt").write_text("changed\n")
+    backend = vcs.detect(repo)
+    assert run(*backend.diff_command("main", "feature/x"), cwd=repo) == "A b.txt\n"
+    assert run(*backend.diff_command("main", "@"), cwd=repo) == "M a.txt\n"
+
+
+@pytest.mark.parametrize("names", [("main", "feature/x"), ("main+release", "feature+parser")])
+def test_fast_forward_preserves_target_and_working_copy(repo: Path, names: tuple[str, str]) -> None:
+    from tests.conftest import jj
+
+    main, target = names
+    if main != "main":
+        jj(repo, "bookmark", "rename", "main", main)
+        jj(repo, "bookmark", "rename", "feature/x", target)
+    jj(repo, "bookmark", "create", f"{main}-other", "-r", main)
+    backend = vcs.detect(repo)
+    old = backend._bookmark_commit(main)
+    new = backend._bookmark_commit(target)
+    working_copy = backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id")
+    (repo / "a.txt").write_text("uncommitted work\n")
+    assert backend.fast_forward(main, target)
+    assert backend._bookmark_commit(main) == backend._bookmark_commit(target) == new
+    assert backend._bookmark_commit(f"{main}-other") == old
+    assert backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id") == working_copy
+    assert (repo / "a.txt").read_text() == "uncommitted work\n"
+    assert not backend.fast_forward(main, target)
+
+
+@pytest.mark.parametrize("direction", ["backwards", "sideways"])
+def test_fast_forward_refuses_to_discard_history(repo: Path, direction: str) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    jj(repo, "bookmark", "create", "old-main", "-r", "main")
+    add_bookmark(repo, "side", "side.txt", "side\n")
+    jj(repo, "bookmark", "move", "main", "--to", "feature/x")
+    backend = vcs.detect(repo)
+    old = backend._bookmark_commit("main")
+    with pytest.raises(vcs.VcsError, match="not an ancestor"):
+        backend.fast_forward("main", "old-main" if direction == "backwards" else "side")
+    assert backend._bookmark_commit("main") == old
+
+
+@pytest.mark.parametrize(
+    "main,target", [("missing", "feature/x"), ("main", "missing"), ("main", "@")]
+)
+def test_fast_forward_requires_existing_local_bookmarks(repo: Path, main: str, target: str) -> None:
+    backend = vcs.detect(repo)
+    old = backend._bookmark_commit("main")
+    message = "not a local bookmark" if target == "@" else "does not exist"
+    with pytest.raises(vcs.VcsError, match=message):
+        backend.fast_forward(main, target)
+    assert backend._bookmark_commit("main") == old
+
+
+def test_fast_forward_refuses_unresolved_file_conflicts(repo: Path) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    add_bookmark(repo, "left", "a.txt", "left\n")
+    add_bookmark(repo, "right", "a.txt", "right\n")
+    jj(repo, "new", "--no-edit", "left", "right")
+    jj(repo, "bookmark", "create", "conflicted", "-r", "heads(left:: & right::)")
+    backend = vcs.detect(repo)
+    old = backend._bookmark_commit("main")
+    with pytest.raises(vcs.VcsError, match="unresolved file conflicts"):
+        backend.fast_forward("main", "conflicted")
+    assert backend._bookmark_commit("main") == old
+
+
+@pytest.mark.parametrize("name", ["main", "feature/x"])
+def test_fast_forward_refuses_conflicted_bookmarks(repo: Path, name: str) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    add_bookmark(repo, "left", "left.txt", "left\n", start="feature/x")
+    add_bookmark(repo, "right", "right.txt", "right\n", start="feature/x")
+    operation = jj(repo, "op", "log", "--no-graph", "-n", "1", "-T", "id").strip()
+    jj(repo, "bookmark", "move", f"exact:{name}", "--to", "left")
+    jj(repo, "--at-op", operation, "bookmark", "move", f"exact:{name}", "--to", "right")
+    backend = vcs.detect(repo)
+    before = backend._jj("bookmark", "list")  # integrate the concurrent operations
+    with pytest.raises(vcs.VcsError, match="unambiguous target"):
+        backend.fast_forward("main", "feature/x")
+    assert backend._jj("bookmark", "list") == before
+
+
+@pytest.mark.parametrize("changed", ["main", "target"])
+def test_fast_forward_rechecks_at_mutation(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    add_bookmark(repo, "side", "side.txt", "side\n")
+    add_bookmark(repo, "next", "next.txt", "next\n", start="feature/x")
+    backend = vcs.detect(repo)
+    old = backend._bookmark_commit("main")
+    side = backend._bookmark_commit("side")
+    original = backend._jj
+
+    def concurrent_move(*args: str) -> str:
+        if args[:2] == ("bookmark", "move"):
+            # Simulate a bookmark changing after the preflight queries.
+            name, destination = ("main", "side") if changed == "main" else ("feature/x", "next")
+            jj(repo, "bookmark", "move", f"exact:{name}", "--to", destination)
+        return original(*args)
+
+    monkeypatch.setattr(backend, "_jj", concurrent_move)
     with pytest.raises(vcs.VcsError):
-        backend.diff("missing", "main")
+        backend.fast_forward("main", "feature/x")
+    assert backend._bookmark_commit("main") == (side if changed == "main" else old)

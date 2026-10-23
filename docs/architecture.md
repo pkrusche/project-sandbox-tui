@@ -29,7 +29,7 @@ runtimes. Its session records, read from disk, are the only other input.
 | `octopus.py` | host-side merge / rebase preparation |
 | `cleanup.py` | workspace and merged-bookmark cleanup |
 | `models.py`, `history.py`, `notify.py` | model suggestions, prompt history, notifications |
-| `app.py`, `widgets.py`, `screens/` | Textual app, branch list, launch / dialog / log / diff / history screens |
+| `app.py`, `widgets.py`, `screens/` | Textual app, branch list, launch / dialog / log / history screens; terminal diff viewer |
 
 ## Argv construction
 
@@ -66,7 +66,8 @@ then SIGKILL plus `<runtime> stop <container>`.
 
 ## Known limitations
 
-- An inline interactive session suspends the event loop; notifications arrive on return.
+- Inline interactive sessions and the terminal diff viewer suspend the event loop;
+  notifications arrive on return.
 - With a non-inline terminal the TUI only sees project-sandbox's session record. A launch that fails before writing one keeps the branch busy up to 10 minutes (or until `C`).
 - PID reuse after a crash can make a record look running forever; `C` forgets it.
 - Not implemented: ahead/behind vs trunk, dirty marker, prompt files, remote bookmarks, switching repos.

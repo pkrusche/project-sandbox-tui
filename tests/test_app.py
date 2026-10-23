@@ -95,6 +95,72 @@ def test_create_branch(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     assert "topic/new" in {b.name for b in detect(repo).list_branches()}
 
 
+@pytest.mark.parametrize("marked", [False, True])
+def test_fast_forward_main_shortcut(
+    repo: Path, fake_cfg: Callable[..., Config], marked: bool
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        if marked:
+            app.marked = ["feature/x"]  # selection wins over the highlighted working copy
+        else:
+            await pilot.press("G")
+        target = app.backend._bookmark_commit("feature/x")
+        await pilot.press("f")
+        await app.workers.wait_for_complete()
+        assert app.backend._bookmark_commit("main") == target
+        by_name = {b.name: b for b in app.branches}
+        assert by_name["main"].head == by_name["feature/x"].head
+        assert any("fast-forwarded main to feature/x" in str(n.message) for n in app._notifications)
+        await pilot.press("f")
+        await app.workers.wait_for_complete()
+        assert any("already points to" in str(n.message) for n in app._notifications)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize(
+    "case", ["working-copy", "multiple", "missing-main", "configured", "diverged"]
+)
+def test_fast_forward_main_guards_and_configuration(
+    repo: Path, fake_cfg: Callable[..., Config], case: str
+) -> None:
+    if case == "diverged":
+        add_bookmark(repo, "side", "side.txt", "side\n")
+        from tests.conftest import jj
+
+        jj(repo, "bookmark", "move", "main", "--to", "side")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        expected = {
+            "working-copy": "select a bookmark",
+            "multiple": "select one bookmark",
+            "missing-main": "no main branch found",
+            "configured": "fast-forwarded feature/x to next",
+            "diverged": "not an ancestor",
+        }[case]
+        old = app.backend._bookmark_commit("main")
+        if case == "multiple":
+            app.marked = ["main", "feature/x"]
+        elif case == "missing-main":
+            app.cfg.project.main_branch = "missing"
+            app.marked = ["feature/x"]
+        elif case == "configured":
+            app.cfg.project.main_branch = "feature/x"
+            add_bookmark(repo, "next", "next.txt", "next\n", start="feature/x")
+            await app.refresh_data()
+            app.marked = ["next"]
+        elif case == "diverged":
+            app.marked = ["feature/x"]
+        await pilot.press("f")
+        await app.workers.wait_for_complete()
+        assert any(expected in str(n.message) for n in app._notifications)
+        assert app.backend._bookmark_commit("main") == old
+        if case == "configured":
+            assert app.backend._bookmark_commit("feature/x") == app.backend._bookmark_commit("next")
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 @pytest.mark.parametrize("mode", ["r", "i"])
 @pytest.mark.parametrize("multiple", [False, True])
 def test_launch_inputs_remain_visible_when_focused(
@@ -1068,29 +1134,54 @@ def test_cleanup_force_delete(repo: Path, fake_cfg: Callable[..., Config]) -> No
     assert "dirty" not in run("jj", "workspace", "list", cwd=repo)
 
 
-def test_diff_selection(repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    from project_sandbox_tui.screens.diff import DiffScreen
+def test_diff_selection(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[tuple[str, str]] = []
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_show_diff", lambda base, target: shown.append((base, target)))
         await pilot.press("G", "d")
-        assert isinstance(app.screen, DiffScreen)
-        assert (app.screen.base, app.screen.target) == ("main", "feature/x")
-        await app.workers.wait_for_complete()
-        await pilot.press("q")
+        assert shown[-1] == ("main", "feature/x")
         app.marked = ["feature/x"]
         await pilot.press("d")
-        assert isinstance(app.screen, DiffScreen)
-        assert (app.screen.base, app.screen.target) == ("main", "feature/x")
-        await pilot.press("escape")
+        assert shown[-1] == ("main", "feature/x")
         app.marked = ["feature/x", "main"]
         await pilot.press("d")
-        assert isinstance(app.screen, DiffScreen)
-        assert (app.screen.base, app.screen.target) == ("feature/x", "main")
-        await pilot.press("q")
+        assert shown[-1] == ("feature/x", "main")
         app.cfg.project.main_branch = "feature/x"
         app.marked = ["main"]
         await pilot.press("d")
-        assert isinstance(app.screen, DiffScreen)
-        assert (app.screen.base, app.screen.target) == ("feature/x", "main")
+        assert shown[-1] == ("feature/x", "main")
+        assert len(shown) == 4
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError("jj missing"), 1, KeyboardInterrupt()])
+def test_diff_viewer_failure_recovers(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException | int,
+) -> None:
+    import contextlib
+
+    def viewer(argv: list[str], *, cwd: Path) -> int:
+        assert argv == ["jj", "diff", "--from", "main", "--to", "feature/x"]
+        assert cwd == repo
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
+        monkeypatch.setattr("subprocess.call", viewer)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        await pilot.press("G", "d")
+        if not isinstance(failure, KeyboardInterrupt):
+            assert any("jj diff" in str(n.message) for n in app._notifications)
+        await pilot.press("?")
+        assert isinstance(app.screen, HelpScreen)
 
     run_app(repo, fake_cfg(), scenario)

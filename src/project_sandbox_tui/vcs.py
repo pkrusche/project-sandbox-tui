@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 from collections.abc import Collection
@@ -155,8 +156,43 @@ class JjBackend:
             self.root,
         )
 
-    def diff(self, base: str, target: str) -> str:
-        return self._jj("diff", "--git", "--from", base, "--to", target)
+    def diff_command(self, base: str, target: str) -> list[str]:
+        """Interactive diff: let jj choose the formatter, colors and pager."""
+        return ["jj", "diff", "--from", base, "--to", target]
+
+    def _bookmark_commit(self, name: str) -> str:
+        if name == WORKING_COPY:
+            raise VcsError("the working copy is not a local bookmark")
+        commit = self._jj(
+            "bookmark",
+            "list",
+            f"exact:{name}",
+            "-T",
+            'if(remote, "", if(normal_target, normal_target.commit_id(), "conflicted"))',
+        ).strip()
+        if not commit:
+            raise VcsError(f"bookmark {name} does not exist")
+        if commit == "conflicted":
+            raise VcsError(f"bookmark {name} has no unambiguous target; resolve it first")
+        return commit
+
+    def fast_forward(self, main: str, target: str) -> bool:
+        """Advance an existing local bookmark without rewriting commits or files."""
+        old = self._bookmark_commit(main)
+        new = self._bookmark_commit(target)
+        if old == new:
+            return False
+        if self._jj("log", "--no-graph", "-r", f"{new} & conflicts()", "-T", "commit_id"):
+            raise VcsError(f"{target} has unresolved file conflicts")
+        if not self._jj("log", "--no-graph", "-r", f"{old} & ::{new}", "-T", "commit_id"):
+            raise VcsError(f"cannot fast-forward {main} to {target}: {main} is not an ancestor")
+        # Pin the inspected target, and let jj enforce forward-only movement
+        # again against main's current position in the mutation transaction.
+        # The revset also requires the local target bookmark to still exist at
+        # that commit. Exact patterns keep bookmark names from becoming globs.
+        destination = f"bookmarks(exact:{json.dumps(target)}) & {new}"
+        self._jj("bookmark", "move", f"exact:{main}", "--to", destination)
+        return True
 
     def default_start(self) -> str:
         names = {b.name for b in self.list_branches() if not b.working_copy}
