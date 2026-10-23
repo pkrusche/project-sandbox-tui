@@ -22,7 +22,7 @@ workspace the TUI runs in is never listed.
 
 ## Merged work
 
-The main branch (`project.main_branch`; default: first of `main` / `master` /
+The main bookmark (`project.main_branch`; default: first of `main` / `master` /
 `trunk`) relaxes the rules for fully merged work:
 
 - A workspace whose commits are all in main (only empty revisions outside

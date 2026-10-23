@@ -59,15 +59,15 @@ _INVALID_NAME = re.compile(r"[\s\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.
 
 
 def validate_branch_name(name: str) -> str | None:
-    """Return an error message for an unusable branch name, else None.
+    """Return an error message for an unusable bookmark name, else None.
 
     Applies git's ref rules (bookmarks are exported to git) plus what is
     sensible for a bookmark that project-sandbox turns into a workspace directory.
     """
     if not name:
-        return "branch name is empty"
+        return "bookmark name is empty"
     if _INVALID_NAME.search(name):
-        return f"invalid branch name: {name!r}"
+        return f"invalid bookmark name: {name!r}"
     return None
 
 
@@ -197,8 +197,16 @@ class JjBackend:
 
     def fast_forward(self, main: str, target: str) -> bool:
         """Advance an existing local bookmark without rewriting commits or files."""
+        if target == WORKING_COPY:
+            # Snapshot before inspecting @, then snapshot again during the move.
+            # The pinned destination rejects a working copy that changed between them.
+            _run(["jj", "--no-pager", "--color=never", "status"], self.root)
         old = self._bookmark_commit(main)
-        new = self._bookmark_commit(target)
+        new = (
+            self._jj("log", "--no-graph", "-r", "@", "-T", "commit_id").strip()
+            if target == WORKING_COPY
+            else self._bookmark_commit(target)
+        )
         if old == new:
             return False
         if self._jj("log", "--no-graph", "-r", f"{new} & conflicts()", "-T", "commit_id"):
@@ -207,11 +215,73 @@ class JjBackend:
             raise VcsError(f"cannot fast-forward {main} to {target}: {main} is not an ancestor")
         # Pin the inspected target, and let jj enforce forward-only movement
         # again against main's current position in the mutation transaction.
-        # The revset also requires the local target bookmark to still exist at
-        # that commit. Exact patterns keep bookmark names from becoming globs.
-        destination = f"bookmarks(exact:{json.dumps(target)}) & {new}"
-        self._jj("bookmark", "move", f"exact:{main}", "--to", destination)
+        destination = (
+            f"@ & {new}"
+            if target == WORKING_COPY
+            else f"bookmarks(exact:{json.dumps(target)}) & {new}"
+        )
+        if target == WORKING_COPY:
+            _run(
+                [
+                    "jj",
+                    "--no-pager",
+                    "--color=never",
+                    "bookmark",
+                    "move",
+                    f"exact:{main}",
+                    "--to",
+                    destination,
+                ],
+                self.root,
+            )
+        else:
+            self._jj("bookmark", "move", f"exact:{main}", "--to", destination)
         return True
+
+    def move_working_copy_to(self, target: str) -> str | None:
+        """Save an unbookmarked @, then start a new working-copy change on target.
+
+        Return the name of a bookmark created for the old working copy, if any.
+        """
+        commit = self._bookmark_commit(target)
+        destination = f"bookmarks(exact:{json.dumps(target)}) & {commit}"
+        _run(["jj", "--no-pager", "--color=never", "status"], self.root)
+        old_commit, change = (
+            self._jj("log", "--no-graph", "-r", "@", "-T", 'commit_id ++ "\\x00" ++ change_id')
+            .strip()
+            .split("\0")
+        )
+        bookmarks = self._jj(
+            "bookmark",
+            "list",
+            "-T",
+            'if(remote, "", name ++ "\\x00" ++ '
+            'if(normal_target, normal_target.commit_id(), "") ++ "\\n")',
+        )
+        local = dict(line.split("\0", 1) for line in bookmarks.splitlines())
+        saved: str | None = None
+        if old_commit not in local.values():
+            base = f"saved/{change[:8]}"
+            saved = base
+            suffix = 2
+            while saved in local:
+                saved = f"{base}-{suffix}"
+                suffix += 1
+            _run(
+                [
+                    "jj",
+                    "--no-pager",
+                    "--color=never",
+                    "bookmark",
+                    "create",
+                    saved,
+                    "-r",
+                    f"@ & {old_commit}",
+                ],
+                self.root,
+            )
+        _run(["jj", "--no-pager", "--color=never", "new", destination], self.root)
+        return saved
 
     def default_start(self) -> str:
         names = {b.name for b in self.list_branches() if not b.working_copy}

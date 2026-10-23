@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  UV_VERSION: "0.11.32"  # keep in step with [tool.uv] required-version in pyproject.toml
+  UV_VERSION: "0.13.5"  # keep in step with [tool.uv] required-version in pyproject.toml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

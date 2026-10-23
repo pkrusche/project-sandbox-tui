@@ -1,9 +1,9 @@
-# Merging and rebasing several branches
+# Merging and rebasing several bookmarks
 
-Select two or more branches (`v` for a range, `space` for single ones; marking
+Select two or more bookmarks (`v` for a range, `space` for single ones; marking
 order is the merge / stacking order), then:
 
-- `r`: the form gains **action** (`merge` / `rebase`), **result** (new branch,
+- `r`: the form gains **action** (`merge` / `rebase`), **bookmark** (new result bookmark,
   default `merge/<a>-<b>-…`) and, for rebase, **base** (default
   `project.default_branch_start`, else main/master/trunk, else `@-`), plus a prompt from a template that follows those fields
   until you edit it.
@@ -14,7 +14,7 @@ For unsupervised runs, the `bash` agent fills the prompt with a command that
 prints changes and conflicts and fails if conflicts remain.
 
 On launch sbx-tui does the mechanical part on your machine, then starts the
-session on the result branch; the agent resolves what is left **and reviews the
+session on the result bookmark; the agent resolves what is left **and reviews the
 integration** (semantic conflicts, tests):
 
 | action | what happens |

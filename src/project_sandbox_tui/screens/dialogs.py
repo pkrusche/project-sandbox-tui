@@ -46,7 +46,7 @@ class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("new bookmark", classes="title")
-            yield Static("name", classes="row-label")
+            yield Static("bookmark name", classes="row-label")
             yield Input(placeholder="feature/my-change", id="name")
             yield Static("start at", classes="row-label")
             yield Input(value=self.default_start, id="start")
@@ -307,25 +307,25 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
     ),
     (
         (
-            "sessions (one sandbox per branch)",
+            "sessions (one sandbox per bookmark)",
             (
                 ("i", "interactive (ui.terminal)"),
                 ("r", "unsupervised run"),
                 ("x", "stop selected; repeat"),
-                ("l / enter", "log (one branch)"),
+                ("l / enter", "log (one bookmark or @)"),
                 ("c / C", "clear / forget selected"),
             ),
         ),
         (
-            "branches",
+            "bookmarks",
             (
                 ("n", "new bookmark"),
                 (
                     "v V space",
                     "select a range / mark; r/i merge or rebase; esc clears",
                 ),
-                ("d", "diff main / two branches"),
-                ("f", "fast-forward main to one bookmark"),
+                ("d", "diff main / two revisions"),
+                ("f / @", "advance main / move working copy"),
                 ("o", "open selected in editor"),
                 ("P", "show selected commands"),
                 ("W", "clean up workspaces"),

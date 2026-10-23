@@ -85,6 +85,9 @@ def test_create_branch(repo: Path, fake_cfg: Callable[..., Config]) -> None:
         await pilot.press("n")
         assert isinstance(app.screen, NewBranchScreen)
         assert app.screen.query_one("#start", Input).value == "main"
+        await pilot.press("enter")
+        assert isinstance(app.screen, NewBranchScreen)
+        assert "bookmark name is empty" in str(app.screen.query_one("#error", Static).render())
         await pilot.press("b", "a", "d", "space", "x", "enter")  # invalid name
         assert isinstance(app.screen, NewBranchScreen)
         app.screen.query_one("#name", Input).value = "topic/new"
@@ -118,9 +121,7 @@ def test_fast_forward_main_shortcut(
     run_app(repo, fake_cfg(), scenario)
 
 
-@pytest.mark.parametrize(
-    "case", ["working-copy", "multiple", "missing-main", "configured", "diverged"]
-)
+@pytest.mark.parametrize("case", ["multiple", "missing-main", "configured", "diverged"])
 def test_fast_forward_main_guards_and_configuration(
     repo: Path, fake_cfg: Callable[..., Config], case: str
 ) -> None:
@@ -132,9 +133,8 @@ def test_fast_forward_main_guards_and_configuration(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         expected = {
-            "working-copy": "select a bookmark",
-            "multiple": "select one bookmark",
-            "missing-main": "no main branch found",
+            "multiple": "select one target",
+            "missing-main": "no main bookmark found",
             "configured": "fast-forwarded feature/x to next",
             "diverged": "not an ancestor",
         }[case]
@@ -157,6 +157,58 @@ def test_fast_forward_main_guards_and_configuration(
         assert app.backend._bookmark_commit("main") == old
         if case == "configured":
             assert app.backend._bookmark_commit("feature/x") == app.backend._bookmark_commit("next")
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_fast_forward_main_to_working_copy(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        (repo / "a.txt").write_text("working copy edit\n")
+        await pilot.press("f")
+        await app.workers.wait_for_complete()
+        assert (
+            app.backend._bookmark_commit("main")
+            == app.backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id").strip()
+        )
+        assert any("fast-forwarded main to @" in str(n.message) for n in app._notifications)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_move_working_copy_shortcut(
+    repo: Path, fake_cfg: Callable[..., Config], marked: bool
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        if marked:
+            app.marked = ["feature/x"]
+        else:
+            await pilot.press("G")
+        await pilot.press("@")
+        await app.workers.wait_for_complete()
+        assert app.backend._jj("log", "--no-graph", "-r", "@-", "-T", "commit_id").strip() == (
+            app.backend._bookmark_commit("feature/x")
+        )
+        assert any(b.name.startswith("saved/") for b in app.branches)
+        assert any(
+            "working copy moved onto feature/x" in str(n.message) for n in app._notifications
+        )
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("case", ["working-copy", "multiple"])
+def test_move_working_copy_shortcut_requires_one_bookmark(
+    repo: Path, fake_cfg: Callable[..., Config], case: str
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        old = app.backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id")
+        if case == "multiple":
+            app.marked = ["main", "feature/x"]
+        await pilot.press("@")
+        await app.workers.wait_for_complete()
+        assert app.backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id") == old
+        assert any("select" in str(n.message) for n in app._notifications)
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -906,7 +958,7 @@ def test_log_and_preview_respect_selection(repo: Path, fake_cfg: Callable[..., C
         for key in ("l", "enter"):
             await pilot.press(key)
             assert app.screen is app.main
-            assert any("select one branch" in str(n.message) for n in app._notifications)
+            assert any("select one bookmark" in str(n.message) for n in app._notifications)
         app.cfg.sandbox.extra_args = ["--example"] * 200
         await pilot.press("P")
         assert isinstance(app.screen, MessageScreen)
@@ -941,6 +993,20 @@ def test_launch_branch_field(repo: Path, fake_cfg: Callable[..., Config], target
         if target.startswith("topic/"):
             branches = {b.name: b for b in detect(repo).list_branches()}
             assert branches[target].head == branches["feature/x"].head
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_launch_form_rejects_empty_bookmark(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("G", "r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#branch", Input).value = "  "
+        form.query_one("#prompt", TextArea).text = "exit:0"
+        await pilot.press("ctrl+enter")
+        assert app.screen is form
+        assert any("bookmark name is empty" in str(n.message) for n in app._notifications)
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -1052,10 +1118,14 @@ def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -
         await pilot.press("h")
         await pilot.pause()
         assert result.value.startswith("merge/")
-        # an existing branch name is refused, the form stays open
+        # an existing bookmark name or empty result is refused; the form stays open
         result.value = "main"
         await pilot.press("ctrl+enter")
         assert app.screen is form
+        result.value = "  "
+        await pilot.press("ctrl+enter")
+        assert app.screen is form
+        assert any("bookmark name is empty" in str(n.message) for n in app._notifications)
         result.value = "merge/all"
         prompt.text = prompt.text + "\nsleep:0.3"
         await pilot.press("ctrl+enter")
@@ -1127,7 +1197,7 @@ def test_octopus_interactive_resolution(
         await pilot.press("j", "v", "j", "i")  # main and the bookmark below it
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.octopus is not None
-        assert "interactive session · merge 2 branches" in str(form.query_one("#title").render())
+        assert "interactive session · merge 2 bookmarks" in str(form.query_one("#title").render())
         await pilot.press("enter")  # launch from the operation field
         await wait_until(
             pilot, lambda: bool([j for j in app.jobs.jobs.values() if j.spec.operation])

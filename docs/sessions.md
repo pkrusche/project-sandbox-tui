@@ -1,8 +1,8 @@
 # Sessions
 
-## One sandbox per branch
+## One sandbox per bookmark
 
-A branch is busy when either
+A bookmark or the working copy is busy when either
 
 - the TUI has a running job for it (records in
   `~/.local/state/project-sandbox-tui/<repo>-<hash>/jobs/`, shared by all TUI
@@ -24,7 +24,7 @@ re-adopts them and notifies about any that finished meanwhile.
 | `ui.terminal` | inside the multiplexer | outside it |
 |---|---|---|
 | `inline` (default) | TUI suspends, agent takes the terminal, you return to the list on exit | same |
-| `tmux` | new window named after the branch | detached session `sbx-<repo>-<branch>` (`tmux attach -t …`) |
+| `tmux` | new window named after the bookmark | detached session `sbx-<repo>-<branch>` (`tmux attach -t …`) |
 | `zellij` | new pane, closed on exit | not supported |
 | `screen` | new window | detached session `sbx-<repo>-<branch>` (`screen -r …`) |
 | `custom` | `ui.terminal_command` with `{cmd}`, `{branch}`, `{repo}`, e.g. `'wezterm start -- sh -c {cmd}'` | same |
@@ -35,14 +35,14 @@ shows `interactive (ext)` while project-sandbox's session record is running. If
 project-sandbox fails, its window stays open until you press Enter. `x` cannot
 stop these sessions; quit the agent in its window.
 
-If a session in a separate Zellij / tmux window dies but the branch still shows
+If a session in a separate Zellij / tmux window dies but the bookmark still shows
 `interactive (ext)` and blocks another launch, confirm the old session has
-exited, select the branch and press `C` (`Shift+c`) to forget its TUI job record.
+exited, select the bookmark and press `C` (`Shift+c`) to forget its TUI job record.
 Then press `i` to restart. `C` sends no signal and does not stop any process;
 lowercase `c` only clears finished records.
 
 The TUI polls project-sandbox's session records on each refresh. If a launch
-fails before the TUI sees a running session, the branch can stay busy for up to
+fails before the TUI sees a running session, the bookmark can stay busy for up to
 10 minutes; `C` clears the TUI job record immediately.
 
 ## Notifications

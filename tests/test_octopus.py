@@ -19,8 +19,9 @@ def test_names_and_validation() -> None:
     for bad, message in [
         (OctopusPlan("merge", ["a"], "r"), "at least two"),
         (OctopusPlan("merge", ["a", "a"], "r"), "twice"),
-        (OctopusPlan("merge", ["a", "z"], "r"), "no such branch"),
+        (OctopusPlan("merge", ["a", "z"], "r"), "no such bookmark"),
         (OctopusPlan("merge", ["a", "b"], "a"), "already exists"),
+        (OctopusPlan("merge", ["a", "b"], ""), "bookmark name is empty"),
         (OctopusPlan("merge", ["a", "b"], "bad name"), "invalid"),
         (OctopusPlan("rebase", ["a", "b"], "r"), "needs a base"),
     ]:

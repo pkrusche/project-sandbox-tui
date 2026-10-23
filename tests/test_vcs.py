@@ -241,16 +241,96 @@ def test_fast_forward_refuses_to_discard_history(repo: Path, direction: str) -> 
     assert backend._bookmark_commit("main") == old
 
 
-@pytest.mark.parametrize(
-    "main,target", [("missing", "feature/x"), ("main", "missing"), ("main", "@")]
-)
+@pytest.mark.parametrize("main,target", [("missing", "feature/x"), ("main", "missing")])
 def test_fast_forward_requires_existing_local_bookmarks(repo: Path, main: str, target: str) -> None:
     backend = vcs.detect(repo)
     old = backend._bookmark_commit("main")
-    message = "not a local bookmark" if target == "@" else "does not exist"
-    with pytest.raises(vcs.VcsError, match=message):
+    with pytest.raises(vcs.VcsError, match="does not exist"):
         backend.fast_forward(main, target)
     assert backend._bookmark_commit("main") == old
+
+
+def test_fast_forward_to_working_copy_snapshots_edits(repo: Path) -> None:
+    backend = vcs.detect(repo)
+    (repo / "a.txt").write_text("changed in working copy\n")
+    assert backend.fast_forward("main", "@")
+    assert (
+        backend._bookmark_commit("main")
+        == backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id").strip()
+    )
+    assert (repo / "a.txt").read_text() == "changed in working copy\n"
+    assert not backend.fast_forward("main", "@")
+
+
+def test_fast_forward_to_working_copy_refuses_divergence(repo: Path) -> None:
+    backend = vcs.detect(repo)
+    old = backend._bookmark_commit("main")
+    with pytest.raises(vcs.VcsError, match="not an ancestor"):
+        backend.fast_forward("feature/x", "@")
+    assert backend._bookmark_commit("main") == old
+
+
+def test_fast_forward_to_working_copy_refuses_file_conflicts(repo: Path) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    add_bookmark(repo, "left", "a.txt", "left\n")
+    add_bookmark(repo, "right", "a.txt", "right\n")
+    jj(repo, "new", "left", "right")
+    backend = vcs.detect(repo)
+    old = backend._bookmark_commit("main")
+    with pytest.raises(vcs.VcsError, match="unresolved file conflicts"):
+        backend.fast_forward("main", "@")
+    assert backend._bookmark_commit("main") == old
+
+
+def test_move_working_copy_to_bookmark_keeps_previous_change(repo: Path) -> None:
+    backend = vcs.detect(repo)
+    old_change = backend._jj("log", "--no-graph", "-r", "@", "-T", "change_id").strip()
+    (repo / "a.txt").write_text("unfinished\n")
+    saved = backend.move_working_copy_to("feature/x")
+    assert saved == f"saved/{old_change[:8]}"
+    assert (
+        backend._bookmark_commit(saved)
+        == backend._jj("log", "--no-graph", "-r", old_change, "-T", "commit_id").strip()
+    )
+    assert saved in {b.name for b in backend.list_branches()}
+    assert (repo / "a.txt").read_text() == "a\n"
+    assert (repo / "b.txt").read_text() == "b\n"
+    assert backend._jj("log", "--no-graph", "-r", "@-", "-T", "commit_id").strip() == (
+        backend._bookmark_commit("feature/x")
+    )
+    assert "unfinished" in backend._jj("file", "show", "-r", old_change, "a.txt")
+
+
+def test_move_working_copy_does_not_add_bookmark_when_one_exists(repo: Path) -> None:
+    from tests.conftest import jj
+
+    jj(repo, "bookmark", "create", "already-saved", "-r", "@")
+    backend = vcs.detect(repo)
+    (repo / "a.txt").write_text("still saved\n")
+    assert backend.move_working_copy_to("feature/x") is None
+    assert "still saved" in backend._jj("file", "show", "-r", "already-saved", "a.txt")
+    assert not any(b.name.startswith("saved/") for b in backend.list_branches())
+
+
+def test_move_working_copy_avoids_saved_name_collision(repo: Path) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    change = backend._jj("log", "--no-graph", "-r", "@", "-T", "change_id").strip()
+    base = f"saved/{change[:8]}"
+    jj(repo, "bookmark", "create", base, "-r", "main")
+    saved = backend.move_working_copy_to("feature/x")
+    assert saved == f"{base}-2"
+    assert backend._bookmark_commit(base) == backend._bookmark_commit("main")
+
+
+def test_move_working_copy_requires_local_bookmark(repo: Path) -> None:
+    backend = vcs.detect(repo)
+    with pytest.raises(vcs.VcsError, match="not a local bookmark"):
+        backend.move_working_copy_to("@")
+    with pytest.raises(vcs.VcsError, match="does not exist"):
+        backend.move_working_copy_to("missing")
 
 
 def test_fast_forward_refuses_unresolved_file_conflicts(repo: Path) -> None:

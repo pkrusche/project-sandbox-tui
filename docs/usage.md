@@ -27,7 +27,7 @@ warns about an untrusted project config, a missing image source, a missing
 multiplexer for `ui.terminal` and a missing notifier. It exits 1 if anything
 failed.
 
-## Branch list
+## Bookmark list
 
 The first row is always `@ working copy`, followed by the bookmarks.
 
@@ -35,14 +35,15 @@ The first row is always `@ working copy`, followed by the bookmarks.
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | move · top/bottom · half page |
 | `/` | filter (`enter` keeps it, `esc` clears) |
-| `i` | interactive session on the branch ([details](sessions.md#interactive-sessions)) |
+| `i` | interactive session on the bookmark or working copy ([details](sessions.md#interactive-sessions)) |
 | `r` | unsupervised run: prompt + optional timeout, runs in the background |
 | `x` | stop a background run: SIGINT; each further press escalates to SIGTERM, then SIGKILL plus `container stop` |
 | `l` / `enter` | log view: transcript, agent log, captured output (`tab` cycles, `f` toggles follow) |
 | `n` | new bookmark (name + start revision) |
-| `v` / `V` · `space` | select branches: range / single marks; `esc` clears |
-| `d` | diff the branch (or two selected tips) against the main branch |
-| `f` | fast-forward main to the highlighted bookmark (or one marked bookmark) |
+| `v` / `V` · `space` | select bookmarks: range / single marks; `esc` clears |
+| `d` | diff the highlighted revision (or two selected tips) against the main bookmark |
+| `f` | fast-forward main to the highlighted bookmark or `@` (or one marked bookmark) |
+| `@` | start a new working-copy change on the highlighted bookmark (or one marked bookmark) |
 | `o` | open the bookmark's workspace in your editor |
 | `P` | preview the full `project-sandbox` command |
 | `c` · `C` | clear a finished status · force-forget a record stuck as running (no signal; [restart after a stale record](sessions.md#interactive-sessions)) |
@@ -51,20 +52,26 @@ The first row is always `@ working copy`, followed by the bookmarks.
 | `H` | show / hide the cheat-sheet |
 | `ctrl+r` | reload global and project configuration |
 
-With a selection, `c`, `C`, `x`, `o` and `P` apply to every selected branch;
-`l` needs a single one. Two or more selected branches turn `r` / `i` into a
+With a selection, `c`, `C`, `x`, `o` and `P` apply to every selected bookmark;
+`l` needs a single one. Two or more selected bookmarks turn `r` / `i` into a
 [merge or rebase](merging.md).
 
 Diffs run `jj diff --from BASE --to TARGET` in the TUI's repository, using the
 host's jj configuration, formatter and pager (including delta). The TUI pauses
 while the viewer is open. Exit the viewer, then press Enter to return to the
-branch list. Short diffs stay visible until you press Enter.
+bookmark list. Short diffs stay visible until you press Enter.
 
 `f` advances `project.main_branch` (or the detected main / master / trunk) only
-when it is an ancestor of the chosen bookmark. Conflicted bookmarks and targets
-with unresolved file conflicts are refused. If both bookmarks already point to
-the same commit, nothing changes. This moves only the local main bookmark;
+when it is an ancestor of the chosen bookmark or working-copy commit. Conflicted
+bookmarks and targets with unresolved file conflicts are refused. If both already
+point to the same commit, nothing changes. This moves only the local main bookmark;
 it does not push, rewrite commits, or change working-copy files.
+
+`@` saves the current working-copy change as `saved/<change-id>` if no local
+bookmark points to it, then runs `jj new` on the chosen bookmark. Any uncommitted
+edits are included in that saved change, which remains in the bookmark list so you
+can return to it. The new working copy starts from the chosen bookmark and its
+files are checked out into the repository.
 
 ## Launch form
 
