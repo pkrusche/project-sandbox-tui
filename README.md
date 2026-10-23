@@ -33,6 +33,7 @@ uv tool install project-sandbox            # the sandbox itself
 uv tool install /path/to/project-sandbox-tui   # or: uv sync && uv run sbx-tui
 
 cd ~/workspace/myproject
+sbx-tui doctor      # check jj, project-sandbox and the container runtime
 sbx-tui --init      # write config templates; set the image source in .project-sandbox-tui.toml
 sbx-tui --dry-run   # try the UI; every project-sandbox call gets --dry-run
 sbx-tui             # the real thing

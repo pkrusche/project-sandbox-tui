@@ -10,7 +10,22 @@ sbx-tui --trust-config       # review and trust a new or changed .project-sandbo
 sbx-tui --dry-run            # add --dry-run to every project-sandbox call
 sbx-tui --update-models      # refresh the model list, see models.md
 sbx-tui --cleanup-workspaces # remove idle merged workspaces, see cleanup.md
+sbx-tui doctor               # check jj, project-sandbox and the container runtime
+sbx-tui config …             # read or change settings, see configuration.md
 ```
+
+Subcommands take `-R/--repository PATH` (default: the current directory) and
+`--config PATH`. To open a repository directory named `config` or `doctor`,
+write `sbx-tui ./config`.
+
+`sbx-tui doctor` checks that `jj` is installed (and not older than the release
+sbx-tui is tested with, 0.46), that `sandbox.command --version` reports
+project-sandbox 0.2.2 or newer, and that the container runtime project-sandbox
+would pick (`sandbox.runtime`, or Apple `container` → `docker` → `podman`)
+answers `container system status` / `docker info` / `podman info`. It also
+warns about an untrusted project config, a missing image source, a missing
+multiplexer for `ui.terminal` and a missing notifier. It exits 1 if anything
+failed.
 
 ## Branch list
 

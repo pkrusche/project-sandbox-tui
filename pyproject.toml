@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Peter Krusche" }]
 dependencies = [
     "textual>=6.0",  # TextArea.suggestion (prompt history completion)
+    "tomlkit>=0.13",  # sbx-tui config set/unset: edit TOML, keeping comments
 ]
 
 # project-sandbox itself is a separate tool: `uv tool install project-sandbox`,
