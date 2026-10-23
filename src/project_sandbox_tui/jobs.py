@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui.config import Config, repo_state_dir
+from project_sandbox_tui.config import Config, private_dir, repo_state_dir
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
     RunPaths,
@@ -180,7 +180,7 @@ class JobManager:
     @contextlib.contextmanager
     def _locked(self) -> Generator[None, None, None]:
         """Serialize record changes across TUI instances for this repository."""
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        private_dir(self.state_dir)
         with (self.state_dir / "jobs.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
@@ -192,7 +192,8 @@ class JobManager:
         return self.jobs_dir / f"{branch_slug(branch)}.json"
 
     def save(self, job: JobRecord) -> None:
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        private_dir(self.state_dir)
+        private_dir(self.jobs_dir)
         path = self._record_path(job.branch)
         tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(job.to_dict(), indent=2), encoding="utf-8")
@@ -284,7 +285,7 @@ class JobManager:
             self._stop_last.pop(spec.branch, None)
             paths = self.new_run_paths(spec.branch)
             argv = build_argv(self.cfg, self.repo, spec, paths)
-            paths.log.parent.mkdir(parents=True, exist_ok=True)
+            private_dir(paths.log.parent)
             with paths.stdout.open("wb") as out:
                 proc = subprocess.Popen(
                     argv,

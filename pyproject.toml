@@ -3,12 +3,36 @@ name = "project-sandbox-tui"
 version = "0.1.0"
 description = "Minimal vim/ranger-style TUI for running project-sandbox sessions per branch"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Peter Krusche" }]
-dependencies = [
-    "textual>=6.0",  # TextArea.suggestion (prompt history completion)
-    "tomlkit>=0.13",  # sbx-tui config set/unset: edit TOML, keeping comments
+keywords = ["jj", "jujutsu", "sandbox", "coding-agent", "tui", "textual"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Version Control",
 ]
+# Upper bounds: `uv tool install` does not use uv.lock, so a new major release
+# must not reach users before it has been tested here.
+dependencies = [
+    "textual>=6.0,<9",  # TextArea.suggestion (prompt history completion)
+    "tomlkit>=0.13,<0.16",  # sbx-tui config set/unset: edit TOML, keeping comments
+]
+
+[project.urls]
+Homepage = "https://github.com/pkrusche/project-sandbox-tui"
+Documentation = "https://github.com/pkrusche/project-sandbox-tui/tree/main/docs"
+Issues = "https://github.com/pkrusche/project-sandbox-tui/issues"
+Source = "https://github.com/pkrusche/project-sandbox-tui"
 
 # project-sandbox itself is a separate tool: `uv tool install project-sandbox`,
 # or point `sandbox.command` at e.g. "uvx project-sandbox".
@@ -17,15 +41,19 @@ dependencies = [
 sbx-tui = "project_sandbox_tui.cli:main"
 
 [dependency-groups]
+# Exact linter versions: new releases add rules and change formatting.
 dev = [
-    "pytest>=8",
-    "ruff>=0.17",
-    "ty>=0.0.90",
+    "pytest>=9.1,<10",
+    "ruff==0.17.1",
+    "ty==0.0.90",
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27,<2"]  # 1.27: PEP 639 license / license-files
 build-backend = "hatchling.build"
+
+[tool.uv]
+required-version = ">=0.11,<0.12"  # keep in step with UV_VERSION in .github/workflows/ci.yml
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/project_sandbox_tui"]

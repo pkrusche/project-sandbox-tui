@@ -107,10 +107,32 @@ def test_bash_summary(jj_branches: Path, operation, conflicted) -> None:
     octopus.prepare(jj_branches, plan)
     run("jj", "new", "summary", cwd=jj_branches)
     result = subprocess.run(
-        ["bash", "-c", octopus.bash_prompt(plan)],
+        ["bash", "-c", octopus.bash_prompt(plan, {"main", "a", "b", "c"})],
         cwd=jj_branches,
         capture_output=True,
         text=True,
     )
     assert result.returncode == (1 if conflicted else 0), result.stderr
     assert "shared.txt" in result.stdout or "b.txt" in result.stdout
+
+
+@pytest.mark.parametrize("base", ["@-", "heads(::a & ::b)", "main"])
+def test_jj_rebase_onto_revset_base(jj_branches: Path, base: str) -> None:
+    """The default base can be a revset (``@-`` without main/master/trunk)."""
+    state = octopus.prepare(jj_branches, OctopusPlan("rebase", ["a", "b"], "r", base=base))
+    assert state.clean
+    stack = jj_out(jj_branches, "log", "--no-graph", "-r", 'main.."r"', "-T",
+                   'description.first_line() ++ "\\n"').splitlines()  # fmt: skip
+    assert [s for s in stack if s] == ["b: b.txt", "a: shared.txt"]
+
+
+def test_jj_rebase_base_must_be_one_revision(jj_branches: Path) -> None:
+    with pytest.raises(OctopusError, match="single"):
+        octopus.prepare(jj_branches, OctopusPlan("rebase", ["a", "b"], "r", base="a | b"))
+
+
+def test_bash_summary_revset_base() -> None:
+    plan = OctopusPlan("rebase", ["a", "b"], "r", base="trunk()")
+    assert "--from 'trunk()'" in octopus.bash_prompt(plan, {"a", "b"})
+    plan.base = "fix-"
+    assert """--from '"fix-"'""" in octopus.bash_prompt(plan, {"a", "b", "fix-"})

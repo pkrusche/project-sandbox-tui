@@ -11,7 +11,7 @@ runtimes. Its session records, read from disk, are the only other input.
 |---|---|
 | Names | package `project-sandbox-tui`, module `project_sandbox_tui`, command `sbx-tui` |
 | Tooling | uv, hatchling, Python ≥ 3.12, Textual ≥ 6 (async loop, `App.suspend()`, Pilot tests) |
-| Config | TOML via `tomllib`; never written back |
+| Config | TOML via `tomllib`; the TUI only reads it. `sbx-tui config set/unset` and `--init` write it (tomlkit keeps comments) |
 | VCS | jj only; a `.jj/` directory is required |
 | Background jobs | detached child processes (`start_new_session=True`) with an on-disk job record; re-adopted on restart |
 | Interactive | suspend the TUI and run in the same terminal, or hand off to tmux / zellij / screen / custom |
@@ -21,6 +21,8 @@ runtimes. Its session records, read from disk, are the only other input.
 | module | role |
 |---|---|
 | `cli.py` | argparse entry point |
+| `settings.py` | `sbx-tui config list/get/set/unset/path` |
+| `doctor.py` | `sbx-tui doctor`: checks jj, project-sandbox and the container runtime |
 | `config.py` | dataclasses, TOML load / merge / validate, state paths, last-used defaults |
 | `vcs.py` | `Branch` model, jj queries, bookmark creation, diff |
 | `sandbox.py` | `LaunchSpec`, argv builder, session-record matching |
@@ -33,16 +35,22 @@ runtimes. Its session records, read from disk, are the only other input.
 
 ## Argv construction
 
+Values are passed as `--flag=value`, so one starting with `-` (a bookmark,
+a prompt) cannot be taken for an option.
+
 ```
-project-sandbox <repo> <base_image | --dockerfile … | --python-uv|--rust-cargo|--node-npm>
-  [--runtime …] [--memory …] [--cpus …]
-  --branch <name> [--worktree-dir …] [--keep-workspace]    # omitted for @
-  --agent <agent> [--model …] [--effort …]
-  [--internet-proxy …] [--agent-proxy …] [--ca-cert …]… [--extra-domain …]…
-  [--no-forward-credentials] [--api-key-env …]… [--api-key-env-file …]
+project-sandbox <repo> <base_image | --dockerfile=… [--docker-context=…]
+                        | --python-uv [--python=<ver>] | --rust-cargo [--rust=<ver>] | --node-npm>
+  [--runtime=…] [--memory=…] [--cpus=…]
+  --branch=<name> [--worktree-dir=…] [--keep-workspace]    # omitted for @
+  --agent=<agent> [--model=…] [--effort=…]
+  [--internet-proxy=…] [--agent-proxy=… [--agent-proxy-key-env=…]]
+  [--ca-cert=…]… [--extra-domain=…]…
+  [--allow-github] [--no-firewall]                          # loosen the sandbox
+  [--no-forward-credentials] [--api-key-env=…]… [--api-key-env-file=…]…
   <extra_args…>
   # background only:
-  --prompt-text "<text>" --log <path> --json-summary <path> [--timeout N]
+  --prompt-text=<text> --log=<path> --json-summary=<path> [--timeout=N]
 ```
 
 ## Job lifecycle
@@ -71,4 +79,12 @@ then SIGKILL plus `<runtime> stop <container>`.
 - With a non-inline terminal the TUI only sees project-sandbox's session record. A launch that fails before writing one keeps the branch busy up to 10 minutes (or until `C`).
 - PID reuse after a crash can make a record look running forever; `C` forgets it.
 - Not implemented: ahead/behind vs trunk, dirty marker, prompt files, remote bookmarks, switching repos.
-- No licence chosen yet.
+
+## State and privacy
+
+Job records (with the full argv, including the prompt), logs, transcripts,
+prompt history and the trusted project config live in
+`$XDG_STATE_HOME/project-sandbox-tui/<repo>-<hash>/`. sbx-tui creates that
+directory and its `jobs/` and `logs/` subdirectories with mode `0700`, and
+tightens ones an earlier version created with the umask, so other local users
+cannot read them.

@@ -113,52 +113,56 @@ def build_argv(
     p, n, s = cfg.project, cfg.network, cfg.sandbox
     argv = [*cfg.sandbox_command(), str(repo.resolve())]
 
+    # Values go in --flag=value form: a separate word starting with "-" (a remote
+    # bookmark "-x", a prompt "--help") would be parsed as an option.
+
     # image source (mutually exclusive, validated in Config.validate)
     if p.base_image:
         argv.append(p.base_image)
     elif p.dockerfile:
-        argv += ["--dockerfile", str(cfg.resolve_path(p.dockerfile, repo))]
+        argv.append(f"--dockerfile={cfg.resolve_path(p.dockerfile, repo)}")
         if p.docker_context:
-            argv += ["--docker-context", str(cfg.resolve_path(p.docker_context, repo))]
+            argv.append(f"--docker-context={cfg.resolve_path(p.docker_context, repo)}")
     else:
         argv.append(f"--{p.build}")
         if p.build_version:
-            argv += ["--python" if p.build == "python-uv" else "--rust", p.build_version]
+            flag = "--python" if p.build == "python-uv" else "--rust"
+            argv.append(f"{flag}={p.build_version}")
 
     if s.runtime != "auto":
-        argv += ["--runtime", s.runtime]
+        argv.append(f"--runtime={s.runtime}")
     if s.memory:
-        argv += ["--memory", s.memory]
+        argv.append(f"--memory={s.memory}")
     if s.cpus:
-        argv += ["--cpus", str(s.cpus)]
+        argv.append(f"--cpus={s.cpus}")
 
     # branch / workspace (project-sandbox rejects the workspace flags without --branch)
     if not spec.main_checkout:
-        argv += ["--branch", spec.branch]
+        argv.append(f"--branch={spec.branch}")
         if p.worktree_dir:
-            argv += ["--worktree-dir", str(cfg.resolve_path(p.worktree_dir, repo))]
+            argv.append(f"--worktree-dir={cfg.resolve_path(p.worktree_dir, repo)}")
         if p.keep_workspace:
             argv.append("--keep-workspace")
 
     # agent
-    argv += ["--agent", spec.agent]
+    argv.append(f"--agent={spec.agent}")
     if spec.agent != "bash":
         if spec.model:
-            argv += ["--model", spec.model]
+            argv.append(f"--model={spec.model}")
         if spec.effort:
-            argv += ["--effort", spec.effort]
+            argv.append(f"--effort={spec.effort}")
 
     # network
     if n.internet_proxy:
-        argv += ["--internet-proxy", n.internet_proxy]
+        argv.append(f"--internet-proxy={n.internet_proxy}")
     if n.agent_proxy:
-        argv += ["--agent-proxy", n.agent_proxy]
+        argv.append(f"--agent-proxy={n.agent_proxy}")
         if n.agent_proxy_key_env:
-            argv += ["--agent-proxy-key-env", n.agent_proxy_key_env]
+            argv.append(f"--agent-proxy-key-env={n.agent_proxy_key_env}")
     for cert in n.ca_certs:
-        argv += ["--ca-cert", str(cfg.resolve_path(cert, repo))]
+        argv.append(f"--ca-cert={cfg.resolve_path(cert, repo)}")
     for domain in n.extra_domains:
-        argv += ["--extra-domain", domain]
+        argv.append(f"--extra-domain={domain}")
     if n.allow_github:
         argv.append("--allow-github")
     if n.no_firewall:
@@ -168,24 +172,21 @@ def build_argv(
     if s.no_forward_credentials:
         argv.append("--no-forward-credentials")
     for var in s.api_key_env:
-        argv += ["--api-key-env", var]
+        argv.append(f"--api-key-env={var}")
     for env_file in s.api_key_env_file:
-        argv += ["--api-key-env-file", str(cfg.resolve_path(env_file, repo))]
+        argv.append(f"--api-key-env-file={cfg.resolve_path(env_file, repo)}")
 
     argv += s.extra_args
 
     if spec.mode == "background":
         assert run_paths is not None
         argv += [
-            "--prompt-text",
-            spec.prompt_text,
-            "--log",
-            str(run_paths.log),
-            "--json-summary",
-            str(run_paths.summary),
+            f"--prompt-text={spec.prompt_text}",
+            f"--log={run_paths.log}",
+            f"--json-summary={run_paths.summary}",
         ]
         if spec.timeout:
-            argv += ["--timeout", str(spec.timeout)]
+            argv.append(f"--timeout={spec.timeout}")
     return argv
 
 

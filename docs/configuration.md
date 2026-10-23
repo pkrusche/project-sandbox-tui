@@ -2,7 +2,8 @@
 
 Global: `~/.config/project-sandbox-tui/config.toml`. Per repo:
 `<repo>/.project-sandbox-tui.toml`, deep-merged on top. Unknown keys are errors.
-`sbx-tui --init` writes templates; the TUI never writes your TOML.
+`sbx-tui --init` writes templates. The TUI itself only reads your TOML;
+`sbx-tui config set/unset` (below) is the one command that changes it.
 `ctrl+r` reloads both files; invalid config leaves the current settings in
 place, and running sessions keep their launch settings.
 
