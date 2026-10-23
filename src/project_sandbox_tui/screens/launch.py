@@ -118,7 +118,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 )
                 yield CycleField("action", octopus_mod.OPERATIONS, "merge", id="operation")
                 with Horizontal(classes="field"):
-                    yield Static("result", classes="field-label")
+                    yield Static("bookmark", classes="field-label")
                     yield Input(value=self.branch, select_on_focus=False, id="result")
                 with Horizontal(classes="field"):
                     yield Static("base", classes="field-label")
@@ -130,10 +130,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                     )
             else:
                 with Horizontal(classes="field"):
-                    yield Static("branch", classes="field-label")
+                    yield Static("bookmark", classes="field-label")
                     yield Input(
                         value=self.branch,
-                        placeholder="select an existing branch or enter a new name",
+                        placeholder="select a bookmark or @, or enter a new name",
                         suggester=SuggestFromList(self.branches, case_sensitive=True),
                         select_on_focus=False,
                         id="branch",
@@ -214,7 +214,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         title = Text(what)
         if self.octopus is not None:
             op = self._value("#operation", "merge") or "merge"
-            title.append(f" · {op} {len(self.octopus.inputs)} branches into ")
+            title.append(f" · {op} {len(self.octopus.inputs)} bookmarks into ")
             title.append(self._value("#result", self.branch) or "…", style="bold")
         if self.opens_in:
             title.append(f"  · {self.opens_in}", style="dim")

@@ -67,6 +67,7 @@ from project_sandbox_tui.screens.dialogs import (
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import (
+    WORKING_COPY,
     Branch,
     JjBackend,
     VcsError,
@@ -179,6 +180,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("o", "app.open_editor", show=False),
     Binding("d", "app.diff", show=False),
     Binding("f", "app.fast_forward_main", show=False),
+    Binding("at", "app.move_working_copy", show=False),
     Binding("P", "app.preview", show=False),
     Binding("W", "app.cleanup_workspaces", show=False),
     Binding("x", "app.stop", show=False),
@@ -216,12 +218,13 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ),
     ),
     (
-        "branches",
+        "bookmarks",
         (
             ("n", "new bookmark"),
-            ("v V ␣", "select branches"),
-            ("d", "diff branches"),
+            ("v V ␣", "select bookmarks"),
+            ("d", "diff revisions"),
             ("f", "fast-forward main"),
+            ("@", "working copy to bookmark"),
             ("o", "open in editor"),
             ("P", "show command"),
             ("W", "clean workspaces"),
@@ -232,7 +235,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 )
 
 FOOTER = (
-    "j/k move · i interactive · r run · n new · l log · d diff · f advance main · "
+    "j/k move · i interactive · r run · n new · l log · d diff · f main · @ move copy · "
     "x stop · o open · ? help · q quit"
 )
 
@@ -294,7 +297,7 @@ class MainScreen(Screen[None]):
                     "G bottom · V select · P preview · R refresh · C force-forget · H toggle sheet"
                 ),
             }
-            hint = hints.get(modifier, f"{modifier}: no shortcuts on the branch list")
+            hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
             self.query_one("#footer", Static).update(KeyHints(hint))
             event.stop()
@@ -380,7 +383,7 @@ class SandboxTUI(App[None]):
         table = self.table
         for label, width in (
             ("", 1),
-            ("branch", None),
+            ("bookmark", None),
             ("head", 8),
             ("subject", 32),  # Ellipsize long messages to leave room for session status.
             ("status", None),
@@ -464,10 +467,10 @@ class SandboxTUI(App[None]):
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
         # place (update_cell) never has to widen the column.
-        name_col = table.columns.get(ColumnKey("branch"))
+        name_col = table.columns.get(ColumnKey("bookmark"))
         if name_col is not None:
             name_col.auto_width = False
-            name_col.width = max([len("branch"), *(len(r.branch.label) + 2 for r in rows)])
+            name_col.width = max([len("bookmark"), *(len(r.branch.label) + 2 for r in rows)])
         table.clear()
         for row in rows:
             table.add_row(*row.cells(now, row.branch.name in chosen), key=row.branch.name)
@@ -536,7 +539,7 @@ class SandboxTUI(App[None]):
         for row in self.visible_rows():
             try:
                 table.update_cell(
-                    row.branch.name, "branch", row.name_cell(row.branch.name in chosen)
+                    row.branch.name, "bookmark", row.name_cell(row.branch.name in chosen)
                 )
             except Exception:
                 return  # table being rebuilt; the next render shows the marks
@@ -652,7 +655,7 @@ class SandboxTUI(App[None]):
     def _require_branch(self) -> str | None:
         name = self.selected_branch_name()
         if name is None:
-            self.notify("no branch selected", severity="warning")
+            self.notify("no bookmark or working copy selected", severity="warning")
         return name
 
     def _action_branches(self) -> list[str]:
@@ -668,20 +671,60 @@ class SandboxTUI(App[None]):
         if not chosen:
             return
         if len(chosen) != 1:
-            self.notify("select one bookmark to fast-forward main", severity="warning")
+            self.notify("select one target to fast-forward main", severity="warning")
             return
         target = chosen[0]
         branch = self.branch(target)
-        if branch is None or branch.working_copy:
-            self.notify("select a bookmark to fast-forward main", severity="warning")
+        if branch is None:
+            self.notify("select a target to fast-forward main", severity="warning")
             return
         main = main_branch(
             {b.name for b in self.branches if not b.working_copy}, self.cfg.project.main_branch
         )
         if main is None:
-            self.notify("no main branch found; configure project.main_branch", severity="warning")
+            self.notify("no main bookmark found; configure project.main_branch", severity="warning")
             return
         self._fast_forward_main(main, target)
+
+    def action_move_working_copy(self) -> None:
+        chosen = self._action_branches()
+        if not chosen:
+            return
+        if len(chosen) != 1:
+            self.notify("select one bookmark for the working copy", severity="warning")
+            return
+        target = chosen[0]
+        branch = self.branch(target)
+        if branch is None or branch.working_copy:
+            self.notify("select a bookmark for the working copy", severity="warning")
+            return
+        self._move_working_copy(target)
+
+    @work(exclusive=True, group="vcs")
+    async def _move_working_copy(self, target: str) -> None:
+        def move_if_idle() -> str | None:
+            # Share the launch lock so another TUI cannot start a session between
+            # the busy check and checkout. Read records again, not the UI cache.
+            with self.jobs._locked():
+                self.jobs.load()
+                sessions = running_by_branch(
+                    read_sessions(self.sessions_dir), self.repo, [WORKING_COPY], self.worktree_dir
+                )
+                reason = self.jobs._busy_reason(WORKING_COPY, sessions)
+                if reason:
+                    raise BusyError(reason)
+                return self.backend.move_working_copy_to(target)
+
+        try:
+            saved = await asyncio.to_thread(move_if_idle)
+        except (BusyError, VcsError) as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+        else:
+            message = f"working copy moved onto {target}"
+            if saved:
+                message += f"; previous change saved as {saved}"
+            self.notify(message)
+        await self.refresh_data()
 
     @work(exclusive=True, group="vcs")
     async def _fast_forward_main(self, main: str, target: str) -> None:
@@ -702,13 +745,13 @@ class SandboxTUI(App[None]):
         if not chosen:
             return
         if len(chosen) > 2:
-            self.notify("select one or two branches to diff", severity="warning")
+            self.notify("select one or two revisions to diff", severity="warning")
             return
         if len(chosen) == 1:
             base = main_branch({b.name for b in self.branches}, self.cfg.project.main_branch)
             if base is None:
                 self.notify(
-                    "no main branch found; configure project.main_branch", severity="warning"
+                    "no main bookmark found; configure project.main_branch", severity="warning"
                 )
                 return
             target = chosen[0]
@@ -779,10 +822,10 @@ class SandboxTUI(App[None]):
         self.push_screen(screen, chosen)
 
     def _launch_octopus(self, mode: Mode, chosen: list[str]) -> None:
-        """r / i with branches selected: merge or rebase them into a new branch."""
+        """r / i with bookmarks selected: merge or rebase into a new bookmark."""
         if len(chosen) < 2:
             self.notify(
-                "select at least two branches to merge or rebase (esc clears the selection)",
+                "select at least two bookmarks to merge or rebase (esc clears the selection)",
                 severity="warning",
             )
             return
@@ -852,7 +895,7 @@ class SandboxTUI(App[None]):
                     severity="warning",
                     timeout=8,
                 )
-            self.notify(f"{spec.branch}: preparing {operation} of {len(spec.inputs)} branches…")
+            self.notify(f"{spec.branch}: preparing {operation} of {len(spec.inputs)} bookmarks…")
             state = await asyncio.to_thread(octopus.prepare, self.repo, plan)
         except (octopus.OctopusError, BusyError, VcsError) as exc:
             self.notify(f"{spec.branch}: {exc}", severity="error", timeout=10)
@@ -1014,7 +1057,8 @@ class SandboxTUI(App[None]):
             return
         if len(chosen) > 1:
             self.notify(
-                "select one branch to view its log (esc clears the selection)", severity="warning"
+                "select one bookmark or working copy to view its log (esc clears the selection)",
+                severity="warning",
             )
             return
         name = chosen[0]

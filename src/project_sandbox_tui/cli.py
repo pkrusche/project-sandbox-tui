@@ -47,7 +47,7 @@ def build_parser() -> ArgumentParser:
         "--print-config",
         action="store_true",
         help="print the merged configuration and the interactive command for the current "
-        "branch, then exit",
+        "bookmark or working copy, then exit",
     )
     p.add_argument(
         "--cleanup-workspaces",

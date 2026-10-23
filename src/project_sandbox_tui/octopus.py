@@ -86,10 +86,10 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "sbx-tui has created the merge commit (`jj new {inputs_plain}`) and pointed "
         "`{result}` at it; your working copy sits on top of it. jj records conflicts in "
         "the commit, see the state below and `jj resolve --list -r @-`.\n\n"
-        "1. Resolve every conflict so that the intent of each branch survives, then fold "
+        "1. Resolve every conflict so that the intent of each bookmark survives, then fold "
         "the resolution into the merge commit (`jj squash`).\n"
         "2. Review the integrated result for semantic conflicts the VCS cannot see "
-        "(renamed APIs, duplicated logic, changed assumptions between branches).\n"
+        "(renamed APIs, duplicated logic, changed assumptions between bookmarks).\n"
         "3. Run the test suite and fix integration breakage.\n\n"
         "Do not modify or move the input bookmarks {inputs}, and do not push.\n"
         "Finish with a short summary: each conflict and how you resolved it, and any "
@@ -150,12 +150,12 @@ def render_prompt(template: str, plan: OctopusPlan) -> str:
 
 def validate(plan: OctopusPlan, existing: set[str]) -> None:
     if len(plan.inputs) < 2:
-        raise OctopusError("select at least two branches")
+        raise OctopusError("select at least two bookmarks")
     if len(set(plan.inputs)) != len(plan.inputs):
-        raise OctopusError("the same branch is selected twice")
+        raise OctopusError("the same bookmark is selected twice")
     missing = [i for i in plan.inputs if i not in existing]
     if missing:
-        raise OctopusError(f"no such branch: {', '.join(missing)}")
+        raise OctopusError(f"no such bookmark: {', '.join(missing)}")
     error = validate_branch_name(plan.result)
     if error:
         raise OctopusError(error)

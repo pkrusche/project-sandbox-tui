@@ -35,7 +35,10 @@ def by_name(checks: list[doctor.Check]) -> dict[str, doctor.Check]:
 
 
 def test_healthy(repo: Path) -> None:
-    (repo / ".project-sandbox-tui.toml").write_text('[project]\nbase_image = "img"\n')
+    # The fake runner serves Docker; don't auto-detect a runtime on the test host.
+    (repo / ".project-sandbox-tui.toml").write_text(
+        '[project]\nbase_image = "img"\n[sandbox]\nruntime = "docker"\n'
+    )
     from project_sandbox_tui.config import ProjectTrust
 
     ProjectTrust.check(repo).trust(repo)

@@ -521,7 +521,7 @@ base_image = "python:3.12-slim"
 # build_version = "3.12"               # -> --python / --rust for the generated build
 # worktree_dir = ""                    # -> --worktree-dir (default: sibling <repo>-workspaces)
 keep_workspace = true                  # -> --keep-workspace
-# default_branch_start = "main"        # start revision for new branches
+# default_branch_start = "main"        # start revision for new bookmarks
 # main_branch = "main"                 # cleanup offers workspaces/bookmarks fully merged into this
 
 # [defaults]

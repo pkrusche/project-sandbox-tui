@@ -1,14 +1,29 @@
 # project-sandbox-tui
 
-A minimal vim/ranger-style terminal UI for
-[project-sandbox](https://github.com/pkrusche/project-sandbox). It lists the
+A minimal [vim](https://www.vim.org/)/[ranger](https://ranger.fm/)-style terminal UI for
+agentic engineering using [project-sandbox](https://github.com/pkrusche/project-sandbox). 
+
+> 🤖 Written largely by AI, reviewed by a human. Use at your own risk.
+
+Key ideas:
+
+- We want to run many unsupervised coding tasks in the background and sometimes steer using an interactive agent session.
+- Each coding task lives in a specific [bookmark](https://docs.jj-vcs.dev/latest/bookmarks/)
+  and workspace in [jj](https://github.com/jj-vcs/jj).
+- When many tasks are done we want some automation to bring them together. This is accomplished through merging or rebasing, 
+  or octopus merging, followed agentic conflict resolution.
+- We use `jj` since this natively supports this type of merge without needing interactive interventions.
+- All of this in a simple text-based UI with familiar keyboard shortcuts.
+- Differently from most other open source agent orchestrators, we use containers for our agents to do all this somewhat more safely.
+
+`sbx-tui` lists the
 bookmarks of a [jj](https://github.com/jj-vcs/jj) repository and runs **one
-sandbox per bookmark**, interactively in your terminal or unsupervised in the
+agent / shell sandbox per bookmark**, interactively in your terminal or unsupervised in the
 background with a prompt, and notifies you when background work finishes.
 
 ```
  sbx-tui   ~/workspace/myproject   4 bookmarks · 1 running
-   branch            head      subject                       status       agent              when
+   bookmark          head      subject                       status       agent              when
    @ working copy ●  qzmvtlno  (no description set)
    main ●            kxyrwpsn  Initial import
  ▶ feature/parser    sutnpmvo  Add streaming parser          running      claude/opus/high   12m
@@ -26,6 +41,7 @@ credentials and workspace teardown stay in project-sandbox.
 - `jj` on your `PATH`. Existing git repositories must be colocated first:
   `jj git init --colocate`
 - [project-sandbox](https://github.com/pkrusche/project-sandbox)
+- a supported container runtime: Apple Containers, Docker, Podman.
 
 ## Getting started
 
@@ -46,8 +62,8 @@ Press `?` in the TUI for help.
 ## Documentation
 
 - [Usage and keys](docs/usage.md)
-- [Sessions: branches, interactive terminals, notifications](docs/sessions.md)
-- [Merging and rebasing several branches](docs/merging.md)
+- [Sessions: bookmarks, interactive terminals, notifications](docs/sessions.md)
+- [Merging and rebasing several bookmarks](docs/merging.md)
 - [Cleaning up workspaces](docs/cleanup.md)
 - [Configuration](docs/configuration.md)
 - [Model suggestions](docs/models.md)
