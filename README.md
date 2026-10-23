@@ -3,8 +3,8 @@
 A minimal vim/ranger-style terminal UI for
 [project-sandbox](https://github.com/pkrusche/project-sandbox). It lists the
 bookmarks of a [jj](https://github.com/jj-vcs/jj) repository and runs **one
-sandbox per bookmark**, either interactively in your terminal or unsupervised in
-the background with a prompt, and notifies you when background work is done.
+sandbox per bookmark**, interactively in your terminal or unsupervised in the
+background with a prompt, and notifies you when background work finishes.
 
 ```
  sbx-tui   ~/workspace/myproject   4 bookmarks · 1 running
@@ -14,343 +14,39 @@ the background with a prompt, and notifies you when background work is done.
  ▶ feature/parser    sutnpmvo  Add streaming parser          running      claude/opus/high   12m
  ✓ fix/flaky-tests   rlvkpnrz  Stabilise integration tests   completed    codex/gpt-5.4      2m ago
  ✗ spike/tui         zsuskuln  Try a ranger-style layout     failed (1)   claude/sonnet      1h ago
-
-   general               sessions                   branches
-   j k    down / up      i    interactive           n    new bookmark
-   gg G   top / bottom   r    unsupervised run      v ␣  select → merge/rebase
-   ^d ^u  half page      x    stop (again: force)   o    open in editor
-   /      filter         l ⏎  log / transcript      P    show command
-   ?      full help      c C  clear / forget        W    clean workspaces
-   H      hide sheet                                R    refresh
-   q      quit                                      ^r   reload config
 ```
 
-The welcome screen shows a key cheat-sheet under the list; `H` hides it (the
-key footer takes its place), and `ui.cheatsheet = false` starts with it
-hidden.
-
-The TUI only ever shells out to the `project-sandbox` CLI (`--branch`,
-`--agent/--model/--effort`, `--prompt-text --log --json-summary`) and to `jj`.
-Isolation, credentials and workspace teardown stay in project-sandbox.
+The TUI only shells out to the `project-sandbox` CLI and to `jj`; isolation,
+credentials and workspace teardown stay in project-sandbox.
 
 ## Requirements
 
-sbx-tui works with jj repositories only; git support was removed. `jj` must be
-on your `PATH`. To use it with an existing git repository, colocate jj with it
-first:
+- Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/)
+- `jj` on your `PATH`. Existing git repositories must be colocated first:
+  `jj git init --colocate`
+- [project-sandbox](https://github.com/pkrusche/project-sandbox)
+
+## Getting started
 
 ```sh
-cd ~/workspace/myproject && jj git init --colocate
-```
+uv tool install project-sandbox            # the sandbox itself
+uv tool install /path/to/project-sandbox-tui   # or: uv sync && uv run sbx-tui
 
-Git branches then show up as jj bookmarks.
-
-## Install
-
-```sh
-uv tool install project-sandbox          # the sandbox itself (macOS: Apple container)
-uv tool install /path/to/project-sandbox-tui
-# or, from this checkout:
-uv sync && uv run sbx-tui --help
-```
-
-## Quick start
-
-```sh
 cd ~/workspace/myproject
-sbx-tui --init           # writes ~/.config/project-sandbox-tui/config.toml (if missing)
-                         # and ./.project-sandbox-tui.toml — set the image source there;
-                         # also downloads the model list if there is none yet
-sbx-tui --update-models  # refresh the model list (see Model suggestions)
-sbx-tui --print-config   # merged config + the command an interactive session would run
-sbx-tui --dry-run        # try the UI; every project-sandbox call gets --dry-run
-sbx-tui                  # the real thing
+sbx-tui --init      # write config templates; set the image source in .project-sandbox-tui.toml
+sbx-tui --dry-run   # try the UI; every project-sandbox call gets --dry-run
+sbx-tui             # the real thing
 ```
 
-## Keys
+Press `?` in the TUI for help.
 
-| key | action |
-|---|---|
-| `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | move · top/bottom · half page |
-| `/` | filter branches (`enter` keeps it, `esc` clears) |
-| `i` | interactive session on the branch: inline (the TUI hands over this terminal and comes back when the agent exits) or in tmux / Zellij / screen, see [Interactive sessions](#interactive-sessions) |
-| `r` | unsupervised run: prompt + optional timeout, runs in the background |
-| `x` | stop a background run: SIGINT for a clean teardown; each further press escalates to SIGTERM, then SIGKILL plus `container stop` |
-| `l` / `enter` | log view: transcript (`.md`), agent log, captured output (`tab` cycles, `f` toggles follow) |
-| `n` | new bookmark (name + start revision) |
-| `v` / `V` · `space` | select branches: `v` / `V` starts a range at the cursor (press again to keep it), `space` marks one and moves on; `esc` clears. With two or more selected, `r` / `i` merge or rebase them, see [Merging and rebasing several branches](#merging-and-rebasing-several-branches) |
-| `d` | diff one selected branch (or the highlighted row) against main; two selected branches compare tips in selection order. Uses `project.main_branch`, or main/master/trunk. Scroll with `j`/`k`, `ctrl+d`/`ctrl+u`, `gg`/`G`; `q`/`esc` returns |
-| `o` | open the bookmark's workspace in your editor |
-| `P` | preview the full `project-sandbox` command |
-| `c` · `C` | clear a finished status · force-forget a record stuck as running (signals nothing) |
-| `R` · `?` · `q` | refresh · help · quit |
-| `H` | show / hide the cheat-sheet |
-| `ctrl+r` | reload global and project configuration |
+## Documentation
 
-With a range or marks selected, `c`, `C`, `x`, `o`, and `P` apply to every selected
-branch; without a selection they use the highlighted row. The selection stays
-until `esc`, so repeated `x` presses escalate stopping the same runs. `c` skips
-running records with a warning and clears the finished ones. `l` / `enter` needs
-one selected branch (or uses the highlighted row when none are selected).
-
-In the launch form: `tab` (or `j`/`k` on choice fields) moves between fields,
-`h`/`l` cycles agent and effort, `enter` launches an interactive session,
-`ctrl+enter` launches an unsupervised run. In that form, `enter` inserts a newline
-in the prompt or moves to the next field elsewhere. `esc` cancels.
-
-### Model suggestions
-
-The model field cycles with `h`/`l` or `←`/`→`, including an agent default option.
-For any agent except `bash`, choose `custom (enter model name)` and press `tab`
-to type a model name. A blank name uses the agent default. Custom names are
-remembered per agent after launch, like other model choices. Suggested choices
-come from, in this order:
-
-1. `[models]` in your configuration,
-2. Claude Code's aliases (`opus`, `sonnet`, `haiku`, `opusplan`, `best`, `fable`,
-   `opus[1m]`, `sonnet[1m]`),
-3. Codex's own list, `$CODEX_HOME/models_cache.json` (default `~/.codex`), which
-   Codex keeps for your account,
-4. the downloaded list, newest models first.
-
-The TUI never goes online by itself. The list is downloaded only by
-`sbx-tui --update-models` (and by `sbx-tui --init` when there is none yet) from
-[models.dev](https://models.dev) (MIT), the catalog agentgateway also uses for
-cost tracking:
-
-```sh
-sbx-tui --update-models                  # https://models.dev/api.json
-sbx-tui --update-models ~/api.json       # a file in the same format (offline machines)
-sbx-tui --update-models https://mirror.example/api.json
-```
-
-Only `https://` URLs and local files are accepted; proxies come from
-`HTTPS_PROXY`. The download is capped at 20 MB and validated, and only recent
-(released in the last year), non-deprecated Anthropic and OpenAI models with
-reasoning and tool calling are kept, with name, release date, context size and
-API list prices, in `~/.local/state/project-sandbox-tui/models.json`. The file is
-replaced atomically, so a failed update keeps the previous list. Without a list,
-or with one older than 30 days, the launch form says so under the model field.
-
-### Prompt history
-
-Prompts of unsupervised runs that started are remembered per repository
-(`~/.local/state/project-sandbox-tui/<repo>-<hash>/prompt_history.json`, newest
-500, duplicates collapsed). In the prompt box:
-
-| key | action |
-|---|---|
-| typing | the newest earlier prompt that starts with what you typed appears as dim ghost text |
-| `→` (at the end) · `ctrl+f` | take the suggestion |
-| `ctrl+p` · `ctrl+n` | step to older / newer prompts starting with what you had typed; past the newest you're back to your text |
-| `ctrl+r` | search the history: type words to filter (all must match, any case), `↑`/`↓` choose, `enter` use |
-| `ctrl+l` | clear the prompt (it starts with the branch's previous prompt); `ctrl+z` undoes |
-
-## One sandbox per branch
-
-A branch counts as busy when either
-
-- the TUI has a running job for it (records live in
-  `~/.local/state/project-sandbox-tui/<repo>-<hash>/jobs/`, so a second TUI
-  instance or a restarted one sees them), or
-- project-sandbox has a `running` session record whose workspace is that
-  bookmark's jj workspace, or the repository itself for `@`. This also catches
-  sessions you started from a shell, as long as they used `--branch` or ran in
-  the repository itself.
-
-The first row is always `@ working copy`, followed by the bookmarks. Sessions on
-`@` run in the repository's own workspace, on the working-copy commit, without
-`--branch`. Sessions on a bookmark get their own jj workspace (`--branch`), so
-`@` and each bookmark are separate sandboxes. With no bookmarks yet, `n` offers
-`@` as the start revision; otherwise it prefers `main`/`master`/`trunk`, falling
-back to `@-`.
-
-Background runs are detached from the TUI: quitting leaves them running, and the
-next start re-adopts them and notifies about any that finished meanwhile.
-
-## Cleaning up workspaces
-
-```sh
-sbx-tui --cleanup-workspaces --dry-run   # preview
-sbx-tui --cleanup-workspaces             # remove idle clean / merged workspaces and bookmarks
-```
-
-In the TUI, `W` lists every workspace and merged bookmark it found with its path
-and status (the reason wraps onto its own line; long lists scroll). Removable
-ones are preselected; the others are shown greyed out with the reason they are
-kept. Toggle with `space` (`a` selects all / none), press `enter` to remove the
-selection, `esc` to cancel. The CLI removes everything removable and prints the
-same list: `removed` / `would remove` / `deleted bookmark` lines, plus a `kept`
-line with the reason for each of the rest.
-
-Workspaces come from `jj workspace list`, so workspaces of deleted bookmarks and
-workspaces in any location or with any name are included. The workspace the TUI
-runs in is never listed. Workspaces are always kept when they have a running TUI
-job or project-sandbox session, uncommitted changes in `@` or files too large to
-snapshot, or hold the repository itself (the `default` workspace).
-
-The main branch (`project.main_branch`, default: the first of `main` / `master`
-/ `trunk`) relaxes the rules for work that is fully merged:
-
-- A workspace whose commits are all in the main branch (only empty revisions
-  are outside `::main`) may also be removed when it only has ignored files
-  (they are deleted) or when its directory is missing (it is just unregistered).
-  Its bookmark is deleted with it, except the main bookmark itself.
-- Bookmarks fully merged into the main branch that have no workspace are listed
-  as rows of their own.
-
-Unmerged workspaces with ignored files or a missing directory are kept. Removal
-re-checks each selected row, unregisters workspaces (`jj workspace forget`), and
-deletes bookmarks with `jj bookmark delete` (which also deletes a tracked remote
-bookmark on the next `jj git push`). Job history is kept.
-
-To get rid of a kept workspace anyway (e.g. a stale working copy), highlight it
-and press `D`. After a confirmation this deletes its directory with everything
-in it (uncommitted, untracked and ignored files included) and unregisters it
-(`jj workspace forget`). Bookmarks are kept. Workspaces with a running session
-and the repository itself (the `default` workspace) can never be force-deleted,
-and only a directory that really is a workspace of this repository is deleted.
-
-## Merging and rebasing several branches
-
-Select two or more branches (`v` for a range, `space` for single ones; the order
-you marked them is the merge / stacking order, a range adds in list order), then:
-
-- `r`: the form gains **action** (`merge` / `rebase`, `h`/`l`), **result**
-  (new branch, default `merge/<a>-<b>-…`) and **base** (rebase only, default
-  main/master/trunk), and a prompt from a template that follows those fields
-  until you edit it.
-- `i`: the same, then an interactive session on the result to resolve conflicts
-  yourself (or with the agent). Pick the `bash` agent if you want a plain shell.
-
-For unsupervised runs, choosing `bash` fills the prompt with a command that
-prints changes and conflicts and exits with failure if conflicts remain.
-
-On launch sbx-tui does the mechanical part on your machine, then starts the
-session on the result branch, with the agent asked to resolve what is left
-**and review the integration** (semantic conflicts, tests):
-
-| | |
-|---|---|
-| merge | `jj new A B C` (conflicts are recorded in the commit) + bookmark `result` on it |
-| rebase | each bookmark's own commits `jj duplicate`d onto the previous tip, starting at `base`, + bookmark `result` on the last one |
-
-The inputs are never modified. A "Current state" section (what was merged,
-which files or commits conflict) is appended to the prompt; for `i` it is shown
-before the session starts. The templates can be replaced per repo in `[prompts]` (`octopus_merge`,
-`octopus_rebase`; placeholders `{inputs}`, `{result}`, `{base}`, `{first}`,
-`{rest}`).
-
-## Interactive sessions
-
-`ui.terminal` decides where `i` runs the agent:
-
-| `ui.terminal` | inside the multiplexer | outside it |
-|---|---|---|
-| `inline` (default) | the TUI suspends, the agent takes over this terminal, you're back in the list when it exits | same |
-| `tmux` | new tmux window named after the branch | detached session `sbx-<repo>-<branch>`: `tmux attach -t …` |
-| `zellij` | new pane, closed when the agent exits | not supported (start sbx-tui inside Zellij) |
-| `screen` | new screen window | detached session `sbx-<repo>-<branch>`: `screen -r …` |
-| `custom` | `ui.terminal_command` with `{cmd}`, `{branch}`, `{repo}`, e.g. `'wezterm start -- sh -c {cmd}'` | same |
-
-"Inside" means sbx-tui itself runs in that multiplexer (`$TMUX`, `$ZELLIJ`, `$STY`).
-Everything except `inline` returns to the list straight away and the row shows
-`interactive (ext)` while project-sandbox's session record for the branch is
-running. Detach and reattach with the multiplexer's own keys. If project-sandbox
-fails, its window stays open with the exit code until you press Enter, so the
-error is readable. A setting with only `terminal_command` keeps meaning
-`custom`. `x` cannot stop these sessions; quit the agent in its window.
-
-## Notifications
-
-When a background run finishes the row updates, a toast appears, the terminal
-bell rings (`ui.bell`) and a desktop notification is sent: `osascript` on macOS,
-`notify-send` on Linux, or your own `ui.notify_command`
-(e.g. `terminal-notifier -title {title} -message {message}`; placeholders are
-substituted per argument, never through a shell).
-
-Exit codes map to status: `0` completed, `124` timeout, `75` rate limited,
-`130` interrupted, anything else failed.
-
-## Configuration
-
-Global `~/.config/project-sandbox-tui/config.toml`, overridden per repo by
-`.project-sandbox-tui.toml` (deep merge). Unknown keys are errors.
-Press `ctrl+r` in the branch list to reload both files without restarting.
-Invalid configuration leaves the current settings in place. Running sessions keep
-their launch settings; new launches use the reloaded configuration.
-
-```toml
-[defaults]
-agent = "claude"        # claude | codex | opencode | pi | bash
-model = ""              # "" = the agent's own default
-effort = ""             # "" or low | medium | high | xhigh | max
-timeout = 0             # seconds for unsupervised runs
-
-[network]
-internet_proxy = "http://proxy.example:3128"   # --internet-proxy
-agent_proxy = ""                               # --agent-proxy
-ca_certs = ["/path/to/corp-root.pem"]          # --ca-cert …
-extra_domains = []                             # --extra-domain …
-allow_github = false
-
-[sandbox]
-command = "project-sandbox"   # or "uvx project-sandbox"
-runtime = "auto"              # auto | apple-container | docker | podman
-memory = ""                   # e.g. "16g"
-cpus = 0
-no_forward_credentials = false
-api_key_env = []
-api_key_env_file = []
-extra_args = []
-
-[project]                     # usually in .project-sandbox-tui.toml
-base_image = "python:3.12-slim"   # or: dockerfile = "Dockerfile" / build = "python-uv"
-build_version = ""                # --python / --rust for a generated build
-worktree_dir = ""
-keep_workspace = true             # reuse the workspace across runs
-default_branch_start = ""         # "" = main/master/trunk, else @-
-main_branch = ""                  # cleanup removes work merged into it ("" = main/master/trunk)
-
-[ui]
-notify_command = ""
-terminal = "inline"     # inline | tmux | zellij | screen | custom (see Interactive sessions)
-terminal_command = ""   # only with terminal = "custom", e.g. 'wezterm start -- sh -c {cmd}'
-editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this terminal
-refresh_seconds = 3
-bell = true
-cheatsheet = true       # key cheat-sheet on the welcome screen (H toggles)
-
-[models]                # extra launch-form suggestions, listed first (see Model suggestions)
-claude = ["opus", "sonnet"]
-codex = ["gpt-5.5"]
-```
-
-**Defaults that update:** the launch form is pre-filled with the agent, effort,
-timeout and per-agent model you used last in this repository (stored in the
-state directory, never written back to your TOML). Config defaults apply until
-you've launched something.
-
-## Development
-
-```sh
-uv sync
-uv run pytest                 # unit, Textual Pilot and pty tests; needs jj on PATH
-uv run ruff check .           # lint
-uv run ruff format --check .  # formatting (drop --check to apply)
-uv run ty check               # types (src and tests; warnings are errors)
-```
-
-CI (`.github/workflows/ci.yml`) runs the same checks on pushes to `main` and on
-pull requests: a lint job (ruff check, ruff format, ty) and pytest on Linux with
-Python 3.14 and jj installed (macOS and Python 3.12 are commented out in the
-test matrix and can be switched back on). Dependencies are installed
-with `uv sync --locked`, so commit `uv.lock` whenever `pyproject.toml` changes.
-
-Tests use `tests/fake_project_sandbox.py`, a stand-in CLI that writes session
-records, logs, a transcript and a JSON summary the way project-sandbox does.
-
-See [PLAN.md](PLAN.md) for the design and remaining phases.
-
-Press Ctrl, Shift, or Alt to see contextual shortcut hints when your terminal
-reports standalone modifier keys.
+- [Usage and keys](docs/usage.md)
+- [Sessions: branches, interactive terminals, notifications](docs/sessions.md)
+- [Merging and rebasing several branches](docs/merging.md)
+- [Cleaning up workspaces](docs/cleanup.md)
+- [Configuration](docs/configuration.md)
+- [Model suggestions](docs/models.md)
+- [Architecture](docs/architecture.md)
+- [Development](docs/development.md)
