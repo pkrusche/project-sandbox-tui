@@ -347,6 +347,7 @@ class SandboxTUI(App[None]):
         self._g_pending = False
         self._refreshing = False
         self._refresh_again = False
+        self._refreshed = asyncio.Event()  # set when the current refresh pass ends
         self._pending_select: str | None = None
         self.default_start = cfg.project.default_branch_start
         self.main = MainScreen()
@@ -405,9 +406,13 @@ class SandboxTUI(App[None]):
 
     async def refresh_data(self) -> None:
         if self._refreshing:
-            self._refresh_again = True  # coalesce: rerun once the current pass ends
+            # Coalesce: rerun once the current pass ends, and wait for that rerun
+            # so callers see data at least as fresh as their own changes.
+            self._refresh_again = True
+            await self._refreshed.wait()
             return
         self._refreshing = True
+        self._refreshed = asyncio.Event()
         try:
             await self._refresh_once()
             while self._refresh_again:
@@ -415,6 +420,7 @@ class SandboxTUI(App[None]):
                 await self._refresh_once()
         finally:
             self._refreshing = False
+            self._refreshed.set()
 
     async def _refresh_once(self) -> None:
         try:
