@@ -3,6 +3,7 @@
 ```sh
 uv sync
 uv run pytest                 # unit, Textual Pilot and pty tests; needs jj on PATH
+uv run pytest -n auto         # the same, in parallel (pytest-xdist)
 uv run ruff check .           # lint
 uv run ruff format --check .  # formatting (drop --check to apply)
 uv run ty check               # types (src and tests; warnings are errors)
