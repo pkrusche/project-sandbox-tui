@@ -298,7 +298,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
         (
             "prompt box (unsupervised runs)",
             (
-                ("ctrl+enter", "launch (enter = newline)"),
+                ("ctrl+s", "launch (enter = newline)"),
                 ("→ / ctrl+f", "take the suggestion"),
                 ("ctrl+p / n", "older / newer prompt"),
                 ("ctrl+r", "search prompt history"),

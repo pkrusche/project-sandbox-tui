@@ -400,14 +400,38 @@ def test_enter_does_not_launch_unsupervised_run(
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
-        form.query_one("#prompt", TextArea).text = "sleep:0.1"
-        await pilot.press("ctrl+s")
+        area = form.query_one("#prompt", TextArea)
+        area.text = "sleep:0.1"
+        area.move_cursor(area.document.end)
+        await pilot.press("enter")
         assert app.screen is form
-        assert form.query_one("#prompt", TextArea).text == "sleep:0.1"
+        assert area.text == "sleep:0.1\n"
         form.query_one("#timeout", Input).focus()
         await pilot.press("enter")
         assert app.screen is form  # still in the form; focus moved on
         await pilot.press("escape")
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_unsupervised_run_launches_with_ctrl_s_or_button(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#prompt", TextArea).text = "sleep:0.1"
+        await pilot.click("#launch")
+        assert not isinstance(app.screen, LaunchScreen)
+        await wait_until(pilot, lambda: "@" in app.jobs.jobs and not app.jobs.jobs["@"].running)
+
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#prompt", TextArea).text = "sleep:0.1"
+        await pilot.press("ctrl+s")
+        assert not isinstance(app.screen, LaunchScreen)
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -784,11 +808,11 @@ def test_modifier_hints(repo: Path, fake_cfg: Callable[..., Config]) -> None:
         assert isinstance(form, LaunchScreen)
         await pilot.press("right_control")
         hint = str(form.query_one("#launch-hint", Static).content)
-        assert "ctrl+enter launch" in hint and "ctrl+r search" in hint
+        assert "ctrl+s / ctrl+enter launch" in hint and "ctrl+r search" in hint
         await pilot.press("left_shift")
         assert "shift+tab" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("a")
-        assert "ctrl+enter launch" in str(form.query_one("#launch-hint", Static).content)
+        assert "ctrl+s launch" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("escape", "question_mark", "left_control")
         assert isinstance(app.screen, HelpScreen)
         await pilot.press("q")

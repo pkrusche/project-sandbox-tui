@@ -12,7 +12,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
-from textual.widgets import Input, Static, TextArea
+from textual.widgets import Button, Input, Static, TextArea
 
 from project_sandbox_tui import models as models_mod
 from project_sandbox_tui import octopus as octopus_mod
@@ -63,11 +63,15 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen #command-scroll { height: 3; margin-top: 1; }
     LaunchScreen .preview { color: $text-muted; height: auto; }
     LaunchScreen .hint { color: $text-disabled; margin-top: 1; }
+    LaunchScreen #launch-row { height: auto; margin-top: 1; }
+    LaunchScreen #launch-row .hint { width: 1fr; margin-top: 0; }
     """
 
     BINDINGS = [
         Binding("escape", "cancel", "cancel", show=False),
         Binding("ctrl+enter", "launch", "launch", show=False, priority=True),
+        # ctrl+enter is indistinguishable from enter in many terminals (iOS, Blink)
+        Binding("ctrl+s", "launch", "launch", show=False, priority=True),
     ]
 
     def __init__(
@@ -190,16 +194,21 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 yield Static("", classes="preview", id="preview")
             keys = "tab/j/k fields · h/l change · enter launch · esc cancel"
             if self.mode == "background":
-                keys = "tab fields · h/l change · ctrl+enter launch · esc cancel"
+                keys = "tab fields · h/l change · ctrl+s launch · esc cancel"
             self.default_hint = keys
-            yield Static(KeyHints(keys), classes="hint", id="launch-hint")
+            if self.mode == "background":
+                with Horizontal(id="launch-row"):
+                    yield Static(KeyHints(keys), classes="hint", id="launch-hint")
+                    yield Button("launch", variant="primary", compact=True, id="launch")
+            else:
+                yield Static(KeyHints(keys), classes="hint", id="launch-hint")
 
     def on_key(self, event: events.Key) -> None:
         modifier = modifier_key(event.key)
         hint = self.default_hint
         if modifier:
             if modifier == "ctrl":
-                hint = "ctrl+enter launch"
+                hint = "ctrl+s / ctrl+enter launch"
                 if isinstance(self.focused, PromptArea):
                     hint += " · ctrl+p/n history · ctrl+r search · ctrl+f complete · ctrl+l clear"
             elif modifier == "shift":
@@ -389,6 +398,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
         self.app.push_screen(HistorySearchScreen(self.prompt_history, area.text), chosen)
 
+    @on(Button.Pressed, "#launch")
+    def _launch_pressed(self) -> None:
+        self.action_launch()
+
     @on(Input.Submitted)
     def _submitted(self) -> None:
         self._enter()
@@ -404,7 +417,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     def _enter(self) -> None:
         """Enter launches an interactive session; in the unsupervised form, where
-        the prompt is the main field, it only moves on (ctrl+enter launches)."""
+        the prompt is the main field, it only moves on (ctrl+s launches)."""
         if self.mode == "interactive":
             self.action_launch()
         else:

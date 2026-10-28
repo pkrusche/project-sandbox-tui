@@ -81,7 +81,7 @@ The move is refused while a session is running in the working copy.
 | `tab` | next field (`j`/`k` on choice fields) |
 | `h` `l` | cycle agent, effort, model |
 | `enter` | launch an interactive session (in the prompt: newline) |
-| `ctrl+enter` | launch an unsupervised run |
+| `ctrl+s` · `ctrl+enter` | launch an unsupervised run (or click / tap **launch**); `ctrl+enter` only where the terminal can tell it apart from `enter` |
 | `esc` | cancel |
 
 The form is pre-filled with the agent, effort, timeout and per-agent model last
