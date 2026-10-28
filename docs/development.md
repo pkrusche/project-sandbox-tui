@@ -2,8 +2,8 @@
 
 ```sh
 uv sync --locked
-uv run pytest                 # unit, Textual Pilot and pty tests; needs jj on PATH
-uv run pytest -n auto         # parallel (pytest-xdist)
+scripts/test.sh               # unit, Textual Pilot and pty tests in parallel; needs jj on PATH
+uv run pytest                 # the same, serially
 uv run ruff check .
 uv run ruff format --check .  # omit --check to format
 uv run ty check               # src and tests; warnings are errors

@@ -9,7 +9,7 @@ import pytest
 from project_sandbox_tui import octopus
 from project_sandbox_tui.octopus import OctopusError, OctopusPlan
 from project_sandbox_tui.vcs import detect
-from tests.conftest import run
+from tests.conftest import RepoCopy, run
 
 
 def test_names_and_validation() -> None:
@@ -40,12 +40,7 @@ def test_prompt_template_placeholders() -> None:
         assert "do not push" in rendered.lower()
 
 
-@pytest.fixture
-def jj_branches(tmp_path: Path) -> Path:
-    """main + a (conflicts with c on shared.txt), b (independent file), c."""
-    repo = tmp_path / "jj"
-    repo.mkdir()
-
+def _build_jj_branches(repo: Path) -> None:
     def jj(*args: str) -> str:
         return run("jj", *args, cwd=repo)
 
@@ -60,7 +55,12 @@ def jj_branches(tmp_path: Path) -> Path:
         jj("commit", "--quiet", "-m", f"{name}: {path}")
         jj("bookmark", "create", "--quiet", name, "-r", "@-")
     jj("new", "--quiet", "main")
-    return repo
+
+
+@pytest.fixture
+def jj_branches(tmp_path: Path, repo_copy: RepoCopy) -> Path:
+    """main + a (conflicts with c on shared.txt), b (independent file), c."""
+    return repo_copy(_build_jj_branches, tmp_path / "jj")
 
 
 def jj_out(repo: Path, *args: str) -> str:

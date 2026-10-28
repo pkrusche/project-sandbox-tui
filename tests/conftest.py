@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -41,11 +42,34 @@ def add_bookmark(repo: Path, name: str, path: str, text: str, start: str = "main
     jj(repo, "new", "--quiet", "main")
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """main ("first commit") and feature/x on top of it ("add b"); @ is empty on main."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
+RepoCopy = Callable[[Callable[[Path], None], Path], Path]
+
+
+@pytest.fixture(scope="session")
+def repo_copy(tmp_path_factory: pytest.TempPathFactory) -> RepoCopy:
+    """``repo_copy(build, dest)``: a copy of the repo ``build`` makes, built once per session.
+
+    Creating a jj repo takes several jj calls; copying one is much faster and keeps tests
+    from seeing each other's changes. With xdist, each worker builds its own templates.
+    """
+    templates: dict[Callable[[Path], None], Path] = {}
+    xdg = tmp_path_factory.mktemp("template-xdg")
+
+    def copy(build: Callable[[Path], None], dest: Path) -> Path:
+        if build not in templates:
+            template = tmp_path_factory.mktemp(dest.name)
+            with pytest.MonkeyPatch.context() as mp:  # not the user's jj config
+                mp.setenv("XDG_STATE_HOME", str(xdg / "state"))
+                mp.setenv("XDG_CONFIG_HOME", str(xdg / "config"))
+                build(template)
+            templates[build] = template
+        shutil.copytree(templates[build], dest, symlinks=True)
+        return dest
+
+    return copy
+
+
+def _build_repo(repo: Path) -> None:
     jj(repo, "git", "init", "--quiet")
     (repo / "a.txt").write_text("a\n")
     jj(repo, "commit", "--quiet", "-m", "first commit")
@@ -54,28 +78,35 @@ def repo(tmp_path: Path) -> Path:
     jj(repo, "commit", "--quiet", "-m", "add b")
     jj(repo, "bookmark", "create", "--quiet", "feature/x", "-r", "@-")
     jj(repo, "new", "--quiet", "main")
-    return repo
 
 
-@pytest.fixture
-def jj_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "jjrepo"
-    repo.mkdir()
+def _build_jj_repo(repo: Path) -> None:
     jj(repo, "git", "init", "--quiet")
     (repo / "a.txt").write_text("a\n")
     jj(repo, "commit", "--quiet", "-m", "first commit")
     jj(repo, "bookmark", "create", "--quiet", "main", "-r", "@-")
-    return repo
 
 
-@pytest.fixture
-def jj_repo_no_bookmarks(tmp_path: Path) -> Path:
-    repo = tmp_path / "jjbare"
-    repo.mkdir()
+def _build_jj_repo_no_bookmarks(repo: Path) -> None:
     jj(repo, "git", "init", "--quiet")
     (repo / "a.txt").write_text("a\n")
     jj(repo, "describe", "--quiet", "-m", "work in progress")
-    return repo
+
+
+@pytest.fixture
+def repo(tmp_path: Path, repo_copy: RepoCopy) -> Path:
+    """main ("first commit") and feature/x on top of it ("add b"); @ is empty on main."""
+    return repo_copy(_build_repo, tmp_path / "repo")
+
+
+@pytest.fixture
+def jj_repo(tmp_path: Path, repo_copy: RepoCopy) -> Path:
+    return repo_copy(_build_jj_repo, tmp_path / "jjrepo")
+
+
+@pytest.fixture
+def jj_repo_no_bookmarks(tmp_path: Path, repo_copy: RepoCopy) -> Path:
+    return repo_copy(_build_jj_repo_no_bookmarks, tmp_path / "jjbare")
 
 
 @pytest.fixture
