@@ -1,43 +1,34 @@
-# Cleaning up workspaces
+# Workspace cleanup
 
 ```sh
 sbx-tui --cleanup-workspaces --dry-run   # preview
-sbx-tui --cleanup-workspaces             # remove idle clean / merged workspaces and bookmarks
+sbx-tui --cleanup-workspaces             # remove eligible workspaces and merged bookmarks
 ```
 
-In the TUI, `W` lists every workspace and merged bookmark found, with path and
-status. Removable ones are preselected; others are greyed out with the reason
-they are kept. `space` toggles, `a` selects all / none, `enter` removes, `esc`
-cancels. The CLI removes everything removable and prints `removed` /
-`would remove` / `deleted bookmark` / `kept` lines.
+Press `W` in the TUI to review candidates: removable rows are preselected,
+others show why they are kept. `space` toggles a row, `a` selects all/none,
+`enter` removes, `esc` cancels. The CLI removes all eligible candidates and
+reports each removal or reason for keeping it.
 
-Workspaces come from `jj workspace list`, whatever their name or location. The
-workspace the TUI runs in is never listed.
-
-## Always kept
-
-- workspaces with a running TUI job or project-sandbox session
-- uncommitted changes in `@`, or files too large to snapshot
-- the repository itself (the `default` workspace)
+Candidates come from `jj workspace list`, regardless of name or location.
+The current workspace is excluded; the `default` workspace, running sessions,
+uncommitted changes and files too large to snapshot are always kept.
 
 ## Merged work
 
-The main bookmark (`project.main_branch`; default: first of `main` / `master` /
-`trunk`) relaxes the rules for fully merged work:
+`project.main_branch` (default: first of main/master/trunk) defines merged work:
 
-- A workspace whose commits are all in main (only empty revisions outside
-  `::main`) may also be removed when it only has ignored files (deleted) or its
-  directory is missing (just unregistered). Its bookmark is deleted too, except
-  main itself.
-- Bookmarks fully merged into main with no workspace are listed as their own rows.
+- A workspace with only empty revisions outside `::main` can be removed even
+  with ignored files (which are deleted) or a missing directory (unregistered).
+  Its bookmark is deleted too, except main itself.
+- Fully merged bookmarks without workspaces appear as separate rows.
 
-Unmerged workspaces with ignored files or a missing directory are kept. Removal
-re-checks each row, runs `jj workspace forget` and `jj bookmark delete` (a
-tracked remote bookmark is deleted on the next `jj git push`). Job history is kept.
+Unmerged workspaces with ignored files or missing directories are kept. Removal
+re-checks eligibility, runs `jj workspace forget` and deletes eligible bookmarks;
+tracked remote bookmarks are deleted on the next `jj git push`. Job history stays.
 
 ## Force delete
 
-Highlight a kept workspace and press `D`. After confirmation this deletes its
-directory with everything in it (uncommitted, untracked and ignored files
-included) and unregisters it. Bookmarks are kept. Workspaces with a running
-session and the `default` workspace can never be force-deleted.
+Highlight a kept workspace and press `D`, then confirm to delete its directory
+including uncommitted, untracked and ignored files, and unregister it. Bookmarks
+stay. Running sessions and the `default` workspace cannot be force-deleted.

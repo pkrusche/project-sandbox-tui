@@ -12,7 +12,7 @@ import time
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from rich.cells import cell_len
 from rich.console import Console, ConsoleOptions, RenderResult
@@ -234,10 +234,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     ),
 )
 
-FOOTER = (
-    "j/k move · i interactive · r run · n new · l log · d diff · f main · @ move copy · "
-    "x stop · o open · ? help · q quit"
-)
+FOOTER = "? full help · H keys · j/k move · i interactive · r run · q quit"
 
 
 def _cheatsheet_section(title: str, keys: tuple[tuple[str, str], ...]) -> Text:
@@ -288,6 +285,24 @@ class MainScreen(Screen[None]):
         yield Input(placeholder="filter", id="filter")
         yield Static(KeyHints(FOOTER), id="footer")
 
+    def on_resize(self, event: events.Resize) -> None:
+        self.update_help_layout()
+
+    def update_help_layout(self) -> None:
+        """Collapse the sheet before it crowds out the working copy and a bookmark."""
+        sheet = self.query_one("#cheatsheet", Static)
+        gutter = sheet.styles.gutter
+        width = max(1, self.size.width - gutter.width)
+        console = self.app.console
+        options = console.options.update(width=width, height=None)
+        sheet_height = len(console.render_lines(Cheatsheet(), options)) + gutter.height
+        # Header, table header + working copy + bookmark + horizontal scrollbar,
+        # and room for the filter even before it opens.
+        app = cast("SandboxTUI", self.app)
+        expanded = app.cheatsheet_visible and sheet_height + 6 <= self.size.height
+        sheet.set_class(not expanded, "hidden")
+        self.set_class(expanded, "with-cheatsheet")
+
     def on_key(self, event: events.Key) -> None:
         modifier = modifier_key(event.key)
         if modifier:
@@ -299,7 +314,7 @@ class MainScreen(Screen[None]):
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
-            self.query_one("#footer", Static).update(KeyHints(hint))
+            self.query_one("#footer", Static).update(KeyHints(f"? full help · {hint}"))
             event.stop()
         else:
             self.query_one("#cheatsheet", Static).update(Cheatsheet())
@@ -316,7 +331,7 @@ class SandboxTUI(App[None]):
     MainScreen DataTable > .datatable--header { background: $background; color: $text-muted; }
     #filter { height: 1; border: none; padding: 0 1; display: none; }
     #filter.visible { display: block; }
-    #footer { height: auto; color: $text-disabled; padding: 0 1; }
+    #footer { height: 1; color: $text-disabled; padding: 0 1; }
     #cheatsheet { height: auto; padding: 1 2; border-top: solid $panel; }
     #cheatsheet.hidden { display: none; }
     MainScreen.with-cheatsheet #footer { display: none; }
@@ -1285,10 +1300,9 @@ class SandboxTUI(App[None]):
         self.show_cheatsheet(not self.cheatsheet_visible)
 
     def show_cheatsheet(self, visible: bool) -> None:
-        """The sheet replaces the one-line footer while it is shown."""
+        """Show the sheet when it fits, otherwise keep the one-line help hint."""
         self.cheatsheet_visible = visible
-        self.main.query_one("#cheatsheet").set_class(not visible, "hidden")
-        self.main.set_class(visible, "with-cheatsheet")
+        self.main.update_help_layout()
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

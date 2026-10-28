@@ -1,90 +1,53 @@
 # Architecture
 
-The TUI never talks to containers. Everything goes through the
-`project-sandbox` CLI (`--branch`, `--prompt-text`, `--json-summary`) and `jj`,
-so project-sandbox stays the source of truth for isolation, credentials and
-runtimes. Its session records, read from disk, are the only other input.
-
-## Decisions
-
-| Topic | Decision |
-|---|---|
-| Names | package `project-sandbox-tui`, module `project_sandbox_tui`, command `sbx-tui` |
-| Tooling | uv, hatchling, Python ≥ 3.12, Textual ≥ 6 (async loop, `App.suspend()`, Pilot tests) |
-| Config | TOML via `tomllib`; the TUI only reads it. `sbx-tui config set/unset` and `--init` write it (tomlkit keeps comments) |
-| VCS | jj only; a `.jj/` directory is required |
-| Background jobs | detached child processes (`start_new_session=True`) with an on-disk job record; re-adopted on restart |
-| Interactive | suspend the TUI and run in the same terminal, or hand off to tmux / zellij / screen / custom |
+The Textual app calls `jj` and the `project-sandbox` CLI; project-sandbox owns
+container isolation, credentials and runtimes. Session records on disk are the
+only other input. A `.jj/` directory is required.
 
 ## Modules (`src/project_sandbox_tui/`)
 
-| module | role |
+| Module | Role |
 |---|---|
-| `cli.py` | argparse entry point |
-| `settings.py` | `sbx-tui config list/get/set/unset/path` |
-| `doctor.py` | `sbx-tui doctor`: checks jj, project-sandbox and the container runtime |
-| `config.py` | dataclasses, TOML load / merge / validate, state paths, last-used defaults |
-| `vcs.py` | `Branch` model, jj queries, bookmark creation, diff |
-| `sandbox.py` | `LaunchSpec`, argv builder, session-record matching |
-| `jobs.py` | `JobRecord`, `JobManager`: spawn, poll, adopt, stop, summary parsing |
-| `launchers.py`, `terminal.py` | external terminals; terminal state restore after inline sessions |
-| `octopus.py` | host-side merge / rebase preparation |
-| `cleanup.py` | workspace and merged-bookmark cleanup |
-| `models.py`, `history.py`, `notify.py` | model suggestions, prompt history, notifications |
-| `app.py`, `widgets.py`, `screens/` | Textual app, branch list, launch / dialog / log / history screens; terminal diff viewer |
+| `cli.py`, `settings.py`, `doctor.py` | Entry point, config commands, dependency checks |
+| `config.py` | Typed TOML loading, validation, trust, state paths and launch defaults |
+| `vcs.py` | Bookmark discovery, creation, working-copy moves and fast-forwarding |
+| `sandbox.py` | `LaunchSpec`, argv construction and session matching |
+| `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
+| `launchers.py`, `terminal.py` | External terminals and terminal restoration |
+| `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
+| `models.py`, `history.py`, `notify.py` | Suggestions, prompt history and notifications |
+| `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs and history |
 
-## Argv construction
+## Launches and job lifecycle
 
-Values are passed as `--flag=value`, so one starting with `-` (a bookmark,
-a prompt) cannot be taken for an option.
+`sandbox.py` maps [configuration](configuration.md) to project-sandbox flags,
+passing values as `--flag=value` so leading `-` characters cannot become options.
+Bookmark launches use `--branch`; working-copy launches omit it. Background
+launches add `--prompt-text`, `--log`, `--json-summary` and an optional `--timeout`.
 
-```
-project-sandbox <repo> <base_image | --dockerfile=… [--docker-context=…]
-                        | --python-uv [--python=<ver>] | --rust-cargo [--rust=<ver>] | --node-npm>
-  [--runtime=…] [--memory=…] [--cpus=…]
-  --branch=<name> [--worktree-dir=…] [--keep-workspace]    # omitted for @
-  --agent=<agent> [--model=…] [--effort=…]
-  [--internet-proxy=…] [--agent-proxy=… [--agent-proxy-key-env=…]]
-  [--ca-cert=…]… [--extra-domain=…]…
-  [--allow-github] [--no-firewall]                          # loosen the sandbox
-  [--no-forward-credentials] [--api-key-env=…]… [--api-key-env-file=…]…
-  <extra_args…>
-  # background only:
-  --prompt-text=<text> --log=<path> --json-summary=<path> [--timeout=N]
-```
+1. **Guard:** reject launches with an existing running job or session for the
+   workspace. Project-sandbox records in `$XDG_STATE_HOME/project-sandbox/sessions/`
+   have no branch name; match `workspace_path` using its slug rule
+   (`/` → `-`, plus sha256[:6]).
+2. **Spawn:** detach with `start_new_session=True`, capture output, and write a
+   job record under a repository lock.
+3. **Poll:** every `refresh_seconds`, finalise dead processes using the JSON
+   summary's exit code, then the child's, else `orphaned`. A summary never closes
+   a live process.
+4. **Notify:** claim `notified` atomically so only one TUI instance announces completion.
+5. **Restart:** re-adopt live processes and finalise dead ones.
 
-## Job lifecycle
+Inline interactive sessions write temporary job records so other TUI instances
+see the workspace as busy. See [sessions](sessions.md) for terminal modes and
+[configuration](configuration.md#state-directory) for stored data and permissions.
 
-1. **Guard**: refuse if a running `JobRecord` exists for the branch or a running
-   project-sandbox session maps to its workspace. Session records are read from
-   `$XDG_STATE_HOME/project-sandbox/sessions/`; they carry no branch name, so
-   `workspace_path` is matched using project-sandbox's slug rule (`/` → `-` +
-   sha256[:6]).
-2. **Spawn** detached, output to the log, write the record under a repository lock.
-3. **Poll** every `refresh_seconds`: when the pid is gone, status comes from the
-   JSON summary's exit code (or the child's, else `orphaned`). A summary never
-   closes a job whose process is alive.
-4. **Notify** once across TUI instances (atomic `notified` claim).
-5. **Restart**: load records, re-adopt live pids, finalise dead ones.
+## Limitations
 
-Interactive inline sessions write a lightweight record for their duration so
-other TUI instances see the branch as busy. `x` sends SIGINT first so
-project-sandbox can commit work and mark the session interrupted, then SIGTERM,
-then SIGKILL plus `<runtime> stop <container>`.
-
-## Known limitations
-
-- Inline interactive sessions and the terminal diff viewer suspend the event loop;
+- Inline sessions and the terminal diff viewer suspend the event loop;
   notifications arrive on return.
-- With a non-inline terminal the TUI only sees project-sandbox's session record. A launch that fails before writing one keeps the branch busy up to 10 minutes (or until `C`).
-- PID reuse after a crash can make a record look running forever; `C` forgets it.
-- Not implemented: ahead/behind vs trunk, dirty marker, prompt files, remote bookmarks, switching repos.
+- External launches and stale records may need [manual recovery](sessions.md#interactive-sessions).
+- PID reuse after a crash can make a record appear running; `C` forgets it.
+- Ahead/behind counts, dirty markers, prompt files, remote bookmarks and switching
+  repositories are not implemented.
 
-## State and privacy
-
-Job records (with the full argv, including the prompt), logs, transcripts,
-prompt history and the trusted project config live in
-`$XDG_STATE_HOME/project-sandbox-tui/<repo>-<hash>/`. sbx-tui creates that
-directory and its `jobs/` and `logs/` subdirectories with mode `0700`, and
-tightens ones an earlier version created with the umask, so other local users
-cannot read them.
+For tooling and CI, see [development](development.md).

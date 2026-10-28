@@ -1,32 +1,32 @@
-# Merging and rebasing several bookmarks
+# Merging and rebasing
 
-Select two or more bookmarks (`v` for a range, `space` for single ones; marking
-order is the merge / stacking order), then:
+Select at least two bookmarks (`v` for a range, `space` for individual marks).
+Marking order determines merge or stacking order. Press `r` for a background
+integration or `i` for an interactive one. The form adds:
 
-- `r`: the form gains **action** (`merge` / `rebase`), **bookmark** (new result bookmark,
-  default `merge/<a>-<b>-…`) and, for rebase, **base** (default
-  `project.default_branch_start`, else main/master/trunk, else `@-`), plus a prompt from a template that follows those fields
-  until you edit it.
-- `i`: the same, then an interactive session on the result to resolve conflicts
-  yourself or with the agent. Pick the `bash` agent for a plain shell.
+- **Action:** merge or rebase.
+- **Bookmark:** new result, default `merge/<a>-<b>-…`.
+- **Base** (rebase only): `project.default_branch_start`, else main/master/trunk,
+  else `@-`. Accepts any jj revset naming one commit.
+- **Prompt:** a template that follows field changes until you edit it.
 
-For unsupervised runs, the `bash` agent fills the prompt with a command that
-prints changes and conflicts and fails if conflicts remain.
+On launch, sbx-tui prepares the result on the host, then starts the agent there
+to resolve conflicts, review the integration and run tests. Input bookmarks stay
+unchanged.
 
-On launch sbx-tui does the mechanical part on your machine, then starts the
-session on the result bookmark; the agent resolves what is left **and reviews the
-integration** (semantic conflicts, tests):
-
-| action | what happens |
+| Action | Preparation |
 |---|---|
-| merge | `jj new A B C` (conflicts are recorded in the commit) + bookmark `result` on it |
-| rebase | each input's own commits `jj duplicate`d onto the previous tip, starting at `base`, + bookmark `result` on the last |
+| Merge | `jj new A B C`, with the result bookmark on the merge commit |
+| Rebase | `jj duplicate` each input's own commits onto the previous tip, starting at the base; bookmark the last tip |
 
-The base is a bookmark name or any jj revset that names a single commit
-(`@-`, `trunk()`, a change id). Inputs are never modified. A "Current state" section (what was merged, which
-files or commits conflict) is appended to the prompt; for `i` it is shown first.
+A current-state report of inputs and conflicts is appended to background prompts
+or shown before interactive sessions. Choose `bash` for a shell; in background
+mode it instead gets a command that prints changes and fails on remaining conflicts.
 
-Templates can be replaced in `[prompts]` (`octopus_merge`, `octopus_rebase`;
-placeholders `{inputs}` (quoted list), `{inputs_plain}` (space-separated, for
-commands like `jj new {inputs_plain}`), `{result}`, `{base}`, `{first}`,
-`{rest}`).
+Override templates with `[prompts].octopus_merge` and `octopus_rebase`:
+
+| Placeholder | Value |
+|---|---|
+| `{inputs}` / `{inputs_plain}` | Quoted / space-separated input list |
+| `{result}` / `{base}` | Result bookmark / base revision |
+| `{first}` / `{rest}` | First input / remaining inputs |

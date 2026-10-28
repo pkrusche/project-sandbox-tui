@@ -1,11 +1,13 @@
 # Configuration
 
-Global: `~/.config/project-sandbox-tui/config.toml`. Per repo:
-`<repo>/.project-sandbox-tui.toml`, deep-merged on top. Unknown keys are errors.
-`sbx-tui --init` writes templates. The TUI itself only reads your TOML;
-`sbx-tui config set/unset` (below) is the one command that changes it.
-`ctrl+r` reloads both files; invalid config leaves the current settings in
-place, and running sessions keep their launch settings.
+Global settings live in `$XDG_CONFIG_HOME/project-sandbox-tui/config.toml`
+(default `~/.config/…`). Trusted `<repo>/.project-sandbox-tui.toml` settings are
+deep-merged on top; unknown keys are errors. `--init` writes templates without
+overwriting existing files.
+
+`ctrl+r` reloads both files, keeping current settings on error. Running sessions
+keep their launch settings. The TUI reads TOML; use an editor or `config set/unset`
+to change it.
 
 ## From the command line
 
@@ -16,34 +18,33 @@ sbx-tui config get defaults.agent
 sbx-tui config set --global defaults.agent codex
 sbx-tui config set --project project.build python-uv
 sbx-tui config set --global network.extra_domains '["pypi.org", "files.pythonhosted.org"]'
-sbx-tui config set --global models.claude '["opus", "sonnet"]'
 sbx-tui config unset --project defaults.effort
 sbx-tui config path --global
 ```
 
-Keys are `section.key` as in the TOML below. Values take the key's type
-(`true`/`false`, numbers, lists as TOML arrays). Edits keep comments and are
-validated together with the other file first; an invalid change is not
-written. Editing a trusted (or new) project config keeps it trusted; editing
-one with unreviewed changes leaves it untrusted.
+Keys use `section.key`; values use the setting's type (booleans, numbers, TOML
+arrays). Edits preserve comments and are validated against the other file before
+writing. A new or trusted project file stays trusted after editing; one with
+unreviewed changes stays untrusted.
 
 ## Trusting the project config
 
-The project config comes with the repository, so whoever wrote it can set
-commands that run on your machine (`sandbox.command`, `ui.*_command`) or loosen
-the sandbox (network, credentials, `extra_args`). sbx-tui therefore only loads
-a copy you have reviewed, kept in the state directory
-(`~/.local/state/project-sandbox-tui/<repo>-<hash>/trusted-project-config.toml`):
+Project config can run host commands (`sandbox.command`, `ui.*_command`) or
+loosen sandbox restrictions (network, credentials, `extra_args`). Only a reviewed
+copy takes effect:
 
 - When the file is new or has changed, sbx-tui shows it as a diff against the
-  trusted copy at start and on `ctrl+r`; `y` trusts exactly what was shown.
+  trusted copy at startup and on `ctrl+r`; `y` trusts exactly what was shown.
 - Until then a never-trusted file is ignored, and a changed one keeps the
   previously trusted version in effect. A file that fails to load is not offered.
 - `sbx-tui --trust-config` does the same review in the terminal;
   `--print-config` and `--cleanup-workspaces` warn about an untrusted file.
 - `sbx-tui --init` trusts the template it writes.
 
-Launch form precedence: last used → project config → global config → built-in.
+## Settings reference
+
+Defaults resolve as project → global → built-in. Remembered launch choices
+override these; models are remembered per agent.
 
 ```toml
 [defaults]
@@ -53,10 +54,10 @@ effort = ""             # "" or low | medium | high | xhigh | max
 timeout = 0             # seconds for unsupervised runs, 0 = none
 
 [network]
-internet_proxy = "http://proxy.example:3128"   # --internet-proxy
+internet_proxy = ""                            # --internet-proxy
 agent_proxy = ""                               # --agent-proxy
 agent_proxy_key_env = ""
-ca_certs = ["/path/to/corp-root.pem"]          # --ca-cert …
+ca_certs = []                                  # --ca-cert …
 extra_domains = []                             # --extra-domain …
 allow_github = false
 no_firewall = false
@@ -72,13 +73,16 @@ api_key_env_file = []
 extra_args = []               # appended verbatim
 
 [project]                     # usually in .project-sandbox-tui.toml
-# exactly one image source:
-base_image = "python:3.12-slim"   # or dockerfile = "Dockerfile" (+ docker_context), or build = "python-uv" | "rust-cargo" | "node-npm"
+# Choose exactly one: base_image, dockerfile or build.
+base_image = "python:3.12-slim"
+# dockerfile = "Dockerfile"
+# docker_context = "."
+# build = "python-uv"          # python-uv | rust-cargo | node-npm
 build_version = ""                # --python / --rust for a generated build
 worktree_dir = ""                 # default: sibling <repo>-workspaces
 keep_workspace = true             # reuse the workspace across runs
-default_branch_start = ""         # start revision for new bookmarks: "" = main/master/trunk, else @-
-main_branch = ""                  # what cleanup treats as merged ("" = main/master/trunk)
+default_branch_start = ""         # new bookmarks: auto main/master/trunk, else @- (or @ with no bookmarks)
+main_branch = ""                  # main for diff, fast-forward and cleanup; auto main/master/trunk
 
 [ui]
 notify_command = ""     # "" = platform default; {title} {message}
@@ -87,28 +91,36 @@ terminal_command = ""   # with terminal = "custom"; {cmd} {branch} {repo}
 editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this terminal
 refresh_seconds = 3
 bell = true
-cheatsheet = true       # key cheat-sheet on the welcome screen (H toggles)
+cheatsheet = true       # H toggles; collapses to one help line in small terminals
 
 [models]                # extra launch-form suggestions, listed first
 claude = ["opus", "sonnet"]
 codex = ["gpt-5.5"]
 
-[prompts]               # merge/rebase templates, see merging.md
+[prompts]               # templates and placeholders: see merging.md
 # octopus_merge = "…"
 # octopus_rebase = "…"
 ```
 
 Command placeholders (`{cmd}`, `{branch}`, `{repo}`, `{title}`, `{message}`,
-`{path}`): a placeholder that is a whole argument is passed as that argument,
-unchanged. Inside a longer argument, such as the script of
-`sh -c "cd {repo} && {cmd}"`, it is shell-quoted, because branch names can
-contain `$`, `;` or backticks. `{cmd}` is already a shell command line, so
-`'wezterm start -- sh -c {cmd}'` works, while `alacritty -e {cmd}` would pass
-it as a single word.
+`{path}`) are substituted per argument. Whole-argument values pass unchanged;
+embedded values are shell-quoted. `{cmd}` is already a command line: use
+`'wezterm start -- sh -c {cmd}'`, which passes it to a shell, rather than
+`alacritty -e {cmd}`, which treats it as one word.
 
 ## State directory
 
-`~/.local/state/project-sandbox-tui/` holds, per repository
-(`<repo>-<hash>/`): `last_used.json`, `prompt_history.json`, `jobs/` (one record
-per job), `jobs.lock` (shared by TUI instances) and `logs/` (agent log,
-transcript, JSON summary and captured output). `models.json` sits at the top.
+`$XDG_STATE_HOME/project-sandbox-tui/` (default `~/.local/state/…`) holds:
+
+| Location | Contents |
+|---|---|
+| `models.json` | Downloaded model catalog |
+| `<repo>-<hash>/last_used.json` | Launch defaults |
+| `<repo>-<hash>/prompt_history.json` | Prompt history |
+| `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
+| `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
+| `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output |
+
+Job records include full argv and prompts. Repository state, jobs and log
+directories use mode `0700`, including directories created by earlier versions,
+to keep them private to your user.

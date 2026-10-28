@@ -99,7 +99,7 @@ class UI:
     editor_command: str = ""  # "" = $EDITOR; tokens may use {path}
     refresh_seconds: float = 3.0
     bell: bool = True
-    cheatsheet: bool = True  # key cheat-sheet under the branch list (toggle with H)
+    cheatsheet: bool = True  # auto-collapses in small terminals; toggle with H
 
     def terminal_mode(self) -> str:
         """The effective ``terminal`` setting (see launchers.py)."""
@@ -564,7 +564,7 @@ runtime = "auto"              # auto | apple-container | docker | podman
 # editor_command = ""         # e.g. 'code {path}'
 refresh_seconds = 3
 bell = true
-cheatsheet = true             # key cheat-sheet under the branch list (H toggles)
+cheatsheet = true             # auto-collapses in small terminals (H toggles)
 
 # [models]                   # extra launch-form suggestions, listed first. Built in:
 #                             # Claude aliases, Codex's own list (~/.codex/models_cache.json)

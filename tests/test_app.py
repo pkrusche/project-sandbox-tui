@@ -22,7 +22,11 @@ from tests.conftest import add_bookmark
 
 
 def run_app(
-    repo: Path, cfg: Config, scenario: Callable[[SandboxTUI, Any], Coroutine[Any, Any, None]]
+    repo: Path,
+    cfg: Config,
+    scenario: Callable[[SandboxTUI, Any], Coroutine[Any, Any, None]],
+    *,
+    size: tuple[int, int] = (120, 30),
 ) -> SandboxTUI:
     cfg.ui.refresh_seconds = 0.2
     cfg.ui.bell = False
@@ -30,7 +34,7 @@ def run_app(
     app = SandboxTUI(repo, detect(repo), cfg)
 
     async def main() -> None:
-        async with app.run_test(size=(120, 30)) as pilot:
+        async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await scenario(app, pilot)
 
@@ -642,6 +646,42 @@ def test_cheatsheet_shown_on_start_and_toggles(repo: Path, fake_cfg: Callable[..
         assert app.main.query_one("#cheatsheet").region.height == 0
 
     run_app(repo, cfg, hidden)
+
+
+@pytest.mark.parametrize("size", [(80, 24), (40, 12), (120, 12)])
+def test_small_window_keeps_bookmarks_and_help_visible(
+    repo: Path, fake_cfg: Callable[..., Config], size: tuple[int, int]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        sheet = app.main.query_one("#cheatsheet")
+        footer = app.main.query_one("#footer", Static)
+        assert sheet.region.height == 0
+        assert footer.region.height == 1
+        assert footer.region.bottom <= app.main.size.height
+        assert app.table.region.height >= 4  # header, @, bookmark, scrollbar
+        assert "? full help" in app.export_screenshot().replace("&#160;", " ")
+        assert "main" in app.export_screenshot()
+
+        await pilot.press("slash", "m")
+        assert app.main.query_one("#filter").region.height == 1
+        assert app.table.region.height >= 4
+        assert "main" in app.export_screenshot()
+        await pilot.press("escape", "question_mark")
+        assert isinstance(app.screen, HelpScreen)
+        await pilot.press("escape")
+        assert app.is_running
+
+        await pilot.resize_terminal(120, 40)
+        await pilot.pause()
+        assert sheet.region.height > 1  # expands again without changing the preference
+        assert footer.region.height == 0
+        await pilot.press("H")
+        await pilot.resize_terminal(*size)
+        await pilot.resize_terminal(120, 40)
+        assert sheet.region.height == 0  # an explicit hide survives resizing
+        assert footer.region.height == 1
+
+    run_app(repo, fake_cfg(), scenario, size=size)
 
 
 def test_enter_that_launches_interactive_session_does_not_leak(
