@@ -25,6 +25,115 @@ def test_detect_from_subdirectory(repo: Path) -> None:
     assert vcs.detect(sub).root == repo.resolve()
 
 
+def test_main_comparisons_and_refresh(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    backend = vcs.detect(repo)
+    jj(repo, "bookmark", "create", "same", "-r", "main")
+
+    def comparisons() -> dict[str, vcs.MainComparison | None]:
+        return {b.name: b.comparison for b in backend.list_branches(compare_to_main="")}
+
+    assert comparisons() == {
+        "@": vcs.MainComparison(1, 0, 0),
+        "main": vcs.MainComparison(0, 0, 0),
+        "same": vcs.MainComparison(0, 0, 0),
+        "feature/x": vcs.MainComparison(1, 0, 1),
+    }
+    original = backend._jj
+    calls: list[tuple[str, ...]] = []
+
+    def record(*args: str) -> str:
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(backend, "_jj", record)
+    comparisons()
+    assert not any(args[0] == "diff" or "--count" in args for args in calls)
+
+    add_bookmark(repo, "next", "main-only.txt", "main only\n")
+    jj(repo, "bookmark", "move", "main", "--to", "next")
+    result = comparisons()
+    assert result["same"] == vcs.MainComparison(0, 1, 1)
+    assert result["feature/x"] == vcs.MainComparison(1, 1, 2)
+    assert result["main"] == result["next"] == vcs.MainComparison(0, 0, 0)
+
+    # Rewriting a tip keeps its change ID but must invalidate the comparison.
+    jj(repo, "new", "feature/x")
+    (repo / "b.txt").unlink()
+    jj(repo, "squash", "--quiet")
+    assert comparisons()["feature/x"] == vcs.MainComparison(1, 1, 1)
+
+
+@pytest.mark.parametrize("main", ["main", "master", "trunk", "a+b", "fix-"])
+def test_main_comparison_baseline(repo: Path, main: str) -> None:
+    from tests.conftest import jj
+
+    if main != "main":
+        jj(repo, "bookmark", "rename", "main", vcs.revset_symbol(main))
+    backend = vcs.detect(repo)
+    configured = main if main in {"a+b", "fix-"} else ""
+    branches = {b.name: b for b in backend.list_branches(compare_to_main=configured)}
+    assert branches["feature/x"].comparison == vcs.MainComparison(1, 0, 1)
+    assert all(b.comparison is None for b in backend.list_branches(compare_to_main="missing"))
+
+
+def test_main_comparison_merge_and_equal_trees(repo: Path) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    add_bookmark(repo, "side", "line\nbreak.txt", "side\n")
+    jj(repo, "new", "feature/x", "side")
+    jj(repo, "bookmark", "create", "merged", "-r", "@")
+    backend = vcs.detect(repo)
+    branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
+    assert branches["merged"].comparison == vcs.MainComparison(3, 0, 2)
+    jj(repo, "new", "main")
+    jj(repo, "bookmark", "create", "empty", "-r", "@")
+    branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
+    assert branches["empty"].comparison == vcs.MainComparison(1, 0, 0)
+
+
+def test_main_comparison_error_retries(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = vcs.detect(repo)
+    original = backend._jj
+
+    def fail_diff(*args: str) -> str:
+        if args[0] == "diff":
+            raise vcs.VcsError("comparison unavailable")
+        return original(*args)
+
+    monkeypatch.setattr(backend, "_jj", fail_diff)
+    branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
+    assert branches["main"].comparison == vcs.MainComparison(0, 0, 0)
+    assert branches["feature/x"].comparison is None
+    monkeypatch.setattr(backend, "_jj", original)
+    branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
+    assert branches["feature/x"].comparison == vcs.MainComparison(1, 0, 1)
+
+
+def test_working_copy_comparison_snapshots_edits_and_bookmarks(repo: Path) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+
+    def comparisons() -> dict[str, vcs.MainComparison | None]:
+        return {b.name: b.comparison for b in backend.list_branches(compare_to_main="")}
+
+    assert comparisons()["@"] == vcs.MainComparison(1, 0, 0)
+    jj(repo, "bookmark", "create", "working", "-r", "@")
+    (repo / "uncommitted.txt").write_text("new file\n")
+    result = comparisons()
+    assert result["@"] == result["working"] == vcs.MainComparison(1, 0, 1)
+    (repo / "uncommitted.txt").unlink()
+    assert comparisons()["@"] == vcs.MainComparison(1, 0, 0)
+    jj(repo, "new", "feature/x")
+    assert comparisons()["@"] == vcs.MainComparison(2, 0, 1)
+    jj(repo, "bookmark", "move", "main", "--to", "@")
+    assert comparisons()["@"] == vcs.MainComparison(0, 0, 0)
+    jj(repo, "bookmark", "delete", "main")
+    assert comparisons()["@"] is None
+
+
 def test_not_a_repo(tmp_path: Path) -> None:
     with pytest.raises(vcs.VcsError, match="not inside a jj repository"):
         vcs.detect(tmp_path / "nowhere")
@@ -373,6 +482,10 @@ def test_fast_forward_refuses_conflicted_bookmarks(repo: Path, name: str) -> Non
     jj(repo, "--at-op", operation, "bookmark", "move", f"exact:{name}", "--to", "right")
     backend = vcs.detect(repo)
     before = backend._jj("bookmark", "list")  # integrate the concurrent operations
+    branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
+    assert branches[name].comparison is None
+    if name == "main":
+        assert all(b.comparison is None for b in branches.values())
     with pytest.raises(vcs.VcsError, match="unambiguous target"):
         backend.fast_forward("main", "feature/x")
     assert backend._jj("bookmark", "list") == before

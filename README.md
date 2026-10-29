@@ -12,12 +12,12 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 ```text
  sbx-tui   ~/workspace/myproject   4 bookmarks · 1 running
-   bookmark          head      subject                       status       agent              when
-   @ working copy ●  qzmvtlno  (no description set)
-   main ●            kxyrwpsn  Initial import
- ▶ feature/parser    sutnpmvo  Add streaming parser          running      claude/opus/high   12m
- ✓ fix/flaky-tests   rlvkpnrz  Stabilise integration tests   completed    codex/gpt-5.4      2m ago
- ✗ spike/tui         zsuskuln  Try a ranger-style layout     failed (1)   claude/sonnet      1h ago
+   bookmark          vs main    head      subject                       status       agent              when
+   @ working copy ●  ↑1         qzmvtlno  (no description set)
+   main ●            =          kxyrwpsn  Initial import
+ ▶ feature/parser    ↑3 Δ5      sutnpmvo  Add streaming parser          running      claude/opus/high   12m
+ ✓ fix/flaky-tests   ↑1 Δ2      rlvkpnrz  Stabilise integration tests   completed    codex/gpt-5.4      2m ago
+ ✗ spike/tui         ↑2 ↓1 Δ4   zsuskuln  Try a ranger-style layout     failed (1)   claude/sonnet      1h ago
 ```
 
 ## Requirements

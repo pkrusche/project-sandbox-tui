@@ -31,6 +31,16 @@ See [configuration](configuration.md), [models](models.md) and
 `H` toggles the cheat-sheet, which collapses to a one-line help hint when the
 terminal is too small to leave room for the list.
 
+The `vs main` column compares each bookmark with `project.main_branch`, or the
+first existing bookmark named main/master/trunk. Its heading names that baseline.
+`↑N` counts commits only in the bookmark, `↓N` counts commits only in main, and
+`ΔN` counts files differing between their tips (the same comparison as `d`).
+Zero counts are omitted; `=` means the tips match. Both arrows appear when
+histories have diverged. `?` means the comparison is unavailable, including a
+missing main or a conflicted bookmark. The `@ working copy` row uses the same
+comparison, including uncommitted file edits captured on refresh. Its current
+commit counts toward `↑N` even when empty.
+
 | Key | Action |
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |

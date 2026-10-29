@@ -47,7 +47,7 @@ see the workspace as busy. See [sessions](sessions.md) for terminal modes and
   notifications arrive on return.
 - External launches and stale records may need [manual recovery](sessions.md#interactive-sessions).
 - PID reuse after a crash can make a record appear running; `C` forgets it.
-- Ahead/behind counts, dirty markers, prompt files, remote bookmarks and switching
+- Working-copy dirty markers, prompt files, remote bookmarks and switching
   repositories are not implemented.
 
 For tooling and CI, see [development](development.md).

@@ -29,6 +29,9 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 class Tui:
     def __init__(self, repo: Path, env: dict[str, str]) -> None:
+        # xdist exports the runner's COLUMNS/LINES. Let the TUI use this PTY's
+        # dimensions instead, or its small-window layout hides the startup marker.
+        env = {key: value for key, value in env.items() if key not in ("COLUMNS", "LINES")}
         self.pid, self.fd = pty.fork()
         if self.pid == 0:  # child: run the real TUI on the pty
             os.chdir(repo)
@@ -76,7 +79,9 @@ def start_tui(repo: Path, command: str, **env_extra: str) -> Tui:
     env = {**os.environ, "TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra}
     tui = Tui(repo, env)
     try:
-        assert tui.wait_for(b"unsupervised", 20), "TUI did not start"
+        assert tui.wait_for(b"unsupervised", 20), (
+            f"TUI did not show its startup marker:\n{tui.buf.decode(errors='replace')}"
+        )
         tui.send(b"?")
         assert tui.wait_for(b"this help"), "TUI does not take keys before the session"
         tui.send(b"x")
@@ -112,6 +117,14 @@ def test_tui_takes_keys_after_interactive_session(repo: Path, mode: str, exit_co
             # the prompt must work even if the agent left the terminal raw
             assert tui.wait_for(b"press Enter", 5)
             tui.send(b"\r")
+        assert_responsive(tui)
+    finally:
+        tui.close()
+
+
+def test_tui_uses_pty_size_over_inherited_dimensions(repo: Path) -> None:
+    tui = start_tui(repo, "true", COLUMNS="40", LINES="10")
+    try:
         assert_responsive(tui)
     finally:
         tui.close()

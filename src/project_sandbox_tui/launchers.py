@@ -3,16 +3,14 @@
 ``ui.terminal`` picks the mode:
 
 - ``inline``  — suspend the TUI, run the agent in this terminal, return after.
-- ``tmux``    — new tmux window when sbx-tui runs inside tmux, otherwise a
-  detached tmux session named ``sbx-<repo>-<branch>`` (``tmux attach -t …``).
-- ``zellij``  — new Zellij pane (closes when the agent exits); sbx-tui must run
-  inside a Zellij session.
-- ``screen``  — new screen window when inside screen, otherwise a detached
-  screen session (``screen -r …``).
+- ``tmux``    — new tmux window when sbx-tui runs inside tmux.
+- ``zellij``  — new Zellij pane (closes when the agent exits) when inside Zellij.
+- ``screen``  — new screen window when inside screen.
+  All three fall back to inline when outside the selected multiplexer.
 - ``custom``  — ``ui.terminal_command`` with ``{cmd}``, ``{branch}``, ``{repo}``
   (see :func:`fill_command` for quoting).
 
-Everything but ``inline`` returns to the branch list immediately; the session's
+External launches return to the branch list immediately; the session's
 liveness then comes from project-sandbox's session record (see jobs.py).
 """
 
@@ -71,10 +69,12 @@ def fill_command(
     return [fill(t) for t in shlex.split(template)]
 
 
-def session_name(repo: Path, branch: str) -> str:
-    """A multiplexer-safe session name, unique per repo and branch."""
-    raw = f"sbx-{repo.name}-{branch}"
-    return re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-")
+def effective_mode(mode: str, env: Mapping[str, str] | None = None) -> str:
+    """Fall back to inline unless running inside the selected multiplexer."""
+    env = os.environ if env is None else env
+    if mode in MULTIPLEXERS and not env.get(INSIDE_ENV[mode]):
+        return "inline"
+    return mode
 
 
 def shell_script(cmd: list[str], cwd: str | None = None) -> str:
@@ -100,7 +100,7 @@ def describe(mode: str) -> str:
         "zellij": "opens in a Zellij pane",
         "screen": "opens in screen",
         "custom": "opens via ui.terminal_command",
-    }.get(mode, "")
+    }.get(effective_mode(mode), "")
 
 
 def external_launch(
@@ -126,25 +126,15 @@ def external_launch(
 
     if mode not in MULTIPLEXERS:
         raise LaunchError(f"unknown ui.terminal {mode!r}")
+    if effective_mode(mode, env) == "inline":
+        raise LaunchError(f"sbx-tui is not running inside {mode}; launch inline instead")
     if which(mode) is None:
         raise LaunchError(f"ui.terminal = {mode!r} but {mode} is not on PATH")
-    inside = bool(env.get(INSIDE_ENV[mode]))
-    name = session_name(repo, branch)
-
     if mode == "tmux":
-        if inside:
-            argv = ["tmux", "new-window", "-n", branch, "-c", repo_s, shell_cmd]
-            return ExternalLaunch(argv, f"opened in tmux window {branch}", detached=False)
-        argv = ["tmux", "new-session", "-d", "-s", name, "-c", repo_s, shell_cmd]
-        message = f"started in tmux session {name} — attach with: tmux attach -t {name}"
-        return ExternalLaunch(argv, message, detached=False)
+        argv = ["tmux", "new-window", "-n", branch, "-c", repo_s, shell_cmd]
+        return ExternalLaunch(argv, f"opened in tmux window {branch}", detached=False)
 
     if mode == "zellij":
-        if not inside:
-            raise LaunchError(
-                'ui.terminal = "zellij" opens a pane in the current Zellij session; '
-                "start sbx-tui inside Zellij"
-            )
         argv = [
             "zellij",
             "run",
@@ -162,12 +152,8 @@ def external_launch(
 
     # screen: a window does not take a working directory, so cd first.
     script = shell_script(cmd, cwd=repo_s)
-    if inside:
-        argv = ["screen", "-t", branch, "sh", "-c", script]
-        return ExternalLaunch(argv, f"opened in screen window {branch}", detached=False)
-    argv = ["screen", "-dmS", name, "sh", "-c", script]
-    message = f"started in screen session {name} — attach with: screen -r {name}"
-    return ExternalLaunch(argv, message, detached=False)
+    argv = ["screen", "-t", branch, "sh", "-c", script]
+    return ExternalLaunch(argv, f"opened in screen window {branch}", detached=False)
 
 
 def start(launch: ExternalLaunch, cwd: Path, timeout: float = 15.0) -> None:

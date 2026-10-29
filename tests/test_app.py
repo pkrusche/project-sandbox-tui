@@ -55,6 +55,78 @@ def row_texts(app: SandboxTUI) -> list[list[str]]:
     return [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
 
 
+def test_refresh_preserves_horizontal_scroll(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    detect(repo).create_branch("long/" + "bookmark" * 15, "main")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        await pilot.press("G")
+        selected = app.selected_branch_name()
+        table = app.table
+        assert table.max_scroll_x > 40
+        for offset in (table.max_scroll_x, 20):
+            table.scroll_to(x=offset, animate=False)
+            await pilot.pause()
+            await app.refresh_data()
+            await pilot.pause()
+            assert table.scroll_x == table.scroll_target_x == offset
+            assert app.selected_branch_name() == selected
+
+        app._refresh_timer.resume()
+        await pilot.pause(0.6)  # periodic refresh uses the same restoration
+        assert table.scroll_x == table.scroll_target_x == 20
+        app._refresh_timer.pause()
+
+        offset = table.max_scroll_x
+        table.scroll_to(x=offset, animate=False)
+        app.filter_text = "main"
+        app._render_table()
+        await pilot.pause()
+        assert table.max_scroll_x < offset
+        assert table.scroll_x == table.scroll_target_x == table.max_scroll_x
+
+    run_app(repo, fake_cfg(), scenario, size=(70, 25))
+
+
+@pytest.mark.parametrize("main", ["main", "release"])
+def test_bookmark_comparison_markers(
+    repo: Path, fake_cfg: Callable[..., Config], main: str
+) -> None:
+    from textual.widgets.data_table import ColumnKey
+
+    from tests.conftest import jj
+
+    if main != "main":
+        jj(repo, "bookmark", "rename", "main", main)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        def marker(name: str) -> str:
+            return str(app.table.get_cell(name, "vs main"))
+
+        assert str(app.table.columns[ColumnKey("vs main")].label) == f"vs {main}"
+        assert app.table.columns[ColumnKey("vs main")].content_width >= len(f"vs {main}")
+        assert marker("@") == "↑1"
+        (repo / "working.txt").write_text("work in progress\n")
+        await app.refresh_data()
+        assert marker("@") == "↑1 Δ1"
+        assert marker(main) == "="
+        assert marker("feature/x") == "↑1 Δ1"
+        jj(repo, "bookmark", "create", "old", "-r", main)
+        jj(repo, "bookmark", "move", main, "--to", "feature/x")
+        await app.refresh_data()
+        assert marker("old") == "↓1 Δ1"
+        assert marker("feature/x") == "="
+        assert marker("@") == "↑1 ↓1 Δ2"
+        app.filter_text = "old"
+        app._render_table()
+        assert marker("old") == "↓1 Δ1"  # baseline survives filtering
+        app.cfg.project.main_branch = "missing"
+        await app.refresh_data()
+        assert marker("old") == "?"
+
+    run_app(repo, fake_cfg(main_branch=main), scenario)
+
+
 def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         assert [r[1] for r in row_texts(app)] == ["@ working copy ●", "main ●", "feature/x"]
@@ -328,7 +400,7 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].status == "completed")
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
         row = next(r for r in row_texts(app) if r[1] == "feature/x")
-        assert row[0] == "✓" and row[4] == "completed" and row[5] == "codex/gpt-x"
+        assert row[0] == "✓" and row[5] == "completed" and row[6] == "codex/gpt-x"
 
         await pilot.press("l")
         assert isinstance(app.screen, LogScreen)
@@ -684,8 +756,9 @@ def test_small_window_keeps_bookmarks_and_help_visible(
     run_app(repo, fake_cfg(), scenario, size=size)
 
 
+@pytest.mark.parametrize("terminal", ["inline", "tmux", "zellij", "screen"])
 def test_enter_that_launches_interactive_session_does_not_leak(
-    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch, terminal: str
 ) -> None:
     """Regression: the Enter that submitted the launch form used to bubble up to the
     App after the form was popped, where it matched the branch list's Enter binding
@@ -696,15 +769,21 @@ def test_enter_that_launches_interactive_session_does_not_leak(
 
     cfg = fake_cfg()
     cfg.sandbox.command = "true"  # a real child that exits 0 straight away
+    cfg.ui.terminal = terminal
+    for variable in ("TMUX", "ZELLIJ", "STY"):
+        monkeypatch.delenv(variable, raising=False)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         # headless drivers cannot suspend; the session itself is what we stub out
         monkeypatch.setattr(app, "suspend", contextlib.nullcontext)
         await pilot.press("i")
         assert isinstance(app.screen, LaunchScreen)
+        assert "opens in" not in str(app.screen.query_one(".title").render())
         await pilot.press("enter")  # launch from the agent field
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
         await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
+        assert not app.jobs.jobs["@"].external
+        assert app.jobs.jobs["@"].exit_code == 0
         await pilot.pause(0.3)
         assert app.screen is app.main, f"stray screen after session: {app.screen!r}"
         assert not isinstance(app.screen, LogScreen)
@@ -715,21 +794,20 @@ def test_enter_that_launches_interactive_session_does_not_leak(
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
-def test_interactive_session_in_detached_tmux_session(
+def test_interactive_session_in_tmux_window(
     repo: Path, fake_cfg: Callable[..., Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import subprocess
     import sys
 
-    from project_sandbox_tui import launchers
-
     monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))  # private tmux server
-    monkeypatch.delenv("TMUX", raising=False)  # as if sbx-tui runs outside tmux
+    monkeypatch.delenv("TMUX", raising=False)
+    subprocess.run(["tmux", "new-session", "-d", "-s", "host"], check=True)
     agent = Path(__file__).with_name("fake_interactive_agent.py")
     cfg = fake_cfg()
     cfg.sandbox.command = f"{sys.executable} {agent}"
     cfg.ui.terminal = "tmux"
-    name = launchers.session_name(repo, "main")
+    name = "host:main"
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j", "i")  # main
@@ -740,16 +818,28 @@ def test_interactive_session_in_detached_tmux_session(
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
         job = app.jobs.jobs["main"]
         assert job.external and job.running
-        has = ["tmux", "has-session", "-t", name]
-        await wait_until(pilot, lambda: subprocess.run(has).returncode == 0)
+
+        def window_exists() -> bool:
+            return (
+                "main"
+                in subprocess.check_output(
+                    ["tmux", "list-windows", "-t", "host", "-F", "#{window_name}"], text=True
+                ).splitlines()
+            )
+
+        await wait_until(pilot, window_exists)
         assert app.screen is app.main  # the TUI is not suspended
         # a second interactive launch on the branch is refused while it runs
         await pilot.press("i")
         assert not isinstance(app.screen, LaunchScreen)
         subprocess.run(["tmux", "send-keys", "-t", name, "q"], check=True)  # quit the agent
-        await wait_until(pilot, lambda: subprocess.run(has, capture_output=True).returncode != 0)
+        await wait_until(pilot, lambda: not window_exists())
 
     try:
+        address = subprocess.check_output(
+            ["tmux", "display-message", "-p", "#{socket_path},#{pid},0"], text=True
+        ).strip()
+        monkeypatch.setenv("TMUX", address)
         run_app(repo, cfg, scenario)
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True)

@@ -19,9 +19,9 @@ commit work; further presses escalate to SIGTERM, then SIGKILL plus runtime
 | Mode | Inside that multiplexer | Outside it |
 |---|---|---|
 | `inline` (default) | TUI suspends until the agent exits | Same |
-| `tmux` | New window named after the bookmark | Detached `sbx-<repo>-<branch>` session; `tmux attach -t …` |
-| `zellij` | New pane, closed on exit | Unsupported |
-| `screen` | New window | Detached `sbx-<repo>-<branch>` session; `screen -r …` |
+| `tmux` | New window named after the bookmark | TUI suspends until the agent exits |
+| `zellij` | New pane, closed on exit | TUI suspends until the agent exits |
+| `screen` | New window | TUI suspends until the agent exits |
 | `custom` | `ui.terminal_command`, e.g. `'wezterm start -- sh -c {cmd}'` | Same |
 
 Multiplexers are detected through `$TMUX`, `$ZELLIJ` and `$STY`. External modes

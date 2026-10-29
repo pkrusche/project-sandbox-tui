@@ -7,12 +7,19 @@ import json
 import re
 import subprocess
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
 class VcsError(RuntimeError):
     """A VCS command failed or the directory is not a repository."""
+
+
+@dataclass(frozen=True)
+class MainComparison:
+    ahead: int
+    behind: int
+    changed_files: int
 
 
 @dataclass(frozen=True)
@@ -25,6 +32,7 @@ class Branch:
     # The pseudo-branch for the working copy (``@``), always listed first;
     # sessions on it run in the repository's own workspace.
     working_copy: bool = False
+    comparison: MainComparison | None = None
 
     @property
     def label(self) -> str:
@@ -94,8 +102,9 @@ _JJ_TEMPLATE = (
     'normal_target.description().first_line() ++ "\\x00" ++ '
     'normal_target.committer().timestamp().format("%s") ++ "\\x00" ++ '
     # "current" in jj: the bookmark sits on the working-copy commit or its parent
-    'if(normal_target.contained_in("@ | @-"), "1", "0"), '
-    '"\\x00(conflicted)\\x000\\x000") ++ "\\n")'
+    'if(normal_target.contained_in("@ | @-"), "1", "0") ++ "\\x00" ++ '
+    "normal_target.commit_id(), "
+    '"\\x00(conflicted)\\x000\\x000\\x00") ++ "\\n")'
 )
 
 
@@ -112,13 +121,14 @@ def revset_symbol(name: str) -> str:
 
 _JJ_WORKING_COPY_TEMPLATE = (
     'change_id.shortest(8) ++ "\\x00" ++ description.first_line() ++ "\\x00" ++ '
-    'committer.timestamp().format("%s") ++ "\\n"'
+    'committer.timestamp().format("%s") ++ "\\x00" ++ commit_id ++ "\\n"'
 )
 
 
 class JjBackend:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self._comparisons: dict[tuple[str, str], MainComparison] = {}
 
     def _jj(self, *args: str) -> str:
         return _run(
@@ -126,14 +136,19 @@ class JjBackend:
             self.root,
         )
 
-    def list_branches(self) -> list[Branch]:
+    def list_branches(self, *, compare_to_main: str | None = None) -> list[Branch]:
+        """List local bookmarks, optionally comparing to configured/auto-detected main."""
+        # Snapshot before reading bookmarks: edits to @ may also move a bookmark.
+        working_copy, working_commit = self._working_copy(snapshot=compare_to_main is not None)
         out = self._jj("bookmark", "list", "-T", _JJ_TEMPLATE)
-        branches: list[Branch] = []
+        branches: list[Branch] = [working_copy]
+        targets: dict[str, str] = {}
         for line in out.splitlines():
             parts = line.split("\0")
-            if len(parts) != 5:
+            if len(parts) != 6:
                 continue
-            name, head, subject, ts, current = parts
+            name, head, subject, ts, current, commit = parts
+            targets[name] = commit
             branches.append(
                 Branch(
                     name=name,
@@ -143,19 +158,57 @@ class JjBackend:
                     is_current=current == "1",
                 )
             )
-        return [self._working_copy(), *branches]
+        if compare_to_main is not None:
+            main = main_branch(targets, compare_to_main)
+            base = targets.get(main, "") if main else ""
+            targets[WORKING_COPY] = working_commit
+            comparisons: dict[tuple[str, str], MainComparison] = {}
+            for index, branch in enumerate(branches):
+                target = targets[branch.name]
+                if not base or not target:  # missing main or a conflicted bookmark
+                    continue
+                key = (base, target)
+                comparison = comparisons.get(key) or self._comparisons.get(key)
+                if comparison is None:
+                    try:
+                        comparison = self._compare_commits(base, target)
+                    except VcsError:
+                        # Keep the list usable; retry unavailable comparisons next refresh.
+                        continue
+                comparisons[key] = comparison
+                branches[index] = replace(branch, comparison=comparison)
+            # Full commit IDs invalidate rewritten tips; discard obsolete pairs.
+            self._comparisons = comparisons
+        return branches
 
-    def _working_copy(self) -> Branch:
+    def _compare_commits(self, base: str, target: str) -> MainComparison:
+        if base == target:
+            return MainComparison(0, 0, 0)
+        ahead = int(self._jj("log", "--count", "-r", f"{base}..{target}"))
+        behind = int(self._jj("log", "--count", "-r", f"{target}..{base}"))
+        # One byte per file, independent of filenames and the user's diff formatter.
+        files = self._jj("diff", "--from", base, "--to", target, "-T", '"1"')
+        return MainComparison(ahead, behind, len(files))
+
+    def _working_copy(self, *, snapshot: bool = False) -> tuple[Branch, str]:
         """The working copy as a row: work directly on ``@`` without a bookmark."""
-        out = self._jj("log", "--no-graph", "-r", "@", "-T", _JJ_WORKING_COPY_TEMPLATE)
-        head, subject, ts = ([*out.rstrip("\n").split("\0"), "", ""])[:3]
-        return Branch(
-            name=WORKING_COPY,
-            head=head,
-            subject=subject or "(no description set)",
-            timestamp=int(ts) if ts.isdigit() else 0,
-            is_current=True,
-            working_copy=True,
+        args = ("log", "--no-graph", "-r", "@", "-T", _JJ_WORKING_COPY_TEMPLATE)
+        out = (
+            _run(["jj", "--no-pager", "--color=never", *args], self.root)
+            if snapshot
+            else self._jj(*args)
+        )
+        head, subject, ts, commit = out.rstrip("\n").split("\0")
+        return (
+            Branch(
+                name=WORKING_COPY,
+                head=head,
+                subject=subject or "(no description set)",
+                timestamp=int(ts) if ts.isdigit() else 0,
+                is_current=True,
+                working_copy=True,
+            ),
+            commit,
         )
 
     def create_branch(self, name: str, start: str) -> None:

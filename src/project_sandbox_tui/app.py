@@ -154,12 +154,31 @@ class Row:
         return (
             Text(glyph, style=colour),
             self.name_cell(selected),
+            self.comparison_cell(),
             Text(b.head, style="dim"),
             Text(b.subject, overflow="ellipsis", no_wrap=True),
             Text(status, style=colour),
             Text(agent, style="dim"),
             Text(when, style="dim"),
         )
+
+    def comparison_cell(self) -> Text:
+        comparison = self.branch.comparison
+        if comparison is None:
+            return Text("?", style="dim")
+        if not (comparison.ahead or comparison.behind or comparison.changed_files):
+            return Text("=", style="dim")
+        marker = Text()
+        for symbol, count, style in (
+            ("↑", comparison.ahead, "green"),
+            ("↓", comparison.behind, "yellow"),
+            ("Δ", comparison.changed_files, "cyan"),
+        ):
+            if count:
+                if marker:
+                    marker.append(" ")
+                marker.append(f"{symbol}{count}", style=style)
+        return marker
 
 
 MAIN_BINDINGS: list[BindingType] = [
@@ -400,6 +419,7 @@ class SandboxTUI(App[None]):
         for label, width in (
             ("", 1),
             ("bookmark", None),
+            ("vs main", None),
             ("head", 8),
             ("subject", 32),  # Ellipsize long messages to leave room for session status.
             ("status", None),
@@ -439,7 +459,9 @@ class SandboxTUI(App[None]):
 
     async def _refresh_once(self) -> None:
         try:
-            branches = await asyncio.to_thread(self.backend.list_branches)
+            branches = await asyncio.to_thread(
+                self.backend.list_branches, compare_to_main=self.cfg.project.main_branch
+            )
         except VcsError as exc:
             self.notify(str(exc), severity="error", timeout=8)
             branches = self.branches
@@ -482,8 +504,15 @@ class SandboxTUI(App[None]):
 
     def _render_table(self) -> None:
         table = self.table
+        scroll_x = table.scroll_target_x
         selected = self._pending_select or self.selected_branch_name()
         rows = self.visible_rows()
+        baseline = main_branch(
+            {b.name for b in self.branches if not b.working_copy}, self.cfg.project.main_branch
+        )
+        comparison_col = table.columns[ColumnKey("vs main")]
+        comparison_col.label = Text(f"vs {baseline or self.cfg.project.main_branch or 'main'}")
+        comparison_col.content_width = cell_len(comparison_col.label.plain)
         now = time.time()
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
@@ -501,6 +530,10 @@ class SandboxTUI(App[None]):
                 table.move_cursor(row=names.index(selected), animate=False)
                 if selected == self._pending_select:
                     self._pending_select = None
+        # clear() resets scrolling. Restore now so consecutive redraws retain the
+        # offset, then clamp it after layout/cursor scrolling settles.
+        table.scroll_to(x=scroll_x, animate=False)
+        table.call_after_refresh(table.scroll_to, x=scroll_x, animate=False)
         self._render_header(chosen)
 
     def _render_header(self, chosen: set[str]) -> None:
@@ -963,7 +996,7 @@ class SandboxTUI(App[None]):
             if spec.mode == "background":
                 job = self.jobs.start_background(spec, self.sessions)
                 self.notify(f"{spec.branch}: started {spec.label()} (pid {job.pid})")
-            elif self.cfg.ui.terminal_mode() != "inline":
+            elif launchers.effective_mode(self.cfg.ui.terminal_mode()) != "inline":
                 self._launch_external(spec)
             else:
                 self._launch_interactive(spec, banner)

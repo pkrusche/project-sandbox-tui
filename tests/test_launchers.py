@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 import shutil
 import subprocess
@@ -28,40 +27,53 @@ def launch(
     return external_launch(mode, CMD, "feat/x", REPO, template, env=env or {}, which=found)
 
 
-def test_session_name_is_multiplexer_safe() -> None:
-    assert launchers.session_name(Path("/a/my.repo"), "feat/x:1") == "sbx-my-repo-feat-x-1"
+@pytest.mark.parametrize("mode, variable", launchers.INSIDE_ENV.items())
+@pytest.mark.parametrize("value", [None, "", "session"])
+def test_effective_mode_requires_selected_manager(
+    mode: str, variable: str, value: str | None
+) -> None:
+    env = dict.fromkeys(launchers.INSIDE_ENV.values(), "other-manager")
+    if value is None:
+        del env[variable]
+    else:
+        env[variable] = value
+    assert launchers.effective_mode(mode, env) == (mode if value else "inline")
 
 
-def test_tmux_inside_opens_window_outside_detached_session() -> None:
+@pytest.mark.parametrize("mode", ["inline", "custom"])
+def test_effective_mode_preserves_other_modes(mode: str) -> None:
+    assert launchers.effective_mode(mode, {}) == mode
+
+
+@pytest.mark.parametrize("mode, variable", launchers.INSIDE_ENV.items())
+def test_outside_manager_cannot_launch_externally(
+    mode: str, variable: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(variable, raising=False)
+    assert launchers.describe(mode) == ""
+    with pytest.raises(LaunchError, match="launch inline instead"):
+        launch(mode)
+
+
+def test_tmux_inside_opens_window() -> None:
     inside = launch("tmux", {"TMUX": "/tmp/tmux-1/default,1,0"})
     assert inside.argv == ["tmux", "new-window", "-n", "feat/x", "-c", str(REPO), SHELL_CMD]
-    outside = launch("tmux")
-    assert outside.argv == [
-        "tmux", "new-session", "-d", "-s", "sbx-my-repo-feat-x", "-c", str(REPO), SHELL_CMD,
-    ]  # fmt: skip
-    assert "tmux attach -t sbx-my-repo-feat-x" in outside.message
-    assert not inside.detached and not outside.detached  # exit code is checked
+    assert not inside.detached  # exit code is checked
 
 
-def test_zellij_pane_inside_only() -> None:
+def test_zellij_inside_opens_pane() -> None:
     inside = launch("zellij", {"ZELLIJ": "0"})
     assert inside.argv == [
         "zellij", "run", "--name", "feat/x", "--close-on-exit", "--cwd", str(REPO),
         "--", "sh", "-c", SHELL_CMD,
     ]  # fmt: skip
-    # outside, `zellij run` prints "There is no active session!" and still exits 0
-    with pytest.raises(LaunchError, match="inside Zellij"):
-        launch("zellij")
 
 
-def test_screen_inside_window_outside_detached_session() -> None:
+def test_screen_inside_opens_window() -> None:
     script = launchers.shell_script(CMD, cwd=str(REPO))
     assert launch("screen", {"STY": "123.pts-0.host"}).argv == [
         "screen", "-t", "feat/x", "sh", "-c", script,
     ]  # fmt: skip
-    outside = launch("screen")
-    assert outside.argv == ["screen", "-dmS", "sbx-my-repo-feat-x", "sh", "-c", script]
-    assert "screen -r sbx-my-repo-feat-x" in outside.message
 
 
 def test_custom_template_substitutes_per_token() -> None:
@@ -111,7 +123,7 @@ def test_fill_command_does_not_expand_values_again() -> None:
 
 def test_missing_multiplexer_is_reported() -> None:
     with pytest.raises(LaunchError, match="tmux is not on PATH"):
-        external_launch("tmux", CMD, "b", REPO, env={}, which=lambda _n: None)
+        external_launch("tmux", CMD, "b", REPO, env={"TMUX": "session"}, which=lambda _n: None)
 
 
 def test_start_surfaces_multiplexer_errors(tmp_path: Path) -> None:
@@ -124,60 +136,39 @@ def test_start_surfaces_multiplexer_errors(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
-def test_real_tmux_detached_session(tmp_path: Path) -> None:
-    """End to end with a private tmux server: the session runs the command, then ends."""
-    env = {**os.environ, "TMUX_TMPDIR": str(tmp_path)}
-    env.pop("TMUX", None)
-    marker = tmp_path / "ran"
-    cmd = [
-        sys.executable,
-        "-c",
-        f"import pathlib, time; pathlib.Path({str(marker)!r}).touch(); time.sleep(1)",
-    ]
-    old = os.environ.copy()
-    os.environ.clear()
-    os.environ.update(env)  # start() inherits the environment, like the TUI does
+def test_real_tmux_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use a private server to check window execution and failure acknowledgement."""
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
+    monkeypatch.delenv("TMUX", raising=False)
+    subprocess.run(["tmux", "new-session", "-d", "-s", "host"], check=True)
     try:
-        spec = external_launch("tmux", cmd, "feat/x", tmp_path, env=env)
-        launchers.start(spec, cwd=tmp_path)
-        name = launchers.session_name(tmp_path, "feat/x")
-        assert subprocess.run(["tmux", "has-session", "-t", name], env=env).returncode == 0
+        address = subprocess.check_output(
+            ["tmux", "display-message", "-p", "#{socket_path},#{pid},0"], text=True
+        ).strip()
+        monkeypatch.setenv("TMUX", address)
+        marker = tmp_path / "ran"
+        cmd = [sys.executable, "-c", f"import pathlib; pathlib.Path({str(marker)!r}).touch()"]
+        launchers.start(external_launch("tmux", cmd, "success", tmp_path), cwd=tmp_path)
         deadline = time.monotonic() + 10
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert marker.exists()
-        while time.monotonic() < deadline:  # the session closes when the command exits
-            if (
-                subprocess.run(
-                    ["tmux", "has-session", "-t", name], env=env, capture_output=True
-                ).returncode
-                != 0
-            ):
-                break
-            time.sleep(0.1)
-        else:
-            pytest.fail("tmux session did not end with the command")
-        # a failing command keeps its window open until Enter, so errors stay readable
-        failing = external_launch("tmux", ["sh", "-c", "exit 4"], "bad", tmp_path, env=env)
+
+        def windows() -> list[str]:
+            return subprocess.check_output(
+                ["tmux", "list-windows", "-t", "host", "-F", "#{window_name}"], text=True
+            ).splitlines()
+
+        while "success" in windows() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert "success" not in windows()
+        failing = external_launch("tmux", ["sh", "-c", "exit 4"], "bad", tmp_path)
         launchers.start(failing, cwd=tmp_path)
-        bad = launchers.session_name(tmp_path, "bad")
-        time.sleep(0.5)
-        has = ["tmux", "has-session", "-t", bad]
-        assert subprocess.run(has, env=env).returncode == 0
-        subprocess.run(["tmux", "send-keys", "-t", bad, "Enter"], env=env, check=True)
-        for _ in range(50):
-            if subprocess.run(has, env=env, capture_output=True).returncode != 0:
-                break
-            time.sleep(0.1)
-        else:
-            pytest.fail("failed session did not close after Enter")
-        # a second launch while one is running is reported, not silently lost
-        cmd_long = [sys.executable, "-c", "import time; time.sleep(30)"]
-        spec = external_launch("tmux", cmd_long, "feat/x", tmp_path, env=env)
-        launchers.start(spec, cwd=tmp_path)
-        with pytest.raises(LaunchError, match="duplicate session"):
-            launchers.start(spec, cwd=tmp_path)
+        assert "bad" in windows()
+        subprocess.run(["tmux", "send-keys", "-t", "host:bad", "Enter"], check=True)
+        deadline = time.monotonic() + 10
+        while "bad" in windows() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert "bad" not in windows()
     finally:
-        subprocess.run(["tmux", "kill-server"], env=env, capture_output=True)
-        os.environ.clear()
-        os.environ.update(old)
+        subprocess.run(["tmux", "kill-server"], capture_output=True)
