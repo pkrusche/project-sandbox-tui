@@ -96,6 +96,9 @@ def test_cleanup_jj_preserves_files(jj_repo: Path, capsys) -> None:
     path.parent.mkdir()
     run("jj", "workspace", "add", str(path), "--name", "sandbox-main", "-r", "main", cwd=jj_repo)
     (path / "a.txt").write_text("changed\n")
+    [ws] = find_workspaces(detect(jj_repo), Config())
+    assert (ws.name, ws.path, ws.removable) == ("sandbox-main", path, False)
+    assert "uncommitted" in ws.status
     assert main([str(jj_repo), "--cleanup-workspaces"]) == 0
     assert "kept sandbox-main" in capsys.readouterr().out
     assert (path / "a.txt").read_text() == "changed\n"
@@ -110,16 +113,6 @@ def test_cleanup_finds_workspaces_without_branches(jj_repo: Path, capsys) -> Non
     assert main([str(jj_repo), "--cleanup-workspaces"]) == 0
     assert not path.exists()
     assert "scratch" not in run("jj", "workspace", "list", cwd=jj_repo)
-
-
-def test_find_workspaces_reports_status(jj_repo: Path) -> None:
-    path = workspace_path(jj_repo, "main", None)
-    path.parent.mkdir()
-    run("jj", "workspace", "add", str(path), "--name", "main", "-r", "main", cwd=jj_repo)
-    (path / "a.txt").write_text("changed\n")
-    [ws] = find_workspaces(detect(jj_repo), Config())
-    assert (ws.name, ws.path, ws.removable) == ("main", path, False)
-    assert "uncommitted" in ws.status
 
 
 def test_cleanup_never_offers_the_main_jj_workspace(jj_repo: Path, capsys) -> None:
@@ -322,10 +315,12 @@ def test_jj_new_changes_after_merge_are_kept(jj_repo: Path) -> None:
     run("jj", "describe", "-m", "finished work", cwd=path)
     run("jj", "bookmark", "set", "main", "-r", "changed@", cwd=jj_repo)
     run("jj", "new", cwd=path)
+    chosen = _scan(jj_repo)["changed"]
+    assert chosen.removable
     (path / "done.txt").write_text("unsnapshotted changes\n")
-    ws = _scan(jj_repo)["changed"]
-    assert not ws.removable and "uncommitted" in ws.status
-    assert remove_workspaces(detect(jj_repo), Config(), [ws])[0].startswith("skipped")
+    # The user's choice is stale: removal must inspect the new changes itself.
+    result = remove_workspaces(detect(jj_repo), Config(), [chosen])[0]
+    assert result.startswith("skipped") and "uncommitted" in result
     assert (path / "done.txt").read_text() == "unsnapshotted changes\n"
 
 
@@ -363,3 +358,55 @@ def test_jj_cleanup_symlinks(jj_repo: Path, ignored: bool, target_kind: str) -> 
         assert target.read_text() == "keep"
     else:
         assert not target.exists()
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("source", ["job", "session"])
+def test_cleanup_rechecks_running_sessions_after_selection(
+    repo: Path, force: bool, source: str, tmp_path: Path
+) -> None:
+    import json
+    import os
+
+    from project_sandbox_tui.jobs import JobManager
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    path = _add_workspace(repo, "feature/x")
+    if force:
+        (path / "work.txt").write_text("keep")
+    cfg = Config()
+    backend = detect(repo)
+    [chosen] = find_workspaces(backend, cfg)
+    assert chosen.forceable if force else chosen.removable
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    if source == "job":
+        JobManager(repo, cfg).record_external(LaunchSpec("feature/x", "claude"), ["sandbox"])
+    else:
+        (sessions / "active.json").write_text(
+            json.dumps(
+                {
+                    "status": "running",
+                    "pid": os.getpid(),
+                    "workspace_path": str(path),
+                }
+            )
+        )
+    if force:
+        result = force_remove_workspace(backend, cfg, chosen, sessions_dir=sessions)
+    else:
+        [result] = remove_workspaces(backend, cfg, [chosen], sessions_dir=sessions)
+    assert result.startswith("skipped") and "running session" in result
+    assert path.exists()
+    assert "feature/x" in run("jj", "workspace", "list", cwd=repo)
+    assert "feature/x" in run("jj", "bookmark", "list", cwd=repo)
+
+
+def test_cleanup_rechecks_moved_bookmark(repo: Path) -> None:
+    run("jj", "bookmark", "create", "old", "-r", "main", cwd=repo)
+    backend, cfg = detect(repo), Config()
+    [chosen] = find_workspaces(backend, cfg)
+    assert chosen.branch == "old" and chosen.removable
+    run("jj", "bookmark", "move", "old", "--to", "feature/x", cwd=repo)
+    assert remove_workspaces(backend, cfg, [chosen]) == ["skipped bookmark old: no longer found"]
+    assert backend._bookmark_commit("old") == backend._bookmark_commit("feature/x")

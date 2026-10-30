@@ -40,6 +40,13 @@ def test_prompt_template_placeholders() -> None:
         assert "do not push" in rendered.lower()
 
 
+def test_prompt_substitution_preserves_literal_placeholders_in_bookmarks() -> None:
+    plan = OctopusPlan("rebase", ["topic/{result}", "b"], "rebase/{base}", base="main")
+    assert octopus.render_prompt("{inputs}|{result}|{unknown}", plan) == (
+        "`topic/{result}`, `b`|rebase/{base}|{unknown}"
+    )
+
+
 def _build_jj_branches(repo: Path) -> None:
     def jj(*args: str) -> str:
         return run("jj", *args, cwd=repo)
@@ -93,6 +100,34 @@ def test_jj_rebase_duplicates_without_touching_inputs(jj_branches: Path) -> None
     assert [s for s in stack if s] == ["c: shared.txt", "a: shared.txt", "b: b.txt"]
     assert not state.clean and len(state.conflicts) == 1  # c conflicts with a
     assert jj_out(jj_branches, "log", "--no-graph", "-r", "a", "-T", "commit_id") == a_before
+
+
+def test_rebase_shared_ancestry_is_included_once(jj_branches: Path) -> None:
+    run("jj", "new", "a", cwd=jj_branches)
+    (jj_branches / "child.txt").write_text("child\n")
+    run("jj", "commit", "-m", "child of a", cwd=jj_branches)
+    run("jj", "bookmark", "create", "child", "-r", "@-", cwd=jj_branches)
+    inputs = ["main", "a", "child", "b"]  # main contributes no commits, child shares a
+    before = {
+        name: jj_out(jj_branches, "log", "--no-graph", "-r", name, "-T", "commit_id")
+        for name in inputs
+    }
+    state = octopus.prepare(jj_branches, OctopusPlan("rebase", inputs, "stack", base="main"))
+    assert state.clean
+    stack = jj_out(
+        jj_branches,
+        "log",
+        "--no-graph",
+        "-r",
+        "main..stack",
+        "-T",
+        'description.first_line() ++ "\\n"',
+    ).splitlines()
+    assert stack == ["b: b.txt", "child of a", "a: shared.txt"]
+    assert {
+        name: jj_out(jj_branches, "log", "--no-graph", "-r", name, "-T", "commit_id")
+        for name in inputs
+    } == before
 
 
 def test_jj_rebase_unknown_base(jj_branches: Path) -> None:

@@ -450,7 +450,7 @@ class LastUsed:
             out.agent = raw["agent"]
         if raw.get("effort") in (*EFFORTS, ""):
             out.effort = raw["effort"]
-        if isinstance(raw.get("timeout"), int) and raw["timeout"] >= 0:
+        if type(raw.get("timeout")) is int and raw["timeout"] >= 0:
             out.timeout = raw["timeout"]
         if isinstance(raw.get("model_by_agent"), dict):
             out.model_by_agent = {
@@ -460,13 +460,16 @@ class LastUsed:
 
     def save(self, repo: Path) -> None:
         path = repo_state_dir(repo) / "last_used.json"
+        tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         try:
             private_dir(path.parent)
-            tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
             tmp.write_text(json.dumps(dataclasses.asdict(self), indent=2), encoding="utf-8")
             tmp.replace(path)
         except OSError:
             pass  # remembering defaults is a convenience, never fatal
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
 
 
 @dataclass

@@ -43,6 +43,24 @@ def test_instances_merge_instead_of_overwriting(tmp_path: Path) -> None:
     assert PromptHistory(tmp_path / "h.json").entries == ["from a", "from b"]
 
 
+def test_simultaneous_adds_do_not_lose_prompts(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    barrier = Barrier(2)
+    path = tmp_path / "h.json"
+    histories = [PromptHistory(path), PromptHistory(path)]
+
+    def add(index: int) -> None:
+        barrier.wait(timeout=5)
+        histories[index].add(f"prompt {index}")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(add, range(2)))
+    entries = PromptHistory(path).entries
+    assert len(entries) == 2 and set(entries) == {"prompt 0", "prompt 1"}
+
+
 @pytest.mark.parametrize(
     "raw",
     [

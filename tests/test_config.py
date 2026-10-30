@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import stat
 import tomllib
 from pathlib import Path
@@ -63,6 +64,18 @@ def test_project_overrides_global(tmp_path: Path) -> None:
         ("[project]\nbase_image = 'a'\nbuild = 'python-uv'\n", "only one of"),
         ("[project]\nbuild = 'go'\n", "project.build"),
         ("[models]\ngpt = ['x']\n", "unknown agent"),
+        ("ui = []\n", "must be a table"),
+        ("models = []\n", "must be a table"),
+        ("[defaults]\nmodel = 1\n", "must be a string"),
+        ("[defaults]\ntimeout = true\n", "must be an integer"),
+        ("[defaults]\ntimeout = -1\n", "must be >= 0"),
+        ("[sandbox]\ncpus = 1.5\n", "must be an integer"),
+        ("[sandbox]\nruntime = 'unknown'\n", "sandbox.runtime"),
+        ("[ui]\nrefresh_seconds = true\n", "must be a number"),
+        ("[ui]\nrefresh_seconds = 0\n", "must be finite and > 0"),
+        ("[network]\nca_certs = ['valid', 1]\n", "list of strings"),
+        ("[project]\ndocker_context = '.'\n", "needs project.dockerfile"),
+        ("[project]\nbuild = 'node-npm'\nbuild_version = '22'\n", "build_version needs"),
         ("not toml = = \n", "Expected"),
     ],
 )
@@ -192,3 +205,69 @@ def test_changed_project_config_keeps_the_trusted_copy(tmp_path: Path) -> None:
     trust.trust(tmp_path)
     assert c.load(tmp_path).project.base_image == "b"
     assert c.ProjectTrust.check(tmp_path).needs_review
+
+
+def test_explicit_empty_launch_defaults_override_config(tmp_path: Path) -> None:
+    cfg = c.Config(defaults=c.Defaults(model="opus", effort="high", timeout=600))
+    c.remember(tmp_path, "claude", "", "", 0)
+    assert c.resolve_launch_defaults(cfg, c.LastUsed.load(tmp_path)) == c.LaunchDefaults(
+        "claude", "", "", 0
+    )
+
+
+@pytest.mark.parametrize("timeout", [True, -1, "60", None])
+def test_last_used_ignores_invalid_fields_without_losing_valid_ones(
+    tmp_path: Path, timeout: object
+) -> None:
+    write(
+        c.repo_state_dir(tmp_path) / "last_used.json",
+        json.dumps(
+            {
+                "agent": "unknown",
+                "effort": "extreme",
+                "timeout": timeout,
+                "model_by_agent": {"codex": "custom", "claude": 42},
+            }
+        ),
+    )
+    assert c.LastUsed.load(tmp_path) == c.LastUsed(model_by_agent={"codex": "custom"})
+
+
+@pytest.mark.parametrize("raw", ["{", "[]", "null"])
+def test_last_used_corrupt_file_uses_defaults(tmp_path: Path, raw: str) -> None:
+    write(c.repo_state_dir(tmp_path) / "last_used.json", raw)
+    assert c.LastUsed.load(tmp_path) == c.LastUsed()
+
+
+@pytest.mark.parametrize("operation", ["write_text", "replace"])
+def test_failed_last_used_save_preserves_defaults_and_removes_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    c.LastUsed(agent="codex").save(tmp_path)
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, operation, fail)
+        c.LastUsed(agent="claude").save(tmp_path)
+    assert c.LastUsed.load(tmp_path).agent == "codex"
+    assert list(c.repo_state_dir(tmp_path).glob("*.tmp")) == []
+
+
+def test_failed_trust_write_keeps_review_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = write(tmp_path / c.PROJECT_CONFIG_NAME, '[defaults]\nagent = "codex"\n')
+    c.ProjectTrust.check(tmp_path).trust(tmp_path)
+    project.write_text('[defaults]\nagent = "bash"\n')
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(c.ConfigError, match="cannot write"):
+        c.ProjectTrust.check(tmp_path).trust(tmp_path)
+    assert c.ProjectTrust.check(tmp_path).needs_review
+    assert c.load(tmp_path).defaults.agent == "codex"
+    assert list(c.repo_state_dir(tmp_path).glob("*.tmp")) == []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def test_healthy(repo: Path) -> None:
 
 @pytest.mark.parametrize(
     ("output", "status"),
-    [("jj 0.46.1", "ok"), ("jj 0.38.0", "warn"), ("garbage", "fail"), (None, "fail")],
+    [("jj 0.46.0", "ok"), ("jj 0.45.9", "warn"), ("garbage", "fail"), (None, "fail")],
 )
 def test_jj_versions(output: str | None, status: str) -> None:
     check = doctor.check_jj(runner({"jj": None if output is None else (0, output)}))
@@ -61,7 +62,7 @@ def test_jj_versions(output: str | None, status: str) -> None:
 @pytest.mark.parametrize(
     ("response", "status", "text"),
     [
-        ((0, "project-sandbox 0.3.0"), "ok", "0.3.0"),
+        ((0, "project-sandbox 0.2.2"), "ok", "0.2.2"),
         ((0, "project-sandbox 0.2.1"), "fail", "too old"),
         ((1, "Traceback\nboom"), "fail", "boom"),
         (None, "fail", "not found"),
@@ -102,3 +103,23 @@ def test_outside_a_repository_and_main(
     out = capsys.readouterr().out
     assert "! repository:" in out and "✗ project-sandbox" in out
     assert "→ uv tool install project-sandbox" in out and "1 problem found" in out
+
+
+def test_probe_timeout_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    probe = Mock(side_effect=subprocess.TimeoutExpired(["jj", "--version"], 30))
+    monkeypatch.setattr(doctor.subprocess, "run", probe)
+    check = doctor.check_jj(doctor.run)
+    assert check.status == "fail" and "timed out after 30s" in check.detail
+
+
+def test_warnings_do_not_fail_doctor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(doctor, "run", runner(HEALTHY))
+    monkeypatch.setattr(doctor.shutil, "which", lambda cmd: f"/bin/{cmd}")
+    monkeypatch.setattr(doctor, "runtime_cli", lambda runtime: "docker")
+    assert doctor.main(tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "! repository:" in out and "all good" in out

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import signal
 import subprocess
 import sys
 from collections.abc import Callable
@@ -8,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from project_sandbox_tui.config import Config
-from project_sandbox_tui.jobs import BusyError, JobManager, status_for_exit
+from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, status_for_exit
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord, read_sessions, running_by_branch
 from tests.conftest import FAKE, wait_for
 
@@ -29,6 +31,8 @@ def bg(branch: str, prompt: str) -> LaunchSpec:
         (124, "timeout"),
         (75, "rate_limited"),
         (130, "interrupted"),
+        (-signal.SIGINT, "interrupted"),
+        (-signal.SIGTERM, "failed"),
         (None, "orphaned"),
     ],
 )
@@ -271,7 +275,15 @@ def test_summary_does_not_finish_a_live_adopted_process(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "raw", ["[]", '{"branch": "x", "spec": []}', '{"branch": "x", "spec": "bad"}']
+    "raw",
+    [
+        "{",
+        "[]",
+        "{}",
+        '{"branch": "x", "spec": []}',
+        '{"branch": "x", "spec": "bad"}',
+        '{"branch": "x", "pid": true}',
+    ],
 )
 def test_malformed_records_are_ignored(tmp_path: Path, raw: str) -> None:
     jobs = JobManager(tmp_path, Config())
@@ -339,3 +351,78 @@ def test_stop_uses_observed_runtime_and_handles_missing_cli(
     message = adopted.stop("topic", {})
     assert "sent SIGKILL" in message and "container stop failed" in message
     assert spawn.call_args.args[0] == ["podman", "stop", "sandbox-container"]
+
+
+@pytest.mark.parametrize("action", ["discard", "mark_notified", "interactive-exit"])
+def test_stale_job_cannot_change_replacement_run(
+    tmp_path: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    from contextlib import nullcontext
+
+    first = JobManager(tmp_path, fake_cfg())
+    second = JobManager(tmp_path, fake_cfg())
+    spec = LaunchSpec("topic", "claude")
+    monkeypatch.setattr("project_sandbox_tui.jobs._now", lambda: "2026-01-01T00:00:00Z")
+    reservation = (
+        first.interactive(spec, {})
+        if action == "interactive-exit"
+        else nullcontext(first.record_external(spec, ["old"]))
+    )
+    with reservation as old:
+        assert second.clear("topic", force=True)
+        monkeypatch.setattr("project_sandbox_tui.jobs._now", lambda: "2026-01-01T00:00:01Z")
+        new = second.record_external(spec, ["new"])
+        new.notified = False
+        second.save(new)
+        if action == "discard":
+            first.discard(old)
+        elif action == "mark_notified":
+            assert not first.mark_notified(old)
+        else:
+            old.exit_code = 0
+    assert JobManager(tmp_path, fake_cfg()).jobs["topic"] == new
+
+
+@pytest.mark.parametrize("raw", [None, "{", "[]", '{"exit_code": "0"}', '{"exit_code": false}'])
+def test_unusable_summary_does_not_report_success(tmp_path: Path, raw: str | None) -> None:
+    jobs = JobManager(tmp_path, Config())
+    summary = tmp_path / "summary.json"
+    if raw is not None:
+        summary.write_text(raw)
+    jobs.save(JobRecord("topic", bg("topic", "go"), 0, "", summary_path=str(summary)))
+    [finished] = jobs.refresh({})
+    assert finished.status == "orphaned" and finished.exit_code is None
+
+
+def test_summary_exit_code_takes_precedence_over_child_exit(
+    tmp_path: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.sandbox.command = "true"
+    jobs = JobManager(tmp_path, cfg)
+    job = jobs.start_background(bg("topic", "go"), {})
+    jobs._procs["topic"].wait(timeout=5)
+    Path(job.summary_path).write_text(json.dumps({"exit_code": 75}))
+    [finished] = jobs.refresh({})
+    assert (finished.status, finished.exit_code) == ("rate_limited", 75)
+
+
+def test_failed_record_replace_preserves_previous_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs = JobManager(tmp_path, Config())
+    old = jobs.record_external(LaunchSpec("topic", "claude"), ["old"])
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        jobs.save(JobRecord("topic", bg("topic", "new"), 0, "later"))
+    assert JobManager(tmp_path, Config()).jobs["topic"] == old
+    assert list(jobs.jobs_dir.glob("*.tmp")) == []
+
+
+def test_boolean_exit_code_is_not_adopted_as_success() -> None:
+    job = JobRecord.from_dict({"branch": "topic", "exit_code": False})
+    assert job.exit_code is None

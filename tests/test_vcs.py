@@ -16,6 +16,8 @@ def test_detect_and_list(repo: Path) -> None:
     assert [b.name for b in branches] == ["@", "main", "feature/x"]  # working copy, current
     assert branches[1].is_current and not branches[2].is_current
     assert branches[2].subject == "add b"
+    assert branches[1].subject == "first commit"
+    assert len(branches[1].head) == 8
     assert backend.default_start() == "main"
 
 
@@ -172,18 +174,6 @@ def test_names_with_revset_operators(repo: Path) -> None:
     assert diff_between("fix", "a+b") == diff_between("main", "feature/x")
     assert vcs.revset_symbol("@") == "@"
     assert vcs.revset_symbol('a"b\\c') == '"a\\"b\\\\c"'
-
-
-def test_jj_list_and_create(jj_repo: Path) -> None:
-    backend = vcs.detect(jj_repo)
-    assert [b.name for b in backend.list_branches()] == ["@", "main"]  # working copy first
-    assert backend.default_start() == "main"
-    backend.create_branch("feat/y", "main")
-    names = sorted(b.name for b in backend.list_branches() if not b.working_copy)
-    assert names == ["feat/y", "main"]
-    main = next(b for b in backend.list_branches() if b.name == "main")
-    assert main.subject == "first commit"
-    assert len(main.head) == 8
 
 
 @pytest.mark.parametrize(
@@ -373,22 +363,26 @@ def test_fast_forward_to_working_copy_snapshots_edits(repo: Path) -> None:
 
 def test_fast_forward_to_working_copy_refuses_divergence(repo: Path) -> None:
     backend = vcs.detect(repo)
-    old = backend._bookmark_commit("main")
+    old = backend._bookmark_commit("feature/x")
     with pytest.raises(vcs.VcsError, match="not an ancestor"):
         backend.fast_forward("feature/x", "@")
-    assert backend._bookmark_commit("main") == old
+    assert backend._bookmark_commit("feature/x") == old
 
 
-def test_fast_forward_to_working_copy_refuses_file_conflicts(repo: Path) -> None:
+@pytest.mark.parametrize("target", ["@", "conflicted"])
+def test_fast_forward_refuses_unresolved_file_conflicts(repo: Path, target: str) -> None:
     from tests.conftest import add_bookmark, jj
 
     add_bookmark(repo, "left", "a.txt", "left\n")
     add_bookmark(repo, "right", "a.txt", "right\n")
     jj(repo, "new", "left", "right")
+    if target != "@":
+        jj(repo, "bookmark", "create", target, "-r", "@")
+        jj(repo, "new", "main")  # the conflicted target is not the current working copy
     backend = vcs.detect(repo)
     old = backend._bookmark_commit("main")
     with pytest.raises(vcs.VcsError, match="unresolved file conflicts"):
-        backend.fast_forward("main", "@")
+        backend.fast_forward("main", target)
     assert backend._bookmark_commit("main") == old
 
 
@@ -455,20 +449,6 @@ def test_move_working_copy_requires_local_bookmark(repo: Path) -> None:
         backend.move_working_copy_to("@")
     with pytest.raises(vcs.VcsError, match="does not exist"):
         backend.move_working_copy_to("missing")
-
-
-def test_fast_forward_refuses_unresolved_file_conflicts(repo: Path) -> None:
-    from tests.conftest import add_bookmark, jj
-
-    add_bookmark(repo, "left", "a.txt", "left\n")
-    add_bookmark(repo, "right", "a.txt", "right\n")
-    jj(repo, "new", "--no-edit", "left", "right")
-    jj(repo, "bookmark", "create", "conflicted", "-r", "heads(left:: & right::)")
-    backend = vcs.detect(repo)
-    old = backend._bookmark_commit("main")
-    with pytest.raises(vcs.VcsError, match="unresolved file conflicts"):
-        backend.fast_forward("main", "conflicted")
-    assert backend._bookmark_commit("main") == old
 
 
 @pytest.mark.parametrize("name", ["main", "feature/x"])

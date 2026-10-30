@@ -139,10 +139,12 @@ def render_prompt(template: str, plan: OctopusPlan) -> str:
         "first": plan.inputs[0] if plan.inputs else "",
         "rest": ", ".join(f"`{i}`" for i in plan.inputs[1:]),
     }
-    out = template
-    for key, value in values.items():
-        out = out.replace("{" + key + "}", value)
-    return out
+    # Substitute once: a bookmark may itself contain text such as "{result}".
+    return re.sub(
+        r"\{(inputs|inputs_plain|result|base|first|rest)\}",
+        lambda match: values[match[1]],
+        template,
+    )
 
 
 # ---------------------------------------------------------------- validation

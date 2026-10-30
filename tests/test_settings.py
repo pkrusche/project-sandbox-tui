@@ -15,24 +15,44 @@ def cli(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str, str]:
     return code, out, err
 
 
-def test_parse_key_and_value() -> None:
-    assert str(s.parse_key("sandbox.cpus")) == "sandbox.cpus"
-    assert s.parse_value(s.parse_key("sandbox.cpus"), "6") == 6
-    assert s.parse_value(s.parse_key("ui.refresh_seconds"), "1.5") == 1.5
-    assert s.parse_value(s.parse_key("ui.bell"), "false") is False
-    assert s.parse_value(s.parse_key("project.base_image"), "[x]") == "[x]"
-    assert s.parse_value(s.parse_key("models.codex"), '["a", "b"]') == ["a", "b"]
-    for key, value, message in (
+@pytest.mark.parametrize(
+    ("key", "text", "expected"),
+    [
+        ("sandbox.cpus", "6", 6),
+        ("ui.refresh_seconds", "1.5", 1.5),
+        ("ui.bell", "false", False),
+        ("ui.bell", "true", True),
+        ("project.base_image", "[x]", "[x]"),
+        ("models.codex", '["a", "b"]', ["a", "b"]),
+        ("models.codex", "[]", []),
+    ],
+)
+def test_parse_key_and_value(key: str, text: str, expected: object) -> None:
+    parsed = s.parse_key(key)
+    assert str(parsed) == key
+    value = s.parse_value(parsed, text)
+    assert value == expected and type(value) is type(expected)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
         ("ui.bell", "yes", "true or false"),
         ("sandbox.cpus", "many", "an integer"),
+        ("ui.refresh_seconds", "soon", "a number"),
         ("network.extra_domains", "a.com", "TOML list"),
         ("network.extra_domains", "[1]", "TOML list"),
-    ):
-        with pytest.raises(config.ConfigError, match=message):
-            s.parse_value(s.parse_key(key), value)
-    for key in ("nope.x", "ui.nope", "models.gpt", "ui"):
-        with pytest.raises(config.ConfigError, match="unknown key"):
-            s.parse_key(key)
+    ],
+)
+def test_parse_invalid_value(key: str, value: str, message: str) -> None:
+    with pytest.raises(config.ConfigError, match=message):
+        s.parse_value(s.parse_key(key), value)
+
+
+@pytest.mark.parametrize("key", ["nope.x", "ui.nope", "models.gpt", "ui"])
+def test_parse_invalid_key(key: str) -> None:
+    with pytest.raises(config.ConfigError, match="unknown key"):
+        s.parse_key(key)
 
 
 def test_set_get_unset_global(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -102,3 +122,34 @@ def test_project_scope_needs_a_repository(
     assert code == 2 and "no such directory" in err
     code, out, _ = cli(capsys, "config", "list", "-R", str(tmp_path))
     assert code == 0 and 'defaults.agent = "claude"' in out
+
+
+def test_unset_revalidates_dependent_settings(repo: Path) -> None:
+    editor = s.Editor("project", repo)
+    editor.set(s.parse_key("project.build"), "python-uv")
+    editor.set(s.parse_key("project.build_version"), "3.12")
+    before = editor.path.read_bytes()
+    with pytest.raises(config.ConfigError, match="build_version needs"):
+        editor.unset(s.parse_key("project.build"))
+    assert editor.path.read_bytes() == before
+    assert not config.ProjectTrust.check(repo).needs_review
+
+
+def test_failed_edit_preserves_file_and_trusted_copy(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    editor = s.Editor("project", repo)
+    key = s.parse_key("defaults.agent")
+    editor.set(key, "codex")
+    before = editor.path.read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(config.ConfigError, match="cannot write"):
+        editor.set(key, "bash")
+    assert editor.path.read_bytes() == before
+    assert config.load(repo).defaults.agent == "codex"
+    assert not config.ProjectTrust.check(repo).needs_review
+    assert list(repo.glob("*.tmp")) == []

@@ -93,23 +93,25 @@ def test_custom_template_substitutes_per_token() -> None:
         launch("custom")
 
 
-def test_custom_template_quotes_embedded_placeholders() -> None:
+def test_custom_template_quotes_embedded_placeholders(tmp_path: Path) -> None:
     branch = "x;$(touch pwned)`id`"
+    repo = tmp_path / "my repo"
+    repo.mkdir()
+    cmd = ["printf", " %s", "done {repo}"]
     template = 'sh -c "cd {repo} && printf %s {branch} && {cmd}" --title {branch}'
     argv = launchers.external_launch(
-        "custom", CMD, branch, Path("/my repo"), template, env={}, which=lambda _: None
+        "custom", cmd, branch, repo, template, env={}, which=lambda _: None
     ).argv
     assert argv[:2] == ["sh", "-c"]
     # Embedded: quoted values, {cmd} stays a command line.
     assert argv[2] == (
-        f"cd {shlex.quote('/my repo')} && printf %s {shlex.quote(branch)} && {shlex.join(CMD)}"
+        f"cd {shlex.quote(str(repo))} && printf %s {shlex.quote(branch)} && {shlex.join(cmd)}"
     )
     assert argv[3:] == ["--title", branch]  # a whole argument is passed as is
-    # The shell sees the branch name as one literal word.
-    printed = subprocess.run(
-        ["sh", "-c", f"printf %s {shlex.quote(branch)}"], capture_output=True, text=True
-    )
-    assert printed.stdout == branch
+    # Execute our generated script, so this checks fill_command rather than shlex.quote.
+    printed = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert printed.stdout == branch + " done {repo}"
+    assert not (repo / "pwned").exists()
 
 
 def test_fill_command_does_not_expand_values_again() -> None:
@@ -133,6 +135,36 @@ def test_start_surfaces_multiplexer_errors(tmp_path: Path) -> None:
     with pytest.raises(LaunchError, match="duplicate session"):
         launchers.start(failing, cwd=tmp_path)
     launchers.start(launchers.ExternalLaunch(["true"], "", False), cwd=tmp_path)
+
+
+def test_multiplexer_timeout_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    run = Mock(side_effect=subprocess.TimeoutExpired(["tmux"], 2))
+    monkeypatch.setattr(launchers.subprocess, "run", run)
+    with pytest.raises(LaunchError, match="tmux did not return within 2s"):
+        launchers.start(launchers.ExternalLaunch(["tmux"], "", False), cwd=tmp_path, timeout=2)
+
+
+@pytest.mark.parametrize("code", [0, 4])
+def test_shell_script_preserves_exit_status_and_quotes_cwd(tmp_path: Path, code: int) -> None:
+    cwd = tmp_path / "space and 'quote"
+    cwd.mkdir()
+    cmd = [
+        sys.executable,
+        "-c",
+        "import os, sys; print(os.getcwd()); sys.exit(int(sys.argv[1]))",
+        str(code),
+    ]
+    result = subprocess.run(
+        ["sh", "-c", launchers.shell_script(cmd, cwd=str(cwd))],
+        input="\n",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert result.returncode == code and result.stdout.startswith(str(cwd) + "\n")
+    assert ("press Enter to close" in result.stdout) == (code != 0)
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")

@@ -36,8 +36,11 @@ class Tui:
         if self.pid == 0:  # child: run the real TUI on the pty
             os.chdir(repo)
             os.execve(sys.executable, [sys.executable, "-m", "project_sandbox_tui"], env)
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 110, 0, 0))
+        self.resize(110, 30)
         self.buf = bytearray()
+
+    def resize(self, columns: int, rows: int) -> None:
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
 
     def pump(self, seconds: float) -> None:
         end = time.monotonic() + seconds
@@ -122,9 +125,15 @@ def test_tui_takes_keys_after_interactive_session(repo: Path, mode: str, exit_co
         tui.close()
 
 
-def test_tui_uses_pty_size_over_inherited_dimensions(repo: Path) -> None:
-    tui = start_tui(repo, "true", COLUMNS="40", LINES="10")
+def test_tui_responds_to_pty_resize(repo: Path) -> None:
+    tui = start_tui(repo, "true")
     try:
+        tui.buf.clear()
+        tui.resize(80, 24)
+        assert tui.wait_for(b"full help"), "small-terminal footer did not appear after resize"
+        tui.buf.clear()
+        tui.resize(110, 30)
+        assert tui.wait_for(b"unsupervised"), "cheat-sheet did not return after resize"
         assert_responsive(tui)
     finally:
         tui.close()

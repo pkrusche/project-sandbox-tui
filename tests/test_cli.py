@@ -53,7 +53,7 @@ def test_untrusted_project_config_warns_and_is_ignored(
     assert "cannot build command: no image configured" in out
 
 
-@pytest.mark.parametrize(("answer", "code"), [("y", 0), ("n", 1), ("", 1)])
+@pytest.mark.parametrize(("answer", "code"), [("y", 0), (" YES ", 0), ("n", 1), ("", 1)])
 def test_trust_config_asks(
     repo: Path,
     capsys: pytest.CaptureFixture[str],
@@ -83,3 +83,30 @@ def test_init_trusts_the_template_it_writes(repo: Path, monkeypatch: pytest.Monk
     assert main([str(repo), "--init"]) == 0
     assert not config.ProjectTrust.check(repo).needs_review
     assert config.load(repo).project.base_image == "python:3.12-slim"
+
+
+def test_init_preserves_existing_untrusted_config(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = repo / config.PROJECT_CONFIG_NAME
+    text = '[sandbox]\ncommand = "unreviewed-command"\n'
+    project.write_text(text)
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    assert main([str(repo), "--init"]) == 0
+    assert project.read_text() == text
+    assert config.ProjectTrust.check(repo).needs_review
+    assert config.load(repo).sandbox.command == "project-sandbox"
+
+
+def test_trust_config_eof_is_a_decline(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / config.PROJECT_CONFIG_NAME).write_text('[defaults]\nagent = "codex"\n')
+
+    def eof(prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert main([str(repo), "--trust-config"]) == 1
+    assert "not trusted" in capsys.readouterr().out
+    assert config.ProjectTrust.check(repo).needs_review

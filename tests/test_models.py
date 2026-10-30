@@ -120,24 +120,61 @@ def test_parse_catalog_with_one_provider_only() -> None:
     assert list(agents) == ["codex"]
 
 
+def test_catalog_age_boundary_and_standalone_dated_models() -> None:
+    cutoff = TODAY - timedelta(days=m.MAX_AGE_DAYS)
+    agents = m.parse_catalog(
+        raw(
+            {
+                "openai": {
+                    "models": {
+                        "at-cutoff": entry(cutoff.isoformat()),
+                        "too-old": entry((cutoff - timedelta(days=1)).isoformat()),
+                        "standalone-20260922": entry(),  # no undated alias: retain this snapshot
+                        "bad-date": entry("2026-02-30"),
+                        "not-a-boolean": entry(reasoning=1),
+                        "bad-modalities": entry(modalities={"input": "text", "output": ["text"]}),
+                    }
+                }
+            }
+        ),
+        today=TODAY,
+    )
+    assert [model.id for model in agents["codex"]] == ["standalone-20260922", "at-cutoff"]
+
+
 # ---------------------------------------------------------------- fetching
 
 
-def test_fetch_refuses_non_https_urls() -> None:
-    for source in ("http://models.dev/api.json", "file:///etc/passwd", "ftp://x/y"):
-        with pytest.raises(m.ModelsError, match="use an https:// URL or a file"):
-            m.fetch(source)
+@pytest.mark.parametrize(
+    "source", ["http://models.dev/api.json", "file:///etc/passwd", "ftp://x/y"]
+)
+def test_fetch_refuses_non_https_urls(source: str) -> None:
+    with pytest.raises(m.ModelsError, match="use an https:// URL or a file"):
+        m.fetch(source)
 
 
-def test_fetch_reads_local_files_with_a_size_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("remote", [False, True], ids=["local", "https"])
+@pytest.mark.parametrize("size", [32, 33], ids=["at-limit", "over-limit"])
+def test_fetch_size_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: bool, size: int
 ) -> None:
     path = tmp_path / "api.json"
-    path.write_bytes(b"x" * 64)
-    assert m.fetch(str(path)) == b"x" * 64
+    payload = b"x" * size
+    path.write_bytes(payload)
+    response = FakeResponse(payload)
+    monkeypatch.setattr(m.urllib.request, "urlopen", lambda *args, **kwargs: response)
     monkeypatch.setattr(m, "MAX_DOWNLOAD_BYTES", 32)
-    with pytest.raises(m.ModelsError, match="larger than"):
-        m.fetch(str(path))
+    source = "https://example.test/api.json" if remote else str(path)
+    if size > 32:
+        with pytest.raises(m.ModelsError, match="larger than"):
+            m.fetch(source)
+    else:
+        assert m.fetch(source) == payload
+    if remote:
+        assert response.closed
+
+
+def test_fetch_missing_file(tmp_path: Path) -> None:
     with pytest.raises(m.ModelsError, match="cannot read"):
         m.fetch(str(tmp_path / "missing.json"))
 
@@ -201,6 +238,24 @@ def test_failed_update_keeps_the_previous_store(tmp_path: Path) -> None:
     with pytest.raises(m.ModelsError):
         m.update(str(bad))
     assert path.read_bytes() == before
+
+
+def test_failed_store_replace_keeps_previous_store_and_cleans_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "api.json"
+    source.write_bytes(raw(catalog()))
+    path, _ = m.update(str(source))
+    before = path.read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(m.os, "replace", fail)
+    with pytest.raises(m.ModelsError, match="cannot write"):
+        m.update(str(source))
+    assert path.read_bytes() == before
+    assert list(path.parent.iterdir()) == [path]
 
 
 @pytest.mark.parametrize(
@@ -294,13 +349,15 @@ def test_suggestions_merge_sources_in_order(tmp_path: Path) -> None:
     assert m.suggestions("codex", None, None) == ["gpt-5.5"]
 
 
-def test_store_hint() -> None:
+@pytest.mark.parametrize("naive", [False, True], ids=["aware", "legacy-naive"])
+def test_store_hint(naive: bool) -> None:
     now = datetime(2026, 10, 22, tzinfo=UTC)
-    fresh = m.Store(fetched_at=now - timedelta(days=3))
-    stale = m.Store(fetched_at=now - timedelta(days=45))
+    fetched = now.replace(tzinfo=None) if naive else now
+    fresh = m.Store(fetched_at=fetched - timedelta(days=30))
+    stale = m.Store(fetched_at=fetched - timedelta(days=31))
     assert m.store_hint("claude", None, now) == "more models: sbx-tui --update-models"
     assert m.store_hint("codex", fresh, now) == ""
-    assert "45 days old" in m.store_hint("claude", stale, now)
+    assert "31 days old" in m.store_hint("claude", stale, now)
     assert m.store_hint("bash", None, now) == ""  # agent without a catalog
 
 

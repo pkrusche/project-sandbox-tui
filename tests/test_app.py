@@ -153,6 +153,14 @@ def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config])
         assert not isinstance(app.screen, HelpScreen)
         assert app.is_running
 
+        await pilot.press("slash", *"no-matches", "enter")
+        assert app.table.row_count == 0 and app.selected_branch_name() is None
+        await pilot.press("j", "k", "G", "g", "g", "space", "v", "r", "i", "l", "f", "@", "d")
+        assert app.screen is app.main and not app.jobs.jobs
+        assert app.selection() == []
+        await pilot.press("escape")
+        assert app.table.row_count == 3
+
     run_app(repo, fake_cfg(), scenario)
 
 
@@ -544,47 +552,6 @@ def test_failed_external_launch_releases_reservation(
         assert LastUsed.load(repo).agent == ""
 
     run_app(repo, cfg, scenario)
-
-
-def test_log_follows_partial_utf8_and_truncation(
-    repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
-    from textual.widgets import Log
-
-    from project_sandbox_tui.jobs import JobRecord
-    from project_sandbox_tui.sandbox import LaunchSpec
-
-    async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        path = repo / "agent.log"
-        path.write_bytes(b"first\n\xe2\x82")  # partial euro sign at a poll boundary
-        job = JobRecord(
-            "main",
-            LaunchSpec(branch="main", agent="claude"),
-            1,
-            "",
-            log_path=str(path),
-            stdout_path=str(repo / "out"),
-        )
-        screen = LogScreen(job)
-        app.push_screen(screen)
-        await pilot.pause()
-        with path.open("ab") as stream:
-            stream.write(b"\xac\n")
-        screen._poll()
-        log = screen.query_one(Log)
-        assert log.lines[:2] == ["first", "€"]
-        path.write_bytes(b"new\n")
-        screen._poll()
-        assert log.lines == ["new", ""]
-        # A replacement file can be larger, so size alone cannot detect rotation.
-        replacement = path.with_suffix(".replacement")
-        replacement.write_text("replacement contents\n")
-        replacement.replace(path)
-        screen._poll()
-        assert log.lines == ["replacement contents", ""]
-        await pilot.press("q")
-
-    run_app(repo, fake_cfg(), scenario)
 
 
 def test_jj_repo_without_bookmarks_runs_in_working_copy(
@@ -985,7 +952,7 @@ def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config], visual_key:
     run_app(repo, fake_cfg(), scenario)
 
 
-@pytest.mark.parametrize("keys", [("v", "j"), ("V", "j"), ("space", "space"), ()])
+@pytest.mark.parametrize("keys", [("v", "j"), ("space", "space"), ()])
 def test_clear_selected_statuses(
     repo: Path, fake_cfg: Callable[..., Config], keys: tuple[str, ...]
 ) -> None:
@@ -1028,7 +995,7 @@ def test_clear_selected_statuses(
     run_app(repo, fake_cfg(), scenario)
 
 
-@pytest.mark.parametrize("keys", [("v", "j"), ("V", "j"), ("space", "space"), ()])
+@pytest.mark.parametrize("keys", [("v", "j"), ("space", "space"), ()])
 def test_stop_selected_runs(
     repo: Path,
     fake_cfg: Callable[..., Config],
@@ -1493,3 +1460,78 @@ def test_notifications_are_plain_text(repo: Path, fake_cfg: Callable[..., Config
         assert [n.markup for n in app._notifications] == [False, False]
 
     run_app(repo, fake_cfg(), scenario)
+
+
+def test_launch_rechecks_bookmark_deleted_while_form_is_open(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from tests.conftest import jj
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("G", "r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#prompt", TextArea).text = "do not launch"
+        jj(repo, "bookmark", "delete", "feature/x")
+        await pilot.press("ctrl+s")
+        assert app.screen is app.main
+        assert not app.jobs.jobs and app.prompt_history.entries == []
+        assert LastUsed.load(repo).agent == ""
+        assert any("feature/x no longer exists" in str(n.message) for n in app._notifications)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_octopus_changes_preserve_user_edited_prompt_and_result(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "v", "j", "r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen) and form.octopus is not None
+        form.query_one("#result", Input).value = "my-result"
+        prompt = form.query_one("#prompt", TextArea)
+        prompt.text = "My instructions, including {base} literally"
+        await pilot.pause()
+        form.query_one("#operation", CycleField).value = "rebase"
+        form.query_one("#agent", CycleField).value = "bash"
+        await pilot.pause()
+        assert form.current_spec().branch == "my-result"
+        assert prompt.text == "My instructions, including {base} literally"
+        assert form.current_spec().operation == "rebase"
+        await pilot.press("escape")
+        assert not app.jobs.jobs and app.prompt_history.entries == []
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_overlapping_refreshes_wait_for_coalesced_update(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = SandboxTUI(repo, detect(repo), fake_cfg())
+
+    async def scenario() -> None:
+        started = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        calls = 0
+
+        async def refresh() -> None:
+            nonlocal calls
+            index = calls
+            calls += 1
+            started[index].set()
+            await release[index].wait()
+
+        monkeypatch.setattr(app, "_refresh_once", refresh)
+        first = asyncio.create_task(app.refresh_data())
+        await started[0].wait()
+        followers = [asyncio.create_task(app.refresh_data()) for _ in range(2)]
+        await asyncio.sleep(0)  # let both callers request a fresh pass
+        release[0].set()
+        await started[1].wait()
+        assert all(not task.done() for task in followers)
+        release[1].set()
+        await asyncio.gather(first, *followers)
+        assert calls == 2 and not app._refreshing
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))

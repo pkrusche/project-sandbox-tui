@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from project_sandbox_tui import sandbox
 from project_sandbox_tui.config import Config, ConfigError, Network, Project, Sandbox
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
@@ -22,15 +23,21 @@ def make_cfg() -> Config:
     cfg.project = Project(base_image="python:3.12-slim", worktree_dir="../wt")
     cfg.network = Network(
         internet_proxy="http://proxy:3128",
+        agent_proxy="http://agent:4000",
+        agent_proxy_key_env="PROXY_KEY",
         ca_certs=["certs/root.pem"],
         extra_domains=["pypi.org"],
+        allow_github=True,
+        no_firewall=True,
     )
     cfg.sandbox = Sandbox(
         command="uvx project-sandbox",
         runtime="docker",
         memory="16g",
+        cpus=6,
         no_forward_credentials=True,
         api_key_env=["ANTHROPIC_API_KEY"],
+        api_key_env_file=["keys.env"],
         extra_args=["--verbose"],
     )
     return cfg
@@ -46,6 +53,7 @@ def test_interactive_argv(tmp_path: Path) -> None:
         "python:3.12-slim",
         "--runtime=docker",
         "--memory=16g",
+        "--cpus=6",
         "--branch=feat/x",
         f"--worktree-dir={repo / '../wt'}",
         "--keep-workspace",
@@ -53,10 +61,15 @@ def test_interactive_argv(tmp_path: Path) -> None:
         "--model=opus",
         "--effort=high",
         "--internet-proxy=http://proxy:3128",
+        "--agent-proxy=http://agent:4000",
+        "--agent-proxy-key-env=PROXY_KEY",
         f"--ca-cert={repo / 'certs/root.pem'}",
         "--extra-domain=pypi.org",
+        "--allow-github",
+        "--no-firewall",
         "--no-forward-credentials",
         "--api-key-env=ANTHROPIC_API_KEY",
+        f"--api-key-env-file={repo / 'keys.env'}",
         "--verbose",
     ]
 
@@ -109,6 +122,9 @@ def test_requires_image_and_prompt(tmp_path: Path) -> None:
     spec = LaunchSpec(branch="b", agent="claude", mode="background", prompt_text="  ")
     with pytest.raises(ConfigError, match="prompt"):
         build_argv(cfg, tmp_path, spec, RunPaths(tmp_path, tmp_path, tmp_path))
+    spec.prompt_text = "go"
+    with pytest.raises(ValueError, match="run paths"):
+        build_argv(cfg, tmp_path, spec)
 
 
 def test_session_matching(tmp_path: Path) -> None:
@@ -169,3 +185,92 @@ def test_main_checkout_sessions_map_to_working_copy(tmp_path: Path) -> None:
     )
     records = read_sessions(sessions)
     assert list(running_by_branch(records, repo, ["main"], None)) == [WORKING_COPY]
+
+
+@pytest.mark.parametrize(
+    ("build", "version", "flags"),
+    [("rust-cargo", "1.90", ["--rust-cargo", "--rust=1.90"]), ("node-npm", "", ["--node-npm"])],
+)
+def test_generated_builds(tmp_path: Path, build: str, version: str, flags: list[str]) -> None:
+    cfg = Config(project=Project(build=build, build_version=version))
+    assert build_argv(cfg, tmp_path, LaunchSpec("@", "bash")) == [
+        "project-sandbox",
+        str(tmp_path),
+        *flags,
+        "--agent=bash",
+    ]
+
+
+@pytest.mark.parametrize("pid", [None, "123", True, False, 0, -1])
+def test_invalid_pid_is_not_probed(pid: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    kill = Mock()
+    monkeypatch.setattr(sandbox.os, "kill", kill)
+    assert not sandbox.pid_alive(pid)
+    kill.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("error", "alive"),
+    [
+        (None, True),
+        (PermissionError(), True),
+        (ProcessLookupError(), False),
+        (OverflowError(), False),
+    ],
+)
+def test_pid_probe_handles_process_errors(
+    monkeypatch: pytest.MonkeyPatch, error: Exception | None, alive: bool
+) -> None:
+    from unittest.mock import Mock
+
+    kill = Mock(side_effect=error)
+    monkeypatch.setattr(sandbox.os, "kill", kill)
+    assert sandbox.pid_alive(123) is alive
+    kill.assert_called_once_with(123, 0)
+
+
+def test_session_reader_skips_corruption_and_normalizes_invalid_pids(tmp_path: Path) -> None:
+    for name, payload in {"bad": b"{", "list": b"[]", "encoding": b"\xff"}.items():
+        (tmp_path / f"{name}.json").write_bytes(payload)
+    for name, pid in [("boolean", True), ("string", "123"), ("missing", None)]:
+        (tmp_path / f"{name}.json").write_text(json.dumps({"status": "running", "pid": pid}))
+    records = read_sessions(tmp_path)
+    assert {r.session_id for r in records} == {"boolean", "string", "missing"}
+    assert all(r.status == "orphaned" and r.pid is None for r in records)
+
+
+def test_sessions_match_custom_workspace_paths_through_symlinks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    root = tmp_path / "custom"
+    workspace = workspace_path(repo, "feat/x", root)
+    workspace.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+
+    def record(path: Path, status: str = "running") -> sandbox.SessionRecord:
+        return sandbox.SessionRecord("id", "container", "", str(path), "bash", status, 1, "")
+
+    matching = record(alias / workspace.name)
+    records = [matching, record(tmp_path / "unrelated"), record(repo, "completed")]
+    assert running_by_branch(records, repo, ["feat/x"], root) == {"feat/x": matching}
+
+
+@pytest.mark.parametrize(
+    ("system", "available", "expected"),
+    [
+        ("Darwin", {"container", "docker", "podman"}, "container"),
+        ("Darwin", {"docker", "podman"}, "docker"),
+        ("Linux", {"container", "docker", "podman"}, "docker"),
+        ("Linux", {"podman"}, "podman"),
+        ("Linux", set(), None),
+    ],
+)
+def test_runtime_auto_selection(
+    monkeypatch: pytest.MonkeyPatch, system: str, available: set[str], expected: str | None
+) -> None:
+    monkeypatch.setattr(sandbox.platform, "system", lambda: system)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda cmd: cmd if cmd in available else None)
+    assert sandbox.runtime_cli("auto") == expected

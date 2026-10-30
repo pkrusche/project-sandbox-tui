@@ -140,6 +140,8 @@ class JobRecord:
     def from_dict(cls, raw: dict[str, Any]) -> JobRecord:
         if not isinstance(raw, dict) or not isinstance(raw.get("spec", {}), dict):
             raise ValueError("invalid job record")
+        if isinstance(raw.get("pid"), bool):
+            raise ValueError("invalid process id")
         status = raw.get("status", "orphaned")
         return cls(
             branch=str(raw["branch"]),
@@ -151,7 +153,7 @@ class JobRecord:
             summary_path=str(raw.get("summary_path") or ""),
             stdout_path=str(raw.get("stdout_path") or ""),
             status=status if status in (*TERMINAL, "running") else "orphaned",
-            exit_code=raw.get("exit_code") if isinstance(raw.get("exit_code"), int) else None,
+            exit_code=raw.get("exit_code") if type(raw.get("exit_code")) is int else None,
             ended_at=str(raw.get("ended_at") or ""),
             session_id=str(raw.get("session_id") or ""),
             container_name=str(raw.get("container_name") or ""),
@@ -196,8 +198,12 @@ class JobManager:
         private_dir(self.jobs_dir)
         path = self._record_path(job.branch)
         tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-        tmp.write_text(json.dumps(job.to_dict(), indent=2), encoding="utf-8")
-        tmp.replace(path)
+        try:
+            tmp.write_text(json.dumps(job.to_dict(), indent=2), encoding="utf-8")
+            tmp.replace(path)
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
 
     def load(self) -> None:
         previous = self.jobs
@@ -483,7 +489,7 @@ class JobManager:
             if summary is not None:
                 job.session_id = str(summary.get("session_id") or job.session_id)
                 job.container_name = str(summary.get("container_name") or job.container_name)
-                if isinstance(summary.get("exit_code"), int):
+                if type(summary.get("exit_code")) is int:
                     code = summary["exit_code"]
             job.exit_code = code
             job.status = status_for_exit(code)

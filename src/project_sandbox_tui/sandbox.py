@@ -200,7 +200,7 @@ def sessions_dir() -> Path:
 
 
 def pid_alive(pid: object) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     try:
         os.kill(pid, 0)
@@ -251,7 +251,7 @@ def read_sessions(directory: Path | None = None) -> list[SessionRecord]:
         if not isinstance(raw, dict):
             continue
         status = str(raw.get("status") or "")
-        pid = raw.get("pid") if isinstance(raw.get("pid"), int) else None
+        pid = raw.get("pid") if type(raw.get("pid")) is int else None
         if status == "running" and not pid_alive(pid):
             status = "orphaned"
         records.append(
