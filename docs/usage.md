@@ -58,7 +58,7 @@ existing bookmark main/master/trunk. Counts omit zeros:
 | `c` · `C` | Clear finished status · [forget a running record](sessions.md#interactive-sessions) without stopping it |
 | `W` | [Clean up workspaces](cleanup.md) |
 | `R` · `ctrl+r` | Refresh list · reload configuration |
-| `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue) |
+| `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue; asks first while any are running) |
 
 Selections apply to `c`, `C`, `x`, `o` and `P`; `l` requires one bookmark.
 One marked bookmark overrides the highlighted row for `f` and `@`.

@@ -445,6 +445,11 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 self.query_one("#branch").focus()
                 return
         spec = self.current_spec()
+        if any(ch.isspace() for ch in spec.model):
+            self.notify(f"invalid model name: {spec.model!r}", severity="warning")
+            custom = self.query_one("#custom-model-row").display
+            self.query_one("#custom-model" if custom else "#model").focus()
+            return
         if spec.mode == "background" and not spec.prompt_text.strip():
             self.notify("an unsupervised run needs a prompt", severity="warning")
             self.query_one("#prompt").focus()

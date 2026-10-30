@@ -391,6 +391,7 @@ class SandboxTUI(App[None]):
         # rows (kept in marking order), v starts a visual range at the cursor.
         self.marked: list[str] = []
         self._visual_anchor: str | None = None
+        self._confirming_quit = False
 
     def notify(
         self,
@@ -1339,3 +1340,24 @@ class SandboxTUI(App[None]):
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    async def action_quit(self) -> None:
+        """Quit, asking first while runs or sessions are still going (q and ctrl+q)."""
+        running = sorted(name for name, job in self.jobs.jobs.items() if job.running)
+        if not running or self._confirming_quit:  # ctrl+q again over the dialog quits
+            self.exit()
+            return
+
+        def decided(confirmed: bool | None) -> None:
+            self._confirming_quit = False
+            if confirmed:
+                self.exit()
+
+        body = (
+            "\n".join(f"{name}  {self.jobs.jobs[name].spec.label()}" for name in running)
+            + "\n\nThey keep running after sbx-tui exits. Completion notifications wait "
+            "until sbx-tui is started again in this repository."
+        )
+        title = f"quit with {len(running)} still running?"
+        self._confirming_quit = True
+        self.push_screen(ConfirmScreen(title, body, "quit"), decided)

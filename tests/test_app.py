@@ -13,6 +13,7 @@ from textual.widgets import Input, Static, TextArea
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
+from project_sandbox_tui.jobs import JobManager
 from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen, NewBranchScreen
 from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
@@ -425,6 +426,53 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
     last = LastUsed.load(repo)
     assert last.agent == "codex"
     assert last.model_by_agent["codex"] == "gpt-x"
+
+
+def test_quit_without_runs_exits(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("q")
+        await wait_until(pilot, lambda: not app.is_running)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("confirm", [("y",), ("ctrl+q",)])
+def test_quit_confirms_while_runs_continue(
+    repo: Path, fake_cfg: Callable[..., Config], confirm: tuple[str, ...]
+) -> None:
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.jobs.record_external(LaunchSpec(branch="feature/x", agent="codex"), ["other"])
+        await app.refresh_data()
+        for key in ("q", "ctrl+q"):
+            await pilot.press(key)
+            assert isinstance(app.screen, ConfirmScreen)
+            assert "feature/x  codex" in app.screen.body
+            await pilot.press("n")  # any other key cancels
+            assert app.screen is app.main and app.is_running
+        await pilot.press("q", *confirm)
+        await wait_until(pilot, lambda: not app.is_running)
+
+    run_app(repo, fake_cfg(), scenario)
+    assert JobManager(repo, fake_cfg()).running_count() == 1  # quitting stops nothing
+
+
+def test_launch_rejects_model_name_with_spaces(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("i")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#model", CycleField).value = CUSTOM_MODEL
+        form._update_custom_model()
+        form.query_one("#custom-model", Input).value = "my model"
+        form.action_launch()
+        await pilot.pause()
+        assert app.screen is form
+        assert form.focused is form.query_one("#custom-model")
+        assert any("invalid model name" in str(n.message) for n in app._notifications)
+
+    run_app(repo, fake_cfg(), scenario)
 
 
 def test_launch_form_keys_do_not_trigger_list_actions(

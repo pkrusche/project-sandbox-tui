@@ -7,7 +7,8 @@ A workspace is busy while any TUI instance or project-sandbox session uses it,
 including sessions started from a shell.
 
 Background jobs survive quitting; restarting re-adopts them and announces any
-that finished. `x` sends SIGINT so project-sandbox can commit work; repeated
+that finished. Quitting (`q` or `ctrl+q`) while jobs or sessions are running
+asks for confirmation; `y` quits, and `ctrl+q` again over the dialog also quits. `x` sends SIGINT so project-sandbox can commit work; repeated
 presses escalate to SIGTERM, then SIGKILL plus runtime `stop`.
 
 ## Interactive sessions
