@@ -5,30 +5,30 @@ sbx-tui --cleanup-workspaces --dry-run   # preview
 sbx-tui --cleanup-workspaces             # remove eligible workspaces and merged bookmarks
 ```
 
-Press `W` in the TUI to review candidates: removable rows are preselected,
-others show why they are kept. `space` toggles a row, `a` selects all/none,
-`enter` removes, `esc` cancels. The CLI removes all eligible candidates and
-reports each removal or reason for keeping it.
+Press `W` to review candidates: eligible rows are preselected; others show why
+they are kept. `space` toggles a row, `a` selects all/none, `enter` removes,
+`esc` cancels. The CLI removes all eligible candidates, reporting removals and
+reasons for keeping others.
 
-Candidates come from `jj workspace list`, regardless of name or location.
-The current workspace is excluded; the `default` workspace, running sessions,
-uncommitted changes and files too large to snapshot are always kept.
+Candidates come from `jj workspace list`, regardless of name or location. The
+current workspace is excluded. Normal cleanup keeps `default` and workspaces
+with running sessions, uncommitted changes or files too large to snapshot.
 
 ## Merged work
 
-`project.main_branch` (default: first of main/master/trunk) defines merged work:
+The [main bookmark](configuration.md#settings-reference) defines merged work:
 
-- A workspace with only empty revisions outside `::main` can be removed even
-  with ignored files (which are deleted) or a missing directory (unregistered).
-  Its bookmark is deleted too, except main itself.
+- Workspaces with only empty revisions outside `::main` can be removed, deleting
+  ignored files or unregistering missing directories. Their bookmarks are also
+  deleted, except main.
 - Fully merged bookmarks without workspaces appear as separate rows.
 
 Unmerged workspaces with ignored files or missing directories are kept. Removal
-re-checks eligibility, runs `jj workspace forget` and deletes eligible bookmarks;
+rechecks eligibility, runs `jj workspace forget` and deletes eligible bookmarks;
 tracked remote bookmarks are deleted on the next `jj git push`. Job history stays.
 
 ## Force delete
 
-Highlight a kept workspace and press `D`, then confirm to delete its directory
-including uncommitted, untracked and ignored files, and unregister it. Bookmarks
-stay. Running sessions and the `default` workspace cannot be force-deleted.
+Highlight a kept workspace, press `D` and confirm to unregister it and delete
+its directory, including uncommitted, untracked and ignored files. Bookmarks
+stay. Running sessions and `default` cannot be force-deleted.

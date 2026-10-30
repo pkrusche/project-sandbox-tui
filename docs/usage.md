@@ -4,42 +4,43 @@
 
 ```sh
 sbx-tui [REPO]               # open the TUI; default: current directory
-sbx-tui --init               # write config templates; fetch model catalog if missing
+sbx-tui --init               # initialize config and model catalog
 sbx-tui --print-config       # show effective config and an interactive command
 sbx-tui --trust-config       # review changed project config
 sbx-tui --dry-run            # preview sandbox calls or workspace cleanup
 sbx-tui --update-models      # refresh model suggestions
-sbx-tui --cleanup-workspaces # remove idle clean/merged workspaces and merged bookmarks
+sbx-tui --cleanup-workspaces # remove eligible workspaces and bookmarks
 sbx-tui doctor               # check dependencies and runtime
 sbx-tui config …             # read or edit settings
 ```
 
-Subcommands accept `-R/--repository PATH` and `--config PATH`. For a repository
-named `config` or `doctor`, use `./config` or `./doctor`.
+Subcommands accept `-R/--repository PATH` and `--config PATH`. Open repositories
+named `config` or `doctor` as `./config` or `./doctor`.
 
 `doctor` checks jj (tested minimum 0.46), project-sandbox ≥ 0.2.2 and runtime
-health. Automatic runtime selection tries Apple `container`, Docker, then
-Podman. It warns about untrusted config, missing image sources, multiplexers
-and notifiers; failed checks exit 1.
+health; failed checks exit 1. It also warns about untrusted config and missing
+image sources, multiplexers or notifiers. Automatic runtime selection tries
+Apple `container`, Docker, then Podman.
 
 See [configuration](configuration.md), [models](models.md) and
 [cleanup](cleanup.md) for the corresponding commands.
 
 ## Bookmark list
 
-`@ working copy` appears first. Press `?` for the scrollable key reference.
-`H` toggles the cheat-sheet, which collapses to a one-line help hint when the
-terminal is too small to leave room for the list.
+`@ working copy` appears first. The cheat-sheet collapses to one line in small
+terminals.
 
-The `vs main` column compares each bookmark with `project.main_branch`, or the
-first existing bookmark named main/master/trunk. Its heading names that baseline.
-`↑N` counts commits only in the bookmark, `↓N` counts commits only in main, and
-`ΔN` counts files differing between their tips (the same comparison as `d`).
-Zero counts are omitted; `=` means the tips match. Both arrows appear when
-histories have diverged. `?` means the comparison is unavailable, including a
-missing main or a conflicted bookmark. The `@ working copy` row uses the same
-comparison, including uncommitted file edits captured on refresh. Its current
-commit counts toward `↑N` even when empty.
+The `vs main` heading names the baseline: `project.main_branch`, or the first
+existing bookmark main/master/trunk. Counts omit zeros:
+
+| Symbol | Meaning |
+|---|---|
+| `↑N` / `↓N` | Commits only in this revision / main; both appear for diverged histories |
+| `ΔN` | Files differing between tips, as with `d` |
+| `=` | Matching tips |
+| `?` | Comparison unavailable, e.g. missing main or conflicted bookmark |
+
+`@` includes edits captured on refresh; its commit counts toward `↑N` even if empty.
 
 | Key | Action |
 |---|---|
@@ -51,30 +52,28 @@ commit counts toward `↑N` even when empty.
 | `n` | New bookmark: name and start revision |
 | `v` / `V` · `space` | Select a range / mark individual bookmarks; `esc` clears |
 | `d` | Diff against main, or compare two selected revisions |
-| `f` | Fast-forward main to highlighted bookmark or `@` (one marked bookmark takes precedence) |
-| `@` | Start a working-copy change on highlighted bookmark (one marked bookmark takes precedence) |
+| `f` | Fast-forward main to highlighted bookmark or `@` |
+| `@` | Start a working-copy change on highlighted bookmark |
 | `o` · `P` | Open workspace in editor · preview sandbox command |
-| `c` · `C` | Clear finished status · [forget a stale running record](sessions.md#interactive-sessions) without stopping it |
+| `c` · `C` | Clear finished status · [forget a running record](sessions.md#interactive-sessions) without stopping it |
 | `W` | [Clean up workspaces](cleanup.md) |
 | `R` · `ctrl+r` | Refresh list · reload configuration |
 | `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue) |
 
-With a selection, `c`, `C`, `x`, `o` and `P` apply to all marked bookmarks;
-`l` requires one. Selecting at least two turns `r` / `i` into
-[merge or rebase](merging.md).
+Selections apply to `c`, `C`, `x`, `o` and `P`; `l` requires one bookmark.
+One marked bookmark overrides the highlighted row for `f` and `@`.
+With at least two selected, `r` / `i` opens [merge or rebase](merging.md).
 
 Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
-(including delta). The TUI pauses; exit the viewer, then press Enter to return.
+(including delta). Exit the viewer, then press Enter to resume the TUI.
 
-`f` moves only the local main bookmark (`project.main_branch`, else
-main/master/trunk). It requires main to be an ancestor of the target and refuses
-conflicted bookmarks or unresolved file conflicts. Equal tips do nothing;
-commits and working-copy files stay unchanged.
+`f` moves only the local main bookmark, requiring main to be an ancestor of the
+target and refusing bookmark or file conflicts. Equal tips do nothing; commits
+and working-copy files stay unchanged.
 
-`@` saves an unbookmarked working-copy change, including uncommitted edits, as
-`saved/<change-id>`, then runs `jj new` on the chosen bookmark and checks out its
-files. The saved bookmark remains available to return to. Running sessions in
-`@` block the move.
+`@` saves an unbookmarked working-copy change, including edits, as
+`saved/<change-id>` for later recovery, then runs `jj new` on the chosen bookmark
+and checks out its files. Running sessions in `@` block the move.
 
 ## Launch form
 
@@ -86,13 +85,12 @@ files. The saved bookmark remains available to return to. Running sessions in
 | `ctrl+s` / `ctrl+enter` | Launch background run (or click **launch**); `ctrl+enter` requires terminal support |
 | `esc` | Cancel |
 
-The form remembers the last agent, effort, timeout and per-agent model in this
-repository. Until then, [config defaults](configuration.md) apply.
+The form remembers launch choices per repository; see
+[defaults and precedence](configuration.md#settings-reference).
 
 ## Prompt history
 
-Started background prompts are remembered per repository: newest 500, duplicates
-collapsed.
+Each repository remembers the latest 500 distinct launched background prompts.
 
 | Key | Action in the prompt box |
 |---|---|

@@ -6,9 +6,9 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 > 🤖 Written largely by AI, reviewed by a human. Use at your own risk.
 
-- Run tasks in the background and get notified when they finish, or steer agents interactively.
-- Keep tasks in separate jj workspaces; select several to merge or rebase with agent-assisted integration.
-- Delegate container isolation, credentials and workspace teardown to project-sandbox.
+- Run agents interactively or in the background with completion notifications.
+- Merge or rebase tasks from separate jj workspaces with agent assistance.
+- Let project-sandbox handle isolation, credentials and workspace teardown.
 
 ```text
  sbx-tui   ~/workspace/myproject   4 bookmarks · 1 running
@@ -41,8 +41,7 @@ sbx-tui --dry-run   # preview project-sandbox calls
 sbx-tui             # launch
 ```
 
-Press `?` for full help. The main-window cheat-sheet collapses to one line when
-space is tight, leaving room for the bookmark list.
+Press `?` for full help.
 
 ## Documentation
 

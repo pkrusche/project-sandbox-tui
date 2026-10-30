@@ -2,43 +2,40 @@
 
 ## One sandbox per bookmark
 
-Bookmark sessions use a separate jj workspace (`--branch`); `@` sessions use the
-repository itself. A workspace is busy if any TUI instance has a running job for
-it, or project-sandbox has a matching running session, including one started
-from a shell.
+Bookmark sessions use separate jj workspaces; `@` uses the repository itself.
+A workspace is busy while any TUI instance or project-sandbox session uses it,
+including sessions started from a shell.
 
-Background jobs survive quitting the TUI. On restart it re-adopts them and
-announces any that finished meanwhile. `x` sends SIGINT so project-sandbox can
-commit work; further presses escalate to SIGTERM, then SIGKILL plus runtime
-`stop`.
+Background jobs survive quitting; restarting re-adopts them and announces any
+that finished. `x` sends SIGINT so project-sandbox can commit work; repeated
+presses escalate to SIGTERM, then SIGKILL plus runtime `stop`.
 
 ## Interactive sessions
 
-`ui.terminal` controls where `i` opens the agent:
+`ui.terminal` controls where `i` opens the agent. Inline sessions suspend the TUI
+until the agent exits; multiplexer modes fall back to inline outside that multiplexer.
 
-| Mode | Inside that multiplexer | Outside it |
-|---|---|---|
-| `inline` (default) | TUI suspends until the agent exits | Same |
-| `tmux` | New window named after the bookmark | TUI suspends until the agent exits |
-| `zellij` | New pane, closed on exit | TUI suspends until the agent exits |
-| `screen` | New window | TUI suspends until the agent exits |
-| `custom` | `ui.terminal_command`, e.g. `'wezterm start -- sh -c {cmd}'` | Same |
+| Mode | Agent location |
+|---|---|
+| `inline` (default) | Current terminal |
+| `tmux` | New window named after the bookmark |
+| `zellij` | New pane, closed on exit |
+| `screen` | New window |
+| `custom` | `ui.terminal_command`; see [command placeholders](configuration.md#settings-reference) |
 
-Multiplexers are detected through `$TMUX`, `$ZELLIJ` and `$STY`. External modes
-return immediately and show `interactive (ext)` while the session runs. A failed
-launch leaves its window open until Enter. Stop external sessions in their agent
-window; `x` cannot stop them.
+Multiplexers are detected through `$TMUX`, `$ZELLIJ` and `$STY`. External sessions
+show `interactive (ext)` and return immediately; stop them in the agent window
+(`x` cannot). Failed launches leave the window open until Enter.
 
-If the agent has exited but the row remains busy, press `C` (`Shift+c`) to forget
-its TUI record, then `i` to restart. `C` sends no signal; lowercase `c` clears
-only finished records. A launch that fails before writing a session record may
-stay busy for up to 10 minutes unless cleared with `C`.
+If an exited agent's row stays busy, press `C` (`Shift+c`) to forget its TUI record,
+then `i` to restart. `C` sends no signal; `c` clears only finished records. Launches
+that fail before writing a session record may stay busy for 10 minutes unless cleared.
 
 ## Notifications and exit codes
 
 Completion updates the row, shows a toast, rings the bell (`ui.bell`) and sends
 a desktop notification via `osascript` (macOS), `notify-send` (Linux) or
-`ui.notify_command`. See [configuration](configuration.md) for custom commands.
+`ui.notify_command`.
 
 | Exit code | Status |
 |---|---|

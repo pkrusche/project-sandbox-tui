@@ -1,8 +1,8 @@
 # Architecture
 
-The Textual app calls `jj` and the `project-sandbox` CLI; project-sandbox owns
-container isolation, credentials and runtimes. Session records on disk are the
-only other input. A `.jj/` directory is required.
+The Textual app calls `jj` and `project-sandbox` and reads session records from
+disk. Project-sandbox manages containers, credentials and runtimes. Repositories
+require a `.jj/` directory.
 
 ## Modules (`src/project_sandbox_tui/`)
 
@@ -20,34 +20,32 @@ only other input. A `.jj/` directory is required.
 
 ## Launches and job lifecycle
 
-`sandbox.py` maps [configuration](configuration.md) to project-sandbox flags,
-passing values as `--flag=value` so leading `-` characters cannot become options.
-Bookmark launches use `--branch`; working-copy launches omit it. Background
-launches add `--prompt-text`, `--log`, `--json-summary` and an optional `--timeout`.
+`sandbox.py` maps [configuration](configuration.md) to `--flag=value` arguments,
+preventing leading `-` characters from becoming options. Bookmark launches add
+`--branch`; background launches add `--prompt-text`, `--log`, `--json-summary`
+and optional `--timeout`.
 
-1. **Guard:** reject launches with an existing running job or session for the
-   workspace. Project-sandbox records in `$XDG_STATE_HOME/project-sandbox/sessions/`
-   have no branch name; match `workspace_path` using its slug rule
+1. **Guard:** reject busy workspaces. Project-sandbox records in
+   `$XDG_STATE_HOME/project-sandbox/sessions/` lack branch names; match
+   `workspace_path` using its slug rule
    (`/` → `-`, plus sha256[:6]).
-2. **Spawn:** detach with `start_new_session=True`, capture output, and write a
+2. **Spawn:** detach with `start_new_session=True`, capture output and write a
    job record under a repository lock.
-3. **Poll:** every `refresh_seconds`, finalise dead processes using the JSON
-   summary's exit code, then the child's, else `orphaned`. A summary never closes
+3. **Poll:** every `refresh_seconds`, finalise dead processes using the summary's
+   exit code, then the child's, else `orphaned`. A summary never closes
    a live process.
-4. **Notify:** claim `notified` atomically so only one TUI instance announces completion.
-5. **Restart:** re-adopt live processes and finalise dead ones.
+4. **Notify:** claim `notified` atomically so only one instance announces completion.
+5. **Restart:** adopt live processes; finalise dead ones.
 
-Inline interactive sessions write temporary job records so other TUI instances
-see the workspace as busy. See [sessions](sessions.md) for terminal modes and
-[configuration](configuration.md#state-directory) for stored data and permissions.
+Inline sessions use temporary job records to mark workspaces busy across
+instances. See [sessions](sessions.md) for terminal behavior and
+[state storage](configuration.md#state-directory) for paths and permissions.
 
 ## Limitations
 
-- Inline sessions and the terminal diff viewer suspend the event loop;
+- Inline sessions and diffs suspend the event loop;
   notifications arrive on return.
-- External launches and stale records may need [manual recovery](sessions.md#interactive-sessions).
-- PID reuse after a crash can make a record appear running; `C` forgets it.
+- External launches, stale records and PID reuse after crashes may need
+  [manual recovery](sessions.md#interactive-sessions).
 - Working-copy dirty markers, prompt files, remote bookmarks and switching
   repositories are not implemented.
-
-For tooling and CI, see [development](development.md).

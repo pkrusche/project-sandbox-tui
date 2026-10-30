@@ -1,19 +1,18 @@
 # Configuration
 
-Global settings live in `$XDG_CONFIG_HOME/project-sandbox-tui/config.toml`
-(default `~/.config/…`). Trusted `<repo>/.project-sandbox-tui.toml` settings are
-deep-merged on top; unknown keys are errors. `--init` writes templates without
-overwriting existing files.
+Settings are deep-merged from global
+`$XDG_CONFIG_HOME/project-sandbox-tui/config.toml` (default `~/.config/…`) and
+trusted `<repo>/.project-sandbox-tui.toml`. Unknown keys are errors. `--init`
+writes missing templates.
 
-`ctrl+r` reloads both files, keeping current settings on error. Running sessions
-keep their launch settings. The TUI reads TOML; use an editor or `config set/unset`
-to change it.
+Edit TOML directly or use `config set/unset`. `ctrl+r` reloads both files,
+keeping current settings on error; running sessions retain their launch settings.
 
 ## From the command line
 
 ```sh
-sbx-tui config list                     # settings in effect (global + trusted project)
-sbx-tui config list --project           # what one file sets (--global / --project)
+sbx-tui config list                     # effective settings
+sbx-tui config list --project           # one file (--global / --project)
 sbx-tui config get defaults.agent
 sbx-tui config set --global defaults.agent codex
 sbx-tui config set --project project.build python-uv
@@ -22,29 +21,27 @@ sbx-tui config unset --project defaults.effort
 sbx-tui config path --global
 ```
 
-Keys use `section.key`; values use the setting's type (booleans, numbers, TOML
-arrays). Edits preserve comments and are validated against the other file before
-writing. A new or trusted project file stays trusted after editing; one with
-unreviewed changes stays untrusted.
+Use `section.key` and typed values (booleans, numbers, TOML arrays). Edits preserve
+comments and validate against the other file before writing. New or trusted
+project files remain trusted; unreviewed changes remain untrusted.
 
 ## Trusting the project config
 
-Project config can run host commands (`sandbox.command`, `ui.*_command`) or
-loosen sandbox restrictions (network, credentials, `extra_args`). Only a reviewed
-copy takes effect:
+Project config can run host commands (`sandbox.command`, `ui.*_command`) and
+loosen network, credential or sandbox restrictions (`extra_args`). Only reviewed
+settings take effect:
 
-- When the file is new or has changed, sbx-tui shows it as a diff against the
-  trusted copy at startup and on `ctrl+r`; `y` trusts exactly what was shown.
-- Until then a never-trusted file is ignored, and a changed one keeps the
-  previously trusted version in effect. A file that fails to load is not offered.
-- `sbx-tui --trust-config` does the same review in the terminal;
-  `--print-config` and `--cleanup-workspaces` warn about an untrusted file.
-- `sbx-tui --init` trusts the template it writes.
+- Startup and `ctrl+r` show new or changed files as a diff against the trusted
+  copy; `y` trusts exactly that version. Invalid files are not offered.
+- Until reviewed, new files are ignored; changed files use the trusted copy.
+- `--trust-config` offers the same review in the terminal. `--print-config` and
+  `--cleanup-workspaces` warn about untrusted files.
+- `--init` trusts its new template.
 
 ## Settings reference
 
-Defaults resolve as project → global → built-in. Remembered launch choices
-override these; models are remembered per agent.
+Precedence: remembered launch choices → trusted project → global → built-in.
+The last agent, effort, timeout and per-agent model are remembered per repository.
 
 ```toml
 [defaults]
@@ -91,7 +88,7 @@ terminal_command = ""   # with terminal = "custom"; {cmd} {branch} {repo}
 editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this terminal
 refresh_seconds = 3
 bell = true
-cheatsheet = true       # H toggles; collapses to one help line in small terminals
+cheatsheet = true
 
 [models]                # extra launch-form suggestions, listed first
 claude = ["opus", "sonnet"]
@@ -102,11 +99,10 @@ codex = ["gpt-5.5"]
 # octopus_rebase = "…"
 ```
 
-Command placeholders (`{cmd}`, `{branch}`, `{repo}`, `{title}`, `{message}`,
-`{path}`) are substituted per argument. Whole-argument values pass unchanged;
-embedded values are shell-quoted. `{cmd}` is already a command line: use
-`'wezterm start -- sh -c {cmd}'`, which passes it to a shell, rather than
-`alacritty -e {cmd}`, which treats it as one word.
+Command placeholders are substituted per argument: whole-argument values pass
+unchanged; embedded values are shell-quoted. `{cmd}` is a command line, so pass
+it to a shell: `'wezterm start -- sh -c {cmd}'`. `alacritty -e {cmd}` treats it
+as one word.
 
 ## State directory
 
@@ -121,6 +117,5 @@ embedded values are shell-quoted. `{cmd}` is already a command line: use
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
 | `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output |
 
-Job records include full argv and prompts. Repository state, jobs and log
-directories use mode `0700`, including directories created by earlier versions,
-to keep them private to your user.
+Job records include full argv and prompts. Repository state, job and log
+directories use mode `0700` (user-only access), including older directories.
