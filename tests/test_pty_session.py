@@ -185,7 +185,7 @@ def test_diff_uses_host_viewer_and_returns_to_tui(repo: Path, viewer: str) -> No
         )
     tui = start_tui(repo, "true")
     try:
-        tui.send(b"Gd")
+        tui.send(b"j=")
         assert tui.wait_for(b"HOST-DIFF-VIEWER-READY"), tui.buf.decode(errors="replace")
         tui.send(b"\r")
         assert tui.wait_for(b"press Enter to return to sbx-tui")

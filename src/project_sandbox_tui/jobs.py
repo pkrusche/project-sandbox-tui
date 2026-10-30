@@ -173,7 +173,7 @@ class JobManager:
         self.logs_dir = self.state_dir / "logs"
         self.jobs: dict[str, JobRecord] = {}
         self._procs: dict[str, subprocess.Popen[bytes]] = {}
-        self._stop_stage: dict[str, int] = {}  # how many stop signals were sent
+        self._stop_stage: dict[str, int] = {}  # cancel steps taken so far
         self._stop_last: dict[str, float] = {}  # when the last one was sent
         self.load()
 
@@ -236,10 +236,7 @@ class JobManager:
                 return True
             if job.running and not force:
                 return False
-            self._record_path(branch).unlink(missing_ok=True)
-            del self.jobs[branch]
-            self._stop_stage.pop(branch, None)
-            self._stop_last.pop(branch, None)
+            self._forget(branch)
             return True
 
     def discard(self, job: JobRecord) -> None:
@@ -299,7 +296,7 @@ class JobManager:
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=subprocess.STDOUT,
-                    start_new_session=True,  # survive the TUI; own process group for stop()
+                    start_new_session=True,  # survive the TUI; own process group for cancel()
                 )
             self._procs[spec.branch] = proc
             job = JobRecord(
@@ -514,37 +511,58 @@ class JobManager:
             job.notified = True
             return True
 
-    # ------------------------------------------------------------ stopping
+    # ------------------------------------------------------------ cancelling
 
     STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGKILL)
     STOP_DEBOUNCE_S = 1.0
 
-    def stop(self, branch: str, sessions: dict[str, SessionRecord]) -> str:
-        """Escalating stop, one step per call: SIGINT → SIGTERM → SIGKILL.
+    def cancel(self, branch: str, sessions: dict[str, SessionRecord]) -> str:
+        """Escalating cancel, one step per call: SIGINT → SIGTERM → SIGKILL and forget.
 
         SIGINT first lets project-sandbox run its ``finally`` teardown (commit
         work onto the branch, close the session record). The SIGKILL step also
-        stops the container, since project-sandbox cannot clean up after it.
-        Calls within ``STOP_DEBOUNCE_S`` of the previous one are ignored so a
-        double key press does not skip a step.
+        stops the container, since project-sandbox cannot clean up after it,
+        and forgets the record. Finished records are forgotten at once; running
+        records that cannot be signalled (interactive sessions, invalid PIDs)
+        on the third call, without signalling anything. Calls within
+        ``STOP_DEBOUNCE_S`` of the previous one are ignored so a double key
+        press does not skip a step.
         """
         with self._locked():
             self.load()
-            return self._stop(branch, sessions)
+            return self._cancel(branch, sessions)
 
-    def _stop(self, branch: str, sessions: dict[str, SessionRecord]) -> str:
+    def _forget(self, branch: str) -> None:
+        self._record_path(branch).unlink(missing_ok=True)
+        self.jobs.pop(branch, None)
+        self._stop_stage.pop(branch, None)
+        self._stop_last.pop(branch, None)
+
+    def _cancel(self, branch: str, sessions: dict[str, SessionRecord]) -> str:
         job = self.jobs.get(branch)
-        if job is None or not job.running:
-            return f"{branch}: nothing running"
-        if job.mode != "background":
-            return f"{branch}: interactive sessions are stopped from their terminal"
-        if job.pid <= 0:
-            return f"{branch}: invalid process id (C forgets the record)"
+        if job is None:
+            return f"{branch}: nothing to cancel"
+        if not job.running:
+            self._forget(branch)
+            return f"{branch}: {job.status.replace('_', ' ')} status cleared"
         now = time.time()
         last = self._stop_last.get(branch)
         if last is not None and now - last < self.STOP_DEBOUNCE_S:
-            return f"{branch}: stop already requested"
+            return f"{branch}: cancel already requested"
         stage = min(self._stop_stage.get(branch, 0), len(self.STOP_SIGNALS) - 1)
+        if job.mode != "background" or job.pid <= 0:
+            if stage == len(self.STOP_SIGNALS) - 1:
+                self._forget(branch)
+                return f"{branch}: record forgotten (no process was signalled)"
+            self._stop_stage[branch] = stage + 1
+            self._stop_last[branch] = now
+            reason = (
+                "interactive sessions are stopped from their terminal"
+                if job.mode != "background"
+                else f"invalid process id {job.pid}"
+            )
+            more = len(self.STOP_SIGNALS) - 1 - stage
+            return f"{branch}: {reason}; x {more} more time{'s' * (more > 1)} forgets the record"
         sig = self.STOP_SIGNALS[stage]
         try:
             os.killpg(job.pid, sig)
@@ -556,11 +574,13 @@ class JobManager:
         self._stop_last[branch] = now
         name = signal.Signals(sig).name
         if sig != signal.SIGKILL:
-            return f"{branch}: sent {name} (press x again to escalate)"
+            more = "harder" if stage + 2 < len(self.STOP_SIGNALS) else "with SIGKILL and forget it"
+            return f"{branch}: sent {name} (press x again to cancel {more})"
         container = job.container_name or (
             sessions[branch].container_name if branch in sessions else ""
         )
         runtime = job.runtime or (sessions[branch].runtime if branch in sessions else "")
+        self._forget(branch)
         cli = runtime_cli(runtime or self.cfg.sandbox.runtime)
         if container and cli:
             try:
@@ -572,9 +592,12 @@ class JobManager:
                     start_new_session=True,
                 )
             except OSError as exc:
-                return f"{branch}: sent SIGKILL; container stop failed: {exc}"
-            return f"{branch}: sent SIGKILL, requested container stop for {container}"
-        return f"{branch}: sent SIGKILL (no container to stop)"
+                return f"{branch}: sent SIGKILL, record forgotten; container stop failed: {exc}"
+            return (
+                f"{branch}: sent SIGKILL, record forgotten, "
+                f"requested container stop for {container}"
+            )
+        return f"{branch}: sent SIGKILL, record forgotten (no container to stop)"
 
 
 def _parse_ts(value: str) -> float:

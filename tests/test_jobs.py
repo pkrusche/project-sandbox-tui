@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -11,7 +12,13 @@ import pytest
 
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, status_for_exit
-from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord, read_sessions, running_by_branch
+from project_sandbox_tui.sandbox import (
+    LaunchSpec,
+    SessionRecord,
+    pid_alive,
+    read_sessions,
+    running_by_branch,
+)
 from tests.conftest import FAKE, wait_for
 
 
@@ -83,14 +90,18 @@ def test_failure_and_readoption(repo: Path, fake_cfg: Callable[..., Config]) -> 
     assert third.clear("feature/x") and "feature/x" not in JobManager(repo, cfg).jobs
 
 
-def test_stop_interrupts(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_cancel_interrupts(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     jobs = JobManager(repo, fake_cfg())
     jobs.start_background(bg("main", "sleep:30"), {})
     wait_for(lambda: "main" in sessions_for(repo, ["main"]))
-    assert "sent SIGINT" in jobs.stop("main", {})
+    assert "sent SIGINT" in jobs.cancel("main", {})
     finished: list = []
     wait_for(lambda: bool(finished.extend(jobs.refresh({})) or finished))
     assert jobs.jobs["main"].status == "interrupted"
+    # Once finished, the next press clears the record at once.
+    assert "interrupted status cleared" in jobs.cancel("main", {})
+    assert "main" not in JobManager(repo, fake_cfg()).jobs
+    assert "nothing to cancel" in jobs.cancel("main", {})
 
 
 def test_busy_from_external_session(repo: Path, fake_cfg: Callable[..., Config]) -> None:
@@ -132,21 +143,39 @@ def test_interactive_holds_branch(repo: Path, fake_cfg: Callable[..., Config]) -
     assert jobs.refresh({}) == []  # interactive runs don't notify
 
 
-def test_stop_escalates_one_step_per_press(
+def test_cancel_escalates_one_step_per_press(
     repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     jobs = JobManager(repo, fake_cfg())
-    jobs.start_background(bg("main", "sleep:30 ignore-signals"), {})
+    job = jobs.start_background(bg("main", "sleep:30 ignore-signals"), {})
     wait_for(lambda: "main" in sessions_for(repo, ["main"]))
-    assert "SIGINT" in jobs.stop("main", {})
-    assert "already requested" in jobs.stop("main", {})  # double press is debounced
+    assert "SIGINT" in jobs.cancel("main", {})
+    assert "already requested" in jobs.cancel("main", {})  # double press is debounced
     monkeypatch.setattr(JobManager, "STOP_DEBOUNCE_S", 0.0)
-    assert "SIGTERM" in jobs.stop("main", {})
+    assert "SIGTERM" in jobs.cancel("main", {})
     assert jobs.jobs["main"].running  # ignored
-    assert "SIGKILL" in jobs.stop("main", {})
-    finished: list = []
-    wait_for(lambda: bool(finished.extend(jobs.refresh({})) or finished))
-    assert jobs.jobs["main"].status == "interrupted"
+    message = jobs.cancel("main", {})
+    assert "SIGKILL" in message and "record forgotten" in message
+    assert "main" not in jobs.jobs and "main" not in JobManager(repo, fake_cfg()).jobs
+    # The forgotten child is still reaped, so it does not linger as a zombie.
+    wait_for(lambda: jobs.refresh({}) == [] and not pid_alive(job.pid))
+    assert not jobs.busy_reason("main", {})
+
+
+def test_cancel_forgets_unsignallable_records_on_third_press(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from project_sandbox_tui.jobs import _now
+
+    jobs = JobManager(tmp_path, Config())
+    monkeypatch.setattr(JobManager, "STOP_DEBOUNCE_S", 0.0)
+    jobs.save(JobRecord("topic", LaunchSpec("topic", "claude"), os.getpid(), _now()))
+    jobs.save(JobRecord("broken", bg("broken", "go"), 0, _now()))
+    assert "stopped from their terminal; x 2 more times" in jobs.cancel("topic", {})
+    assert "invalid process id 0; x 2 more times" in jobs.cancel("broken", {})
+    assert "x 1 more time forgets" in jobs.cancel("topic", {})
+    assert "no process was signalled" in jobs.cancel("topic", {})
+    assert set(JobManager(tmp_path, Config()).jobs) == {"broken"}
 
 
 def test_external_session_closes_when_it_ends(repo: Path, fake_cfg: Callable[..., Config]) -> None:
@@ -346,9 +375,9 @@ def test_stop_uses_observed_runtime_and_handles_missing_cli(
     monkeypatch.setattr(JobManager, "STOP_DEBOUNCE_S", 0)
     spawn = Mock(side_effect=FileNotFoundError("podman missing"))
     monkeypatch.setattr(subprocess, "Popen", spawn)
-    adopted.stop("topic", {})
-    adopted.stop("topic", {})
-    message = adopted.stop("topic", {})
+    adopted.cancel("topic", {})
+    adopted.cancel("topic", {})
+    message = adopted.cancel("topic", {})
     assert "sent SIGKILL" in message and "container stop failed" in message
     assert spawn.call_args.args[0] == ["podman", "stop", "sandbox-container"]
 
