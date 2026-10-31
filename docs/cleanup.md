@@ -13,6 +13,9 @@ reasons for keeping others.
 Candidates come from `jj workspace list`, regardless of name or location. The
 current workspace is excluded. Normal cleanup keeps `default` and workspaces
 with running sessions, uncommitted changes or files too large to snapshot.
+Directories containing another registered workspace are protected from both
+normal and force removal; remove the nested workspace first and scan again.
+Running sessions also protect enclosing and nested workspace directories.
 
 ## Merged work
 
@@ -20,7 +23,8 @@ The [main bookmark](configuration.md#settings-reference) defines merged work:
 
 - Workspaces with only empty revisions outside `::main` can be removed, deleting
   ignored files or unregistering missing directories. Their bookmarks are also
-  deleted, except main.
+  deleted if the bookmarks themselves are fully merged, except main. A
+  workspace and its namesake bookmark can point at different revisions.
 - Fully merged bookmarks without workspaces appear as separate rows.
 
 Unmerged workspaces with ignored files or missing directories are kept. Removal

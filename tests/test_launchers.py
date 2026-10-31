@@ -93,22 +93,18 @@ def test_custom_template_substitutes_per_token() -> None:
         launch("custom")
 
 
-def test_custom_template_quotes_embedded_placeholders(tmp_path: Path) -> None:
+def test_custom_template_passes_shell_data_as_positional_arguments(tmp_path: Path) -> None:
     branch = "x;$(touch pwned)`id`"
     repo = tmp_path / "my repo"
     repo.mkdir()
     cmd = ["printf", " %s", "done {repo}"]
-    template = 'sh -c "cd {repo} && printf %s {branch} && {cmd}" --title {branch}'
+    template = 'sh -c \'cd "$1" && printf %s "$2" && sh -c "$3"\' sh {repo} {branch} {cmd}'
     argv = launchers.external_launch(
         "custom", cmd, branch, repo, template, env={}, which=lambda _: None
     ).argv
     assert argv[:2] == ["sh", "-c"]
-    # Embedded: quoted values, {cmd} stays a command line.
-    assert argv[2] == (
-        f"cd {shlex.quote(str(repo))} && printf %s {shlex.quote(branch)} && {shlex.join(cmd)}"
-    )
-    assert argv[3:] == ["--title", branch]  # a whole argument is passed as is
-    # Execute our generated script, so this checks fill_command rather than shlex.quote.
+    assert argv[3:] == ["sh", str(repo), branch, shlex.join(cmd)]
+    # Execute the script to check data stays literal through both shell levels.
     printed = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, check=True)
     assert printed.stdout == branch + " done {repo}"
     assert not (repo / "pwned").exists()
@@ -116,11 +112,34 @@ def test_custom_template_quotes_embedded_placeholders(tmp_path: Path) -> None:
 
 def test_fill_command_does_not_expand_values_again() -> None:
     values = {"title": "{message}", "message": "m"}
-    assert launchers.fill_command("n {title} '-t={title}'", values) == [
+    assert launchers.fill_command("n {title} -t '{title}'", values) == [
         "n",
         "{message}",
-        f"-t={shlex.quote('{message}')}",
+        "-t",
+        "{message}",
     ]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "printf %s {branch}",
+        'printf %s "{branch}"',
+        "printf %s '{branch}'",
+        "printf %s `printf %s {branch}`",
+        "cat <<EOF\n{branch}\nEOF",
+        "printf %s {cmd}",
+    ],
+)
+def test_custom_template_rejects_inserting_data_into_shell_code(script: str) -> None:
+    template = shlex.join(["sh", "-c", script])
+    with pytest.raises(LaunchError, match="must occupy a whole argument"):
+        external_launch("custom", CMD, "$(touch${IFS}pwned)", REPO, template)
+
+
+def test_fill_command_rejects_embedded_option_value() -> None:
+    with pytest.raises(ValueError, match="must occupy a whole argument"):
+        launchers.fill_command("notifier --title={title}", {"title": "hello"})
 
 
 def test_missing_multiplexer_is_reported() -> None:

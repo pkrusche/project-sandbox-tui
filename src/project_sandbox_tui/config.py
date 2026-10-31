@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from project_sandbox_tui.launchers import TERMINALS
+from project_sandbox_tui.launchers import TERMINALS, fill_command
 
 AGENTS: tuple[str, ...] = ("claude", "codex", "opencode", "pi", "bash")
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
@@ -155,11 +155,16 @@ class Config:
         if s.cpus < 0:
             raise ConfigError("sandbox.cpus must be >= 0")
         self.sandbox_command()
-        for key in ("notify_command", "terminal_command", "editor_command"):
+        placeholders = {
+            "notify_command": ("title", "message"),
+            "terminal_command": ("cmd", "branch", "repo"),
+            "editor_command": ("path",),
+        }
+        for key, names in placeholders.items():
             command = getattr(self.ui, key)
             if command:
                 try:
-                    tokens = shlex.split(command)
+                    tokens = fill_command(command, dict.fromkeys(names, ""))
                 except ValueError as exc:
                     raise ConfigError(f"ui.{key}: {exc}") from exc
                 if not tokens:

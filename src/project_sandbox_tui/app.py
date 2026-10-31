@@ -155,6 +155,9 @@ class Row:
                 status = job.status.replace("_", " ")
                 if job.exit_code is not None and job.status != "completed":
                     status += f" ({job.exit_code})"
+                last_run = _ts(job.ended_at) or _ts(job.started_at)
+                if last_run:
+                    status += f" · {human_age(time.time() - last_run)} ago"
         if sess is not None and (job is None or not job.running):
             glyph, colour = GLYPHS["external"]
             status = "busy (other)"
@@ -1512,10 +1515,10 @@ class SandboxTUI(App[None]):
             )
             return
         if self.cfg.ui.editor_command:
-            tokens = launchers.fill_command(self.cfg.ui.editor_command, {"path": str(path)})
-            if "{path}" not in self.cfg.ui.editor_command:
-                tokens.append(str(path))
             try:
+                tokens = launchers.fill_command(self.cfg.ui.editor_command, {"path": str(path)})
+                if "{path}" not in self.cfg.ui.editor_command:
+                    tokens.append(str(path))
                 subprocess.Popen(
                     tokens,
                     cwd=path,
@@ -1524,7 +1527,7 @@ class SandboxTUI(App[None]):
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 self.notify(f"editor failed: {exc}", severity="error")
             return
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"

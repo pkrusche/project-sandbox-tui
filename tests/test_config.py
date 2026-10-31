@@ -271,3 +271,14 @@ def test_failed_trust_write_keeps_review_pending(
     assert c.ProjectTrust.check(tmp_path).needs_review
     assert c.load(tmp_path).defaults.agent == "codex"
     assert list(c.repo_state_dir(tmp_path).glob("*.tmp")) == []
+
+
+@pytest.mark.parametrize(
+    ("key", "placeholder"),
+    [("terminal_command", "branch"), ("notify_command", "message"), ("editor_command", "path")],
+)
+def test_config_rejects_placeholders_embedded_in_shell_code(key: str, placeholder: str) -> None:
+    cfg = c.Config()
+    setattr(cfg.ui, key, f"sh -c 'printf %s \"{{{placeholder}}}\"'")
+    with pytest.raises(c.ConfigError, match=rf"ui\.{key}: .*must occupy a whole argument"):
+        cfg.validate()

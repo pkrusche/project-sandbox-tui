@@ -99,10 +99,15 @@ codex = ["gpt-5.5"]
 # octopus_rebase = "…"
 ```
 
-Command placeholders are substituted per argument: whole-argument values pass
-unchanged; embedded values are shell-quoted. `{cmd}` is a command line, so pass
-it to a shell: `'wezterm start -- sh -c {cmd}'`. `alacritty -e {cmd}` treats it
-as one word.
+Command placeholders must occupy a whole argument, e.g. `code {path}` or
+`notifier --title {title}`. Embedding placeholders inside arguments or shell
+scripts is rejected: quoting alone cannot safely insert data into arbitrary
+shell code. Pass data to scripts as positional arguments, e.g.
+`sh -c 'printf %s "$1"' sh {branch}`. Treat these values as data; commands such
+as `eval` can execute them even when passed safely.
+
+`{cmd}` is a command line, so pass it to a shell:
+`'wezterm start -- sh -c {cmd}'`. `alacritty -e {cmd}` treats it as one word.
 
 ## State directory
 

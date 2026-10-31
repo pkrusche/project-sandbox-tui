@@ -71,8 +71,10 @@ ends visual mode as in vim; its range stays marked until `esc`.
 A half-typed `gg` or `dd` shows in the header (`d…`) until the second key; any
 other key, or 0.8 seconds, cancels it.
 
-The status column shows the last run's outcome; its node in the graph shows
-the same as a symbol (`▶` running, `✓` completed, `✗` failed, `⚠` other).
+The status column shows the last run's outcome and, when inactive, how long ago
+it ended (or started if the end time is unavailable), such as `completed · 5m ago`.
+Its node in the graph shows the outcome as a symbol
+(`▶` running, `✓` completed, `✗` failed, `⚠` other).
 
 Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
 (including delta). Exit the viewer, then press Enter to resume the TUI.

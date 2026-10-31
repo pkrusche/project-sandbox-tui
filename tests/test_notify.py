@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 import subprocess
 from unittest.mock import Mock
 
@@ -21,10 +20,10 @@ def test_template_substitutes_once_without_splitting(title: str) -> None:
     ]
 
 
-def test_template_quotes_text_inside_a_script() -> None:
+def test_template_passes_text_as_script_argument() -> None:
     message = "done; $(rm -rf ~)"
-    argv = notify.notification_argv("t", message, "sh -c 'notify-send sbx {message}'")
-    assert argv == ["sh", "-c", f"notify-send sbx {shlex.quote(message)}"]
+    argv = notify.notification_argv("t", message, "sh -c 'notify-send sbx \"$1\"' sh {message}")
+    assert argv == ["sh", "-c", 'notify-send sbx "$1"', "sh", message]
 
 
 @pytest.mark.parametrize(
@@ -61,7 +60,7 @@ def test_platform_notifier_selection(
     assert notify.notification_argv("title", "message") == expected
 
 
-@pytest.mark.parametrize("command", [" ", "'unclosed"])
+@pytest.mark.parametrize("command", [" ", "'unclosed", "sh -c 'notify-send sbx \"{message}\"'"])
 def test_empty_or_invalid_command_does_not_spawn(
     monkeypatch: pytest.MonkeyPatch,
     command: str,

@@ -14,8 +14,8 @@ def notification_argv(title: str, message: str, command: str = "") -> list[str] 
 
     A configured ``command`` is split with shlex *before* substituting
     ``{title}``/``{message}`` per token, so message text can never inject
-    extra arguments; inside a longer argument it is shell-quoted
-    (see :func:`launchers.fill_command`).
+    extra arguments. Embedded placeholders are rejected; shell scripts should
+    take values as positional arguments (see :func:`launchers.fill_command`).
     """
     if command:
         return fill_command(command, {"title": title, "message": message})
