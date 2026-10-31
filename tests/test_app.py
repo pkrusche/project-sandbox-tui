@@ -6,10 +6,10 @@ import asyncio
 import shutil
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from textual.widgets import Input, Static, TextArea
+from textual.widgets import DataTable, Input, Static, TextArea
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
@@ -23,9 +23,10 @@ from project_sandbox_tui.screens.dialogs import (
 )
 from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
+from project_sandbox_tui.screens.review import DiffReviewScreen
 from project_sandbox_tui.vcs import detect
 from project_sandbox_tui.widgets import CycleField
-from tests.conftest import add_bookmark
+from tests.conftest import add_bookmark, jj
 
 
 def run_app(
@@ -55,6 +56,11 @@ async def wait_until(pilot: Any, predicate: Callable[[], bool], timeout: float =
             return
         await pilot.pause(0.05)
     raise AssertionError("condition not met in time")
+
+
+def description_editor_open(app: SandboxTUI) -> bool:
+    """The screen is pushed from a worker: wait for it to mount and focus the editor."""
+    return isinstance(app.screen, DescriptionScreen) and isinstance(app.focused, TextArea)
 
 
 def row_texts(app: SandboxTUI) -> list[list[str]]:
@@ -179,7 +185,7 @@ def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config])
         rows = row_texts(app)
         assert [r[1] for r in rows] == ["@ working copy ●", "feature/x", "main ●"]
         assert [r[0] for r in rows] == [" ", "○", "○"]  # history graph: feature/x on main
-        assert "2 bookmarks ·" in str(app.main.query_one("#header").render())
+        assert "2 bookmarks ·" in str(app.main.query_one("#header", Static).content)
         assert app.selected_branch_name() == "@"
         await pilot.press("j")
         assert app.selected_branch_name() == "feature/x"
@@ -260,7 +266,7 @@ def test_edit_description(repo: Path, fake_cfg: Callable[..., Config], name: str
         elif name != "@":
             await pilot.press("j")
         await pilot.press("e")
-        await wait_until(pilot, lambda: isinstance(app.screen, DescriptionScreen))
+        await wait_until(pilot, lambda: description_editor_open(app))
         editor = app.screen.query_one(TextArea)
         assert app.focused is editor
         assert editor.text == "old subject\n\nexisting body\n"
@@ -270,7 +276,7 @@ def test_edit_description(repo: Path, fake_cfg: Callable[..., Config], name: str
         assert app.backend.get_description(name)[1] == "old subject\n\nexisting body\n"
 
         await pilot.press("e")
-        await wait_until(pilot, lambda: isinstance(app.screen, DescriptionScreen))
+        await wait_until(pilot, lambda: description_editor_open(app))
         app.screen.query_one(TextArea).load_text("new subject")
         await pilot.press("end", "enter", "enter", *"body jkrq")
         assert isinstance(app.screen, DescriptionScreen)  # typing doesn't run list actions
@@ -292,7 +298,7 @@ def test_description_editor_keeps_draft_on_error(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j", "e")
-        await wait_until(pilot, lambda: isinstance(app.screen, DescriptionScreen))
+        await wait_until(pilot, lambda: description_editor_open(app))
         app.screen.query_one(TextArea).load_text("my draft")
         jj(repo, "describe", "feature/x", "-m", "external edit")
         await pilot.press("ctrl+s")
@@ -779,6 +785,32 @@ def test_enter_does_not_launch_unsupervised_run(
     run_app(repo, fake_cfg(), scenario)
 
 
+def test_unsupervised_run_on_main_asks_first(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.marked = ["main"]
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#prompt", TextArea).text = "exit:0"
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, ConfirmScreen)
+        assert "main is the main bookmark" in app.screen.body
+        await pilot.press("n")  # declined: nothing starts, the prompt is kept
+        await pilot.pause()
+        assert app.screen is app.main and "main" not in app.jobs.jobs
+        assert app._drafts == {("main",): "exit:0"}
+
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        assert form.query_one("#prompt", TextArea).text == "exit:0"
+        await pilot.press("ctrl+s", "y")
+        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
+        assert app._drafts == {}
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_unsupervised_run_launches_with_ctrl_s_or_button(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
@@ -860,7 +892,7 @@ def test_jj_working_copy_alongside_bookmarks(
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         assert [r[1] for r in row_texts(app)] == ["@ working copy ●", "main ●"]
-        assert "1 bookmark ·" in str(app.main.query_one("#header").render())
+        assert "1 bookmark ·" in str(app.main.query_one("#header", Static).content)
         await pilot.press("r")  # on @: runs in the repo's own workspace
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.current_spec().main_checkout
@@ -875,7 +907,7 @@ def test_jj_working_copy_alongside_bookmarks(
         form = app.screen
         assert isinstance(form, LaunchScreen) and not form.current_spec().main_checkout
         form.query_one("#prompt", TextArea).text = "sleep:0.1"
-        await pilot.press("ctrl+enter")
+        await pilot.press("ctrl+enter", "y")  # y: confirm main
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
         argv = app.jobs.jobs["main"].argv
         assert "--branch=main" in argv
@@ -1002,6 +1034,71 @@ def test_small_window_keeps_bookmarks_and_help_visible(
         assert footer.region.height == 1
 
     run_app(repo, fake_cfg(), scenario, size=size)
+
+
+def test_narrow_terminal_shortens_headings(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    def shot(app: SandboxTUI) -> str:
+        return app.export_screenshot().replace("&#160;", " ")
+
+    def header(app: SandboxTUI) -> str:
+        widget = app.main.query_one("#header", Static)
+        return widget.render_line(0).text
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        assert f"{repo}   2 bookmarks · 0 running" in header(app)
+        assert "vs main" in shot(app)
+
+        await pilot.resize_terminal(60, 30)
+        await pilot.pause()
+        assert "  repo   2 bookmarks · 0 running" in header(app)
+        screen = shot(app)
+        assert "vs main" not in screen and "status" in screen  # the subject column shrinks
+        # Cheat-sheet sections that share a row are not cut off by wider ones below.
+        assert "cancel · 3×: forget" in screen and "working copy to bookmark" in screen
+        await pilot.press("H")
+        await pilot.pause()
+        assert "q quit" in shot(app)
+
+        await pilot.resize_terminal(40, 30)
+        await pilot.pause()
+        assert "repo   2 bm · 0 run" in header(app)
+
+        await pilot.resize_terminal(120, 30)
+        await pilot.pause()
+        assert "vs main" in shot(app) and str(repo) in header(app)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("mode", ["i", "r"])
+def test_launch_form_layout_survives_resizing(
+    repo: Path, fake_cfg: Callable[..., Config], mode: str
+) -> None:
+    """A scrollbar from a short terminal must not stay and hide the hint once it grows."""
+    from textual.containers import Vertical
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press(mode)
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        box = form.query_one(Vertical)
+
+        def layout() -> tuple[object, ...]:
+            return (box.size, box.show_vertical_scrollbar, box.max_scroll_y)
+
+        await pilot.pause()
+        fresh = layout()
+        for size in ((40, 12), (60, 12)):
+            await pilot.resize_terminal(*size)
+            await pilot.pause()
+            await pilot.resize_terminal(60, 30)
+            await pilot.pause()
+            assert layout() == fresh
+        if mode == "i":  # the unsupervised-run form is taller than 30 rows and scrolls
+            assert not box.show_vertical_scrollbar
+            assert "esc cancel" in app.export_screenshot().replace("&#160;", " ")
+
+    run_app(repo, fake_cfg(), scenario, size=(60, 30))
 
 
 @pytest.mark.parametrize("terminal", ["inline", "tmux", "zellij", "screen"])
@@ -1216,13 +1313,13 @@ def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config], visual_key:
         assert row_texts(app)[1][1].startswith("+ ")
         await pilot.press("space")
         assert len(app.selection()) == 2
-        assert "2 selected" in str(app.main.query_one("#header").render())
+        assert "2 selected" in str(app.main.query_one("#header", Static).content)
         await pilot.press("escape")
         assert app.selection() == []
         # visual range: v at the top, G extends to the bottom
         await pilot.press("g", "g", visual_key, "G")
         assert len(app.selection()) == 3
-        assert "VISUAL" in str(app.main.query_one("#header").render())
+        assert "VISUAL" in str(app.main.query_one("#header", Static).content)
         await pilot.press(visual_key)  # end visual, keep the range as marks
         await pilot.press("g", "g")
         assert len(app.selection()) == 3 and app._visual_anchor is None
@@ -1344,9 +1441,12 @@ def test_open_selected_workspaces(
 ) -> None:
     import contextlib
 
+    from project_sandbox_tui.sandbox import LaunchSpec
     from project_sandbox_tui.vcs import workspace_path
 
     add_bookmark(repo, "missing", "missing.txt", "missing\n")
+    add_bookmark(repo, "spare", "spare.txt", "spare\n")
+    missing_path = workspace_path(repo, "missing", None)
     feature_path = workspace_path(repo, "feature/x", None)
     feature_path.mkdir(parents=True)
     main_path = workspace_path(repo, "main", None)
@@ -1366,17 +1466,32 @@ def test_open_selected_workspaces(
         app.marked = ["missing", "feature/x", "main"]
         await pilot.press("o")
         assert opened == [
+            (["test-editor", str(missing_path)], missing_path),
             (["test-editor", str(feature_path)], feature_path),
             (["test-editor", str(main_path)], main_path),
         ]
-        assert any("missing: no workspace yet" in str(n.message) for n in app._notifications)
+        # The missing workspace is created on the bookmark, named like project-sandbox's.
+        assert (missing_path / "missing.txt").read_text() == "missing\n"
+        assert "missing" in jj(repo, "workspace", "list", "-T", 'stringify(name) ++ "\\n"').split()
+        assert any("missing: created workspace" in str(n.message) for n in app._notifications)
+
+        # A registered workspace whose directory is gone is reported, not opened.
+        shutil.rmtree(missing_path)
+        app.marked = ["missing"]
+        await pilot.press("o")
+        assert len(opened) == 3
+        assert any(
+            "missing: could not create a workspace" in str(n.message) for n in app._notifications
+        )
+
+        # A session that is starting creates its own workspace: never race it.
+        app.jobs.record_external(LaunchSpec(branch="spare", agent="bash"), ["true"])
+        app.marked = ["spare"]
+        await pilot.press("o")
+        assert len(opened) == 3 and not workspace_path(repo, "spare", None).exists()
+        assert any("spare: workspace not created yet" in str(n.message) for n in app._notifications)
 
         # A bookmark on @'s parent still uses its own workspace; only @ opens the repo.
-        main_path.rmdir()
-        app.marked = ["main"]
-        await pilot.press("o")
-        assert len(opened) == 2
-        assert any("main: no workspace yet" in str(n.message) for n in app._notifications)
         await pilot.press("escape", "g", "g", "o")
         assert opened[-1] == (["test-editor", str(repo)], repo)
 
@@ -1445,6 +1560,9 @@ def test_launch_branch_field(repo: Path, fake_cfg: Callable[..., Config], target
         assert form.current_spec().branch == target
         assert form.current_spec().main_checkout == (target == "@")
         await pilot.press("ctrl+enter")
+        if target == "main":  # an unsupervised run on main asks first
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("y")
         await wait_until(pilot, lambda: target in app.jobs.jobs)
         assert app.jobs.jobs[target].spec.branch == target
         if target.startswith("topic/"):
@@ -1716,7 +1834,7 @@ def test_diff_selection(
     shown: list[tuple[str, str]] = []
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        monkeypatch.setattr(app, "_show_diff", lambda base, target: shown.append((base, target)))
+        monkeypatch.setattr(app, "_review_diff", lambda base, target: shown.append((base, target)))
         await pilot.press("j", "equals_sign")
         assert shown[-1] == ("main", "feature/x")
         app.marked = ["feature/x"]
@@ -1743,8 +1861,13 @@ def test_diff_viewer_failure_recovers(
 ) -> None:
     import contextlib
 
+    commits = [
+        jj(repo, "log", "--no-graph", "-r", r, "-T", "commit_id") for r in ("main", "feature/x")
+    ]
+
     def viewer(argv: list[str], *, cwd: Path) -> int:
-        assert argv == ["jj", "diff", "--from", '"main"', "--to", '"feature/x"']
+        base, target = (f'"{c}"' for c in commits)
+        assert argv == ["jj", "diff", "--from", base, "--to", target, 'root-file:"b.txt"']
         assert cwd == repo
         if isinstance(failure, BaseException):
             raise failure
@@ -1755,10 +1878,85 @@ def test_diff_viewer_failure_recovers(
         monkeypatch.setattr("subprocess.call", viewer)
         monkeypatch.setattr("builtins.input", lambda _: "")
         await pilot.press("j", "equals_sign")
+        await wait_until(pilot, lambda: isinstance(app.screen, DiffReviewScreen))
+        await pilot.press("enter")
         if not isinstance(failure, KeyboardInterrupt):
-            assert any("jj diff" in str(n.message) for n in app._notifications)
-        await pilot.press("?")
+            await wait_until(
+                pilot, lambda: any("jj diff" in str(n.message) for n in app._notifications)
+            )
+        await pilot.press("q", "question_mark")
         assert isinstance(app.screen, HelpScreen)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_diff_review_marks_files_seen(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    (repo / "c.txt").write_text("c\n" * 3)
+    (repo / "a.txt").write_text("changed\n")
+    viewed: list[list[str]] = []
+
+    def viewer(argv: list[str], *, cwd: Path) -> int:
+        viewed.append(argv[6:])
+        return 0
+
+    def review_rows(app: SandboxTUI) -> list[list[str]]:
+        table = app.screen.query_one(DataTable)
+        return [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+
+    async def open_review(app: SandboxTUI, pilot: Any, *keys: str) -> DiffReviewScreen:
+        await pilot.press(*keys, "equals_sign")
+        await wait_until(
+            pilot,
+            lambda: (
+                isinstance(app.screen, DiffReviewScreen)
+                and bool(app.screen.query(DataTable))
+                and app.screen.query_one(DataTable).row_count > 0
+            ),
+        )
+        return cast(DiffReviewScreen, app.screen)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
+        monkeypatch.setattr("subprocess.call", viewer)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        screen = await open_review(app, pilot, "g", "g")  # @ against main
+        assert review_rows(app) == [
+            ["●", "M", "a.txt", "+1 −1", "8 B"],
+            ["●", "A", "c.txt", "+3", "6 B"],
+        ]
+        title = str(screen.query_one("#review-title", Static).render())
+        assert "@ → main" not in title and "main → @" in title and "0/2 seen" in title
+        await pilot.press("space")  # a.txt seen, cursor moves to c.txt
+        assert [r[0] for r in review_rows(app)] == ["✓", "●"]
+        await pilot.press("l", "equals_sign")
+        assert viewed == [['root-file:"c.txt"'], ['root-file:"c.txt"']]  # file, then unseen
+        await pilot.press("A")
+        assert [r[0] for r in review_rows(app)] == ["✓", "✓"]
+        await pilot.press("equals_sign")  # all seen: every file
+        assert viewed[-1] == ['root-file:"a.txt" | root-file:"c.txt"']
+        await pilot.press("A", "k", "space", "q")
+        assert app.screen is app.main
+        # Only c.txt changes: a.txt stays seen.
+        (repo / "c.txt").write_text("c\n")
+        await open_review(app, pilot, "g", "g")
+        assert [r[:3] for r in review_rows(app)] == [["✓", "M", "a.txt"], ["●", "A", "c.txt"]]
+        await pilot.press("q")
+        # Another bookmark has its own marks.
+        jj(repo, "bookmark", "create", "--quiet", "wip", "-r", "@")
+        await app.refresh_data()
+        app.marked = ["main", "wip"]
+        await open_review(app, pilot)
+        assert [r[0] for r in review_rows(app)] == ["●", "●"]
+        await pilot.press("q")
+        app.marked = ["main", "main"]
+        await pilot.press("equals_sign")
+        await wait_until(
+            pilot, lambda: any("no differences" in str(n.message) for n in app._notifications)
+        )
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -1862,7 +2060,7 @@ def test_marked_rows_stay_visible_under_a_filter(
         await pilot.press("slash", *"feature", "enter")
         # The mark stays on screen regardless of commit recency (which can tie).
         assert sorted(names(app)) == ["feature/x", "fix/y"]
-        header = str(app.main.query_one("#header").render())
+        header = str(app.main.query_one("#header", Static).content)
         assert "1 selected (1 outside the filter)" in header
         await pilot.press("escape")  # clears the filter, keeps the mark
         assert app.marked == ["fix/y"]
@@ -1888,7 +2086,7 @@ def test_actions_end_visual_mode_keeping_the_range(
 
 def test_pending_prefix_is_shown_and_cancelled(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     def header(app: SandboxTUI) -> str:
-        return str(app.main.query_one("#header").render())
+        return str(app.main.query_one("#header", Static).content)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("G", "d")
@@ -2039,5 +2237,31 @@ def test_launch_form_flags_a_new_bookmark_name(repo: Path, fake_cfg: Callable[..
         form.query_one("#branch", Input).value = "main"
         await pilot.pause()
         assert "existing name selects it" in hint()
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("key", ["u", "q"])
+def test_stale_working_copy_dialog(
+    repo: Path, tmp_path: Path, fake_cfg: Callable[..., Config], key: str
+) -> None:
+    from project_sandbox_tui.screens.dialogs import StaleWorkspaceScreen
+    from tests.conftest import make_stale
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        make_stale(repo, tmp_path / "other")
+        await wait_until(pilot, lambda: isinstance(app.screen, StaleWorkspaceScreen))
+        await pilot.press("x")  # neither choice: the dialog stays
+        await pilot.pause(0.5)  # refreshes meanwhile do not stack more dialogs
+        assert isinstance(app.screen, StaleWorkspaceScreen)
+        assert sum(isinstance(s, StaleWorkspaceScreen) for s in app.screen_stack) == 1
+        await pilot.press(key)
+        if key == "u":
+            await wait_until(pilot, lambda: not (repo / "wip.txt").exists())
+            await pilot.pause(0.5)
+            assert not isinstance(app.screen, StaleWorkspaceScreen)
+            assert app.is_running
+        else:
+            await wait_until(pilot, lambda: not app.is_running)
 
     run_app(repo, fake_cfg(), scenario)

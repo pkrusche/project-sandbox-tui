@@ -39,7 +39,10 @@ class HistorySearchScreen(ModalScreen[str | None]):
     HistorySearchScreen Input, HistorySearchScreen Input:focus {
         border: none; height: 1; padding: 0 1; background: $boost;
     }
-    HistorySearchScreen OptionList { border: none; height: auto; max-height: 16; margin-top: 1; }
+    HistorySearchScreen OptionList, HistorySearchScreen OptionList:focus {
+        border: none; height: auto; max-height: 16; margin-top: 1;
+        scrollbar-gutter: stable; scrollbar-size-vertical: 1;  /* see LaunchScreen */
+    }
     HistorySearchScreen .hint { color: $text-disabled; margin-top: 1; }
     """
 

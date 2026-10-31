@@ -10,12 +10,14 @@ require a `.jj/` directory.
 |---|---|
 | `cli.py`, `settings.py`, `doctor.py` | Entry point, config commands, dependency checks |
 | `config.py` | Typed TOML loading, validation, trust, state paths and launch defaults |
-| `vcs.py` | Bookmark discovery, creation, working-copy moves and fast-forwarding |
+| `vcs.py` | Bookmark discovery, creation, changed files, working-copy moves and fast-forwarding |
 | `sandbox.py` | `LaunchSpec`, argv construction and session matching |
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
-| `models.py`, `history.py`, `notify.py` | Suggestions, prompt history and notifications |
+| `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
+| `commands.py` | `:` command parsing, completion and leader-key mappings |
+| `review.py` | Diff review: files marked seen per bookmark |
 | `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
 
@@ -47,7 +49,7 @@ after the run ended. See [sessions](sessions.md) for terminal behavior and
 
 ## Limitations
 
-- Inline sessions and diffs suspend the event loop;
+- Inline sessions, diffs and shell commands suspend the event loop;
   notifications arrive on return.
 - External launches, stale records and PID reuse after crashes may need
   [manual recovery](sessions.md#interactive-sessions).

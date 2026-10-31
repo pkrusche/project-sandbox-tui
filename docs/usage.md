@@ -28,10 +28,13 @@ See [configuration](configuration.md), [models](models.md) and
 ## Bookmark list
 
 `@ working copy` appears first, then bookmarks in [history](#bookmark-history)
-order. The cheat-sheet collapses to one line in small terminals.
+order. The cheat-sheet collapses to one line in small terminals. In narrow ones
+the header shows the repository's name instead of its path, then abbreviated
+counts, and the subject column narrows to keep the status in view.
 
 The `vs main` heading names the baseline: `project.main_branch`, or the first
-existing bookmark main/master/trunk. Counts omit zeros:
+existing bookmark main/master/trunk; below 80 columns it is just `main`. Counts
+omit zeros:
 
 | Symbol | Meaning |
 |---|---|
@@ -46,7 +49,8 @@ existing bookmark main/master/trunk. Counts omit zeros:
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
 | `/` | Filter (`enter` keeps it, `esc` clears) |
-| `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout |
+| `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
+| `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout; asks first on the main bookmark |
 | `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark): repeat to cancel harder, a third time to forget it; clears a finished status at once; asks first before signalling several runs |
 | `l` / `enter` | [Logs](#log-viewer), or run details while a bookmark has no runs |
 | `P` | Last run details (agent, times, IDs, log, command line), history and the interactive command |
@@ -55,10 +59,10 @@ existing bookmark main/master/trunk. Counts omit zeros:
 | `e` | Edit the full description of one bookmark or the working copy (`ctrl+s` saves, `esc` cancels) |
 | `dd` · `u` · `ctrl+r` | Delete bookmark, keeping its history · [undo · redo](#bookmark-history) |
 | `v` / `V` · `space` | Select a range / mark individual bookmarks; `esc` clears |
-| `=` | Diff against main, or compare two selected revisions |
+| `=` | [Review the diff](#diff-review) against main, or between two selected revisions |
 | `f` | Fast-forward main to highlighted bookmark or `@` (`u` undoes) |
 | `@` | Start a working-copy change on highlighted bookmark |
-| `o` | Open workspace in editor; asks before opening more than three |
+| `o` | Open workspace in editor, first creating a missing one on the bookmark (`jj workspace add`); asks before opening more than three |
 | `W` | [Clean up workspaces](cleanup.md) |
 | `R` · `ctrl+l` | Refresh list · reload configuration |
 | `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue; asks first while any are running) |
@@ -78,8 +82,6 @@ it ended (or started if the end time is unavailable), such as `completed · 5m a
 Its node in the graph shows the outcome as a symbol
 (`▶` running, `✓` completed, `✗` failed, `⚠` other).
 
-Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
-(including delta). Exit the viewer, then press Enter to resume the TUI.
 
 `e` edits the tip commit's description with `jj describe`. The editor loads the
 full description, including multiple paragraphs; `enter` inserts a newline.
@@ -95,6 +97,39 @@ again since.
 `@` saves an unbookmarked working-copy change, including edits, as
 `saved/<change-id>` for later recovery, then runs `jj new` on the chosen bookmark
 and checks out its files. Running sessions in `@` block the move.
+
+## Command line
+
+`:` opens a command line at the bottom of the list, as in vim.
+
+| Command | Action |
+|---|---|
+| `:!cmd` | Run `cmd` with `sh -c` in the repository |
+| `:name args` | Run the configured [`[commands]`](configuration.md#commands-and-leader-key) entry `name`, appending `args` |
+| `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
+
+| Key | Action in the command line |
+|---|---|
+| `tab` / `shift+tab` | Complete: command names, programs after `!`, file names for arguments; repeat to cycle |
+| `↑` / `↓` · `ctrl+p` / `ctrl+n` | Older / newer command starting with the typed text |
+| `→` at end | Accept the newest matching command shown as ghost text |
+| `enter` · `esc` | Run · cancel (`backspace` on an empty line also cancels) |
+
+Shell commands take over the terminal like a diff: the TUI is suspended and
+returns after `enter`, and a non-zero exit status is reported. They run in the
+repository root and receive `SBX_REPO`, `SBX_BOOKMARK` (the highlighted
+bookmark, `@` for the working copy) and `SBX_WORKSPACE` (its workspace
+directory, empty if it has none yet), e.g.
+`cd "$SBX_WORKSPACE" && uv run pytest`. Each repository remembers the latest
+500 distinct command lines.
+
+### Leader key
+
+The leader key (`\` by default, `ui.leader`) followed by a key sequence from
+[`[leader]`](configuration.md#commands-and-leader-key) runs its command line, so
+`t = "test"` makes `\t` run `:test`. The header shows the keys typed so far;
+`esc`, an unmapped key or 1.5 seconds without a key cancels. `?` lists the
+configured commands and mappings.
 
 ## Bookmark history
 
@@ -161,6 +196,34 @@ Runs record only their prompt's first line. Logs of earlier runs stay in the
 [state directory](configuration.md#state-directory); interactive sessions have
 none.
 
+## Diff review
+
+`=` lists the files that differ between the two revisions: status
+(`A`dded, `M`odified, `D`eleted, `R`enamed, `C`opied), lines added and removed,
+and the file's size in the target revision. The header totals them.
+
+| Key | Action |
+|---|---|
+| `enter` / `l` | View the file's diff |
+| `space` | Mark the file seen (`✓`) or unseen (`●`), then move down |
+| `=` | View the diff of all unseen files, or of every file once all are seen |
+| `A` | Mark all files seen, or all unseen once all are seen |
+| `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
+| `q` / `esc` / `h` | Back to the list |
+
+Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
+(including delta). Exit the viewer, then press Enter to return to the file list.
+The list pins both revisions when it opens, so the viewer shows the change
+that was listed even if a run moves the bookmark meanwhile; press `=` on the
+bookmark list again to see later changes.
+
+Seen marks are remembered per bookmark (the second revision, or `@`) and per
+change to the file: both sides' contents, type and path. A file marked seen
+stays seen while later runs change only other files, and becomes unseen again
+when its own diff changes, including when main changes it. Marks are kept in
+the [state directory](configuration.md#state-directory) and shared by TUI
+instances.
+
 ## Log viewer
 
 | Key | Action |
@@ -181,6 +244,12 @@ Details (`P`), help (`?`) and confirmations scroll with `j` `k`, `ctrl+d`
 `q`, `esc` or `enter` close details and help (`?` also closes help);
 other keys do nothing. Confirmations take `y`; any key other than a scroll key
 cancels.
+
+When another workspace or operation rewrites this workspace's working-copy
+commit, jj reports the working copy as stale and refuses to read it. sbx-tui
+then asks once: `u` runs `jj workspace update-stale` and refreshes (edits jj had
+not snapshotted are recorded first and can be recovered via `jj op log`), and
+`q` exits. Other keys leave the question open.
 
 ## Launch form
 

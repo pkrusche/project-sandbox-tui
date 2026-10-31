@@ -15,6 +15,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static, TextArea
 
 from project_sandbox_tui.cleanup import Workspace
@@ -33,6 +34,21 @@ _MODAL_CSS = """
 {name} Input, {name} Input:focus {{ border: none; height: 1; padding: 0 1; }}
 {name} Input:focus {{ background: $boost; }}
 """
+
+
+def fit_body(body: Widget) -> None:
+    """Cap a dialog's scrolling ``body`` so the rows around it stay on screen.
+
+    Call after layout: titles and hints wrap onto more lines in narrow terminals.
+    """
+    box = body.parent
+    assert isinstance(box, Widget)
+    others = sum(
+        child.outer_size.height + child.styles.margin.height
+        for child in box.children
+        if child is not body and child.display
+    )
+    body.styles.max_height = max(3, body.screen.size.height - box.styles.gutter.height - others)
 
 
 class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
@@ -79,7 +95,7 @@ class DescriptionScreen(ModalScreen[bool]):
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="DescriptionScreen")
         + """
-    DescriptionScreen TextArea { height: 12; max-height: 60vh; border: none; }
+    DescriptionScreen TextArea { height: 12; max-height: 60vh; }
     DescriptionScreen TextArea:focus { background: $boost; }
     """
     )
@@ -100,7 +116,8 @@ class DescriptionScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(Text(f"edit description · {self.name_text}"), classes="title")
-            yield TextArea(self.description, id="description")
+            # Compact: no border, which TextArea:focus would add over "border: none".
+            yield TextArea(self.description, compact=True, id="description")
             yield Static("", id="error")
             yield Static(KeyHints("ctrl+s save · enter newline · esc cancel"), classes="hint")
 
@@ -227,6 +244,43 @@ class ConfirmScreen(ScrollModal[bool]):
         self.dismiss(key == "y")
 
 
+class StaleWorkspaceScreen(ScrollModal[bool]):
+    """The jj working copy is stale: u updates it (True), q exits (False).
+
+    Other keys are ignored: there is nothing useful to return to until it is updated.
+    """
+
+    DEFAULT_CSS = (
+        _MODAL_CSS.format(name="StaleWorkspaceScreen")
+        + """
+    StaleWorkspaceScreen VerticalScroll { height: auto; max-height: 60vh; }
+    """
+    )
+
+    def __init__(self, repo: str) -> None:
+        super().__init__()
+        self.repo = repo
+
+    def compose(self) -> ComposeResult:
+        body = (
+            f"{self.repo}\n\n"
+            "Another workspace or operation rewrote this workspace's working-copy "
+            "commit, so jj will not read or snapshot it until it is updated.\n\n"
+            "Updating runs `jj workspace update-stale`: files on disk are replaced "
+            "with the current working-copy commit. Edits jj had not snapshotted yet "
+            "are recorded first and can be recovered via `jj op log`."
+        )
+        with Vertical():
+            yield Static("the jj working copy is stale", classes="title")
+            with VerticalScroll():
+                yield Static(Text(body))
+            yield Static(KeyHints(f"u update · q exit · {SCROLL_HINT}"), classes="hint")
+
+    def other_key(self, key: str) -> None:
+        if key in ("u", "q"):
+            self.dismiss(key == "u")
+
+
 @dataclass(frozen=True)
 class ForceRemove:
     """CleanupScreen result: force-delete this kept workspace (after confirmation)."""
@@ -241,7 +295,10 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
         _MODAL_CSS.format(name="CleanupScreen")
         + """
     CleanupScreen > Vertical { width: 110; }
-    CleanupScreen OptionList { border: none; height: auto; padding: 0; }
+    CleanupScreen OptionList, CleanupScreen OptionList:focus {
+        border: none; height: auto; padding: 0;
+        scrollbar-gutter: stable; scrollbar-size-vertical: 1;  /* see LaunchScreen */
+    }
     """
     )
     BINDINGS = [
@@ -295,8 +352,7 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
 
     def on_resize(self, event: events.Resize) -> None:
         # Long lists scroll inside the dialog; title, summary and hint stay visible.
-        chrome = 7  # padding, title + margin, summary, hint + margin
-        self.query_one(OptionList).styles.max_height = max(3, event.size.height - chrome)
+        self.call_after_refresh(fit_body, self.query_one(OptionList))
 
     def action_move(self, step: int) -> None:
         options = self.query_one(OptionList)
@@ -383,10 +439,10 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 ("gg / G", "top / bottom"),
                 ("ctrl+d / u", "half page down / up"),
                 ("/", "filter (esc clears)"),
-                ("R", "refresh"),
-                ("ctrl+l", "reload configuration"),
-                ("H", "show / hide cheat-sheet"),
-                ("?", "this help"),
+                (":", "command line, :! shell"),
+                ("\\ keys", "[leader] key mappings"),
+                ("R / ctrl+l", "refresh / reload config"),
+                ("H / ?", "cheat-sheet / this help"),
                 ("q", "quit (runs continue)"),
             ),
         ),
@@ -437,8 +493,11 @@ class HelpBody:
     GAP = 4
     MIN_DESCRIPTION = 10  # half the narrowest description column before the columns stack
 
+    def __init__(self, extra: tuple[HelpSection, ...] = ()) -> None:
+        self.extra = extra  # appended to the right column, e.g. configured commands
+
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        left, right = HELP
+        left, right = HELP[0], HELP[1] + self.extra
         side_by_side = (
             self._width(left) + self.GAP + self._width(right) + 4 * self.MIN_DESCRIPTION
         ) <= options.max_width
@@ -469,7 +528,7 @@ class HelpBody:
             table.add_column(width=cls._width(sections) - 2, no_wrap=True, style="bold")
             table.add_column(style="dim")
             for key, what in keys:
-                table.add_row(key, what)
+                table.add_row(Text(key), Text(what))  # not markup: [commands], shell code
             parts.append(table)
         return Group(*parts)
 
@@ -483,16 +542,16 @@ class HelpScreen(MessageScreen):
     """
     CLOSE_KEYS = MessageScreen.CLOSE_KEYS | {"question_mark"}
 
-    def __init__(self) -> None:
+    def __init__(self, extra: tuple[HelpSection, ...] = ()) -> None:
         super().__init__("sbx-tui keys", "")
+        self.extra = extra
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self.title_text, classes="title")
             with VerticalScroll():
-                yield Static(HelpBody())
+                yield Static(HelpBody(self.extra))
             yield Static(KeyHints(f"{SCROLL_HINT} · q/esc/? close"), classes="hint")
 
     def on_resize(self, event: events.Resize) -> None:
-        chrome = 6  # padding, title + margin, hint + margin
-        self.query_one(VerticalScroll).styles.max_height = max(3, event.size.height - chrome)
+        self.call_after_refresh(fit_body, self.query_one(VerticalScroll))

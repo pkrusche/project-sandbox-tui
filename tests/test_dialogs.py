@@ -77,6 +77,52 @@ def test_cleanup_reasons_wrap_and_list_scrolls() -> None:
     asyncio.run(scenario())
 
 
+def test_cleanup_fits_a_narrow_terminal() -> None:
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(60, 16)) as pilot:
+            app.push_screen(CleanupScreen(_cleanup_rows(12)))
+            await pilot.pause()
+            options = app.screen.query_one(OptionList)
+            # Focus must not add a border that the layout leaves no room for.
+            assert app.focused is options and options.outer_size == options.size
+            hint = app.screen.query_one(".hint")
+            assert hint.size.height == 2  # the hint wraps at this width
+            assert hint.region.bottom < app.screen.region.bottom
+            assert "esc cancel" in app.export_screenshot().replace("&#160;", " ")
+
+    asyncio.run(scenario())
+
+
+def test_cleanup_list_layout_survives_resizing() -> None:
+    """A scrollbar from a short terminal narrows the list and wraps more of it;
+    that must not keep the scrollbar once the terminal grows back."""
+    rows = [
+        Workspace(f"feature/bookmark-number-{i}-with-a-long-name", None, "merged into main")
+        for i in range(8)
+    ]
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(60, 30)) as pilot:
+            app.push_screen(CleanupScreen(rows))
+            await pilot.pause()
+            options = app.screen.query_one(OptionList)
+
+            def layout() -> tuple[object, ...]:
+                return (options.size, options.show_vertical_scrollbar, options.max_scroll_y)
+
+            fresh = layout()
+            await pilot.resize_terminal(60, 12)
+            await pilot.pause()
+            await pilot.resize_terminal(60, 30)
+            await pilot.pause()
+            await pilot.pause()
+            assert layout() == fresh
+
+    asyncio.run(scenario())
+
+
 def test_cleanup_toggles_only_removable_rows() -> None:
     rows = [
         Workspace("done", Path("/tmp/done"), "clean", removable=True),

@@ -69,6 +69,14 @@ def add_bookmark(repo: Path, name: str, path: str, text: str, start: str = "main
     jj(repo, "new", "--quiet", "main")
 
 
+def make_stale(repo: Path, other: Path) -> None:
+    """Make ``repo``'s working copy stale: abandon its commit from a new workspace ``other``."""
+    (repo / "wip.txt").write_text("wip\n")
+    jj(repo, "status")  # snapshot wip.txt into @
+    jj(repo, "workspace", "add", "--quiet", str(other))
+    jj(other, "abandon", "--quiet", "default@")
+
+
 RepoCopy = Callable[[Callable[[Path], None], Path], Path]
 
 

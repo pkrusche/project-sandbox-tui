@@ -1,4 +1,4 @@
-"""Prompt history for unsupervised runs, kept per repository.
+"""Prompt history for unsupervised runs (and ``:`` command lines), kept per repository.
 
 Stored as JSON (prompts are often multi-line) in the repo's state directory,
 oldest first. Every write re-reads the file under a lock so two TUI instances
@@ -28,8 +28,8 @@ class PromptHistory:
         self.entries: list[str] = self._read()  # oldest → newest
 
     @classmethod
-    def for_repo(cls, repo: Path) -> PromptHistory:
-        return cls(repo_state_dir(repo) / "prompt_history.json")
+    def for_repo(cls, repo: Path, name: str = "prompt_history.json") -> PromptHistory:
+        return cls(repo_state_dir(repo) / name)
 
     # ------------------------------------------------------------ storage
 

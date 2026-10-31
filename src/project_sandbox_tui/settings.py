@@ -46,10 +46,12 @@ class Key:
 
 
 def parse_key(text: str) -> Key:
-    """``section.key``, or ``models.<agent>``."""
+    """``section.key``, ``models.<agent>``, ``commands.<name>`` or ``leader.<keys>``."""
     section, _, name = text.partition(".")
     if section == "models" and name in AGENTS:
         return Key(section, name, [])
+    if section in ("commands", "leader") and name:
+        return Key(section, name, "")
     cls = _SECTIONS.get(section)
     if cls is None or name not in {f.name for f in dataclasses.fields(cls)}:
         raise ConfigError(f"unknown key {text!r} (see `sbx-tui config list`)")
@@ -98,6 +100,8 @@ def effective(cfg: Config) -> dict[str, Any]:
     """The merged configuration as ``{section: {key: value}}``."""
     data = {name: dataclasses.asdict(getattr(cfg, name)) for name in _SECTIONS}
     data["models"] = dict(cfg.models)
+    data["commands"] = dict(cfg.commands)
+    data["leader"] = dict(cfg.leader)
     return data
 
 

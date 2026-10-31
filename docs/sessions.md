@@ -6,6 +6,14 @@ Bookmark sessions use separate jj workspaces; `@` uses the repository itself.
 A workspace is busy while any TUI instance or project-sandbox session uses it,
 including sessions started from a shell.
 
+`o` creates a missing workspace before opening it, named after the bookmark
+at project-sandbox's location, on a new change on top of the bookmark; later
+sessions reuse it with `keep_workspace`. Rows with a starting session wait for
+the session's own workspace.
+
+A background run on the main bookmark asks for confirmation first: its changes
+land on main unreviewed. Declining keeps the prompt as a draft.
+
 Background jobs survive quitting; restarting re-adopts them and announces any
 that finished. Quitting (`q` or `ctrl+q`) while jobs or sessions are running
 asks for confirmation; `y` quits, and `ctrl+q` again over the dialog also quits.

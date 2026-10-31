@@ -9,7 +9,7 @@ import os
 import shlex
 import subprocess
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast
@@ -27,7 +27,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 from textual.widgets.data_table import ColumnKey
 
-from project_sandbox_tui import launchers, notify, octopus, terminal
+from project_sandbox_tui import commands, launchers, notify, octopus, terminal
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
@@ -49,6 +49,7 @@ from project_sandbox_tui.config import (
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
+from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
     Mode,
@@ -57,6 +58,7 @@ from project_sandbox_tui.sandbox import (
     read_sessions,
     running_by_branch,
 )
+from project_sandbox_tui.screens.command import CommandScreen
 from project_sandbox_tui.screens.dialogs import (
     CleanupScreen,
     ConfirmScreen,
@@ -65,20 +67,24 @@ from project_sandbox_tui.screens.dialogs import (
     HelpScreen,
     MessageScreen,
     NewBranchScreen,
+    StaleWorkspaceScreen,
 )
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
+from project_sandbox_tui.screens.review import DiffReviewScreen
 from project_sandbox_tui.vcs import (
     WORKING_COPY,
     Branch,
+    FileChange,
     JjBackend,
+    StaleWorkingCopyError,
     VcsError,
     main_branch,
     sort_branches,
     workspace_path,
 )
-from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys, modifier_key
+from project_sandbox_tui.widgets import GLYPHS, Fitted, KeyHints, PrefixKeys, modifier_key
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
 
@@ -227,6 +233,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("ctrl+l", "app.reload_config", show=False),
     Binding("question_mark", "app.help", show=False),
     Binding("H", "app.toggle_cheatsheet", show=False),
+    Binding("colon", "app.command_line", show=False),
     Binding("q", "app.quit", show=False),
 ]
 
@@ -239,6 +246,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("gg G", "top / bottom"),
             ("^d ^u", "half page"),
             ("/", "filter"),
+            (":", "command · :! shell"),
             ("?", "full help"),
             ("H", "hide sheet"),
             ("q", "quit"),
@@ -262,7 +270,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("dd", "delete bookmark"),
             ("u ^r", "undo / redo"),
             ("v V ␣", "select bookmarks"),
-            ("=", "diff revisions"),
+            ("=", "review diff"),
             ("f", "fast-forward main"),
             ("@", "working copy to bookmark"),
             ("o", "open in editor"),
@@ -273,6 +281,15 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 )
 
 FOOTER = "? full help · H keys · j/k move · i interactive · r run · q quit"
+# The footer is one line: narrower terminals get fewer keys rather than lose q.
+SHORT_FOOTERS = ("? full help · i interactive · r run · q quit", "? full help · q quit")
+NARROW = 80  # columns; narrower terminals get shorter column headings
+SUBJECT_WIDTH = 32  # Ellipsize long messages to leave room for session status,
+MIN_SUBJECT = 12  # shrinking in narrow terminals rather than scrolling it away.
+
+
+def _footer(*variants: str) -> Fitted:
+    return Fitted(*map(KeyHints, variants))
 
 
 def _cheatsheet_section(title: str, keys: tuple[tuple[str, str], ...]) -> Text:
@@ -295,19 +312,27 @@ class Cheatsheet:
     GAP = 3
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        sections = [_cheatsheet_section(title, keys) for title, keys in CHEATSHEET]
-        widths = [max(cell_len(line) for line in s.plain.splitlines()) for s in sections]
-        per_row = len(sections)
-        while per_row > 1 and sum(widths[:per_row]) + self.GAP * (per_row - 1) > options.max_width:
-            per_row -= 1
-        grid = Table.grid(padding=(0, self.GAP))
-        for _ in range(per_row):
-            grid.add_column(no_wrap=True)
-        for start in range(0, len(sections), per_row):
-            if start:
-                grid.add_row()  # blank line between rows of sections
-            grid.add_row(*sections[start : start + per_row])
-        yield grid
+        # Each row is its own grid: a column shared between rows would be as wide
+        # as its widest section, and cut off the sections beside it.
+        rows: list[list[Text]] = []
+        used = 0
+        for title, keys in CHEATSHEET:
+            section = _cheatsheet_section(title, keys)
+            width = max(cell_len(line) for line in section.plain.splitlines())
+            if rows and used + self.GAP + width <= options.max_width:
+                rows[-1].append(section)
+                used += self.GAP + width
+            else:
+                rows.append([section])
+                used = width
+        for index, row in enumerate(rows):
+            if index:
+                yield Text()  # blank line between rows of sections
+            grid = Table.grid(padding=(0, self.GAP))
+            for _ in row:
+                grid.add_column(no_wrap=True)
+            grid.add_row(*row)
+            yield grid
 
 
 class MainScreen(Screen[None]):
@@ -321,10 +346,13 @@ class MainScreen(Screen[None]):
         yield table
         yield Static(Cheatsheet(), id="cheatsheet")
         yield Input(placeholder="filter", id="filter")
-        yield Static(KeyHints(FOOTER), id="footer")
+        yield Static(_footer(FOOTER, *SHORT_FOOTERS), id="footer")
 
     def on_resize(self, event: events.Resize) -> None:
         self.update_help_layout()
+        app = cast("SandboxTUI", self.app)
+        if app.table.columns:  # column headings and widths depend on the width
+            app._render_table()
 
     def update_help_layout(self) -> None:
         """Collapse the sheet before it crowds out the working copy and a bookmark."""
@@ -348,6 +376,10 @@ class MainScreen(Screen[None]):
             if app._prefix.pending:
                 app._prefix.other_key(event.key)
                 app._show_pending()
+            if not isinstance(app.focused, Input) and app.leader_key(event):
+                event.stop()  # keys after the leader trigger no bindings
+                event.prevent_default()
+                return
         if modifier:
             hints = {
                 "ctrl": "ctrl+d/u half page down/up · ctrl+r redo · ctrl+l reload configuration",
@@ -356,11 +388,11 @@ class MainScreen(Screen[None]):
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
-            self.query_one("#footer", Static).update(KeyHints(f"? full help · {hint}"))
+            self.query_one("#footer", Static).update(_footer(f"? full help · {hint}", hint))
             event.stop()
         else:
             self.query_one("#cheatsheet", Static).update(Cheatsheet())
-            self.query_one("#footer", Static).update(KeyHints(FOOTER))
+            self.query_one("#footer", Static).update(_footer(FOOTER, *SHORT_FOOTERS))
 
 
 class SandboxTUI(App[None]):
@@ -410,6 +442,8 @@ class SandboxTUI(App[None]):
         self.main = MainScreen()
         self.cheatsheet_visible = cfg.ui.cheatsheet
         self.prompt_history = PromptHistory.for_repo(repo)
+        self.command_history = PromptHistory.for_repo(repo, "command_history.json")
+        self._leader = commands.LeaderKeys()
         self.graph = OpGraph(self.jobs.state_dir / "opgraph.json")
         self._graph_error = ""
         # Creating, deleting and undoing run in order: u right after n undoes n.
@@ -419,6 +453,7 @@ class SandboxTUI(App[None]):
         self.marked: list[str] = []
         self._visual_anchor: str | None = None
         self._confirming_quit = False
+        self._stale_prompt = False  # the stale working copy dialog is open
         self._drafts: dict[tuple[str, ...], str] = {}  # unsent prompts, by launch target
 
     def notify(
@@ -450,7 +485,7 @@ class SandboxTUI(App[None]):
             ("bookmark", None),
             ("vs main", None),
             ("head", 8),
-            ("subject", 32),  # Ellipsize long messages to leave room for session status.
+            ("subject", SUBJECT_WIDTH),
             ("status", None),
         ):
             table.add_column(label, width=width, key=label or "graph")
@@ -491,6 +526,10 @@ class SandboxTUI(App[None]):
             branches = await asyncio.to_thread(
                 self.backend.list_branches, compare_to_main=self.cfg.project.main_branch
             )
+        except StaleWorkingCopyError:
+            self._prompt_stale()
+            branches = self.branches
+            listed = False
         except VcsError as exc:
             self.notify(str(exc), severity="error", timeout=8)
             branches = self.branches
@@ -507,6 +546,32 @@ class SandboxTUI(App[None]):
         # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
         with contextlib.suppress(NoMatches):
             self._render_table()
+
+    def _prompt_stale(self) -> None:
+        """Ask once, while it lasts, whether to update the stale working copy or exit."""
+        if self._stale_prompt:
+            return
+        self._stale_prompt = True
+
+        def decided(update: bool | None) -> None:
+            if update:
+                self.run_worker(self._update_stale(), group="stale", exclusive=True)
+            else:
+                self._stale_prompt = False
+                self.exit()
+
+        self.push_screen(StaleWorkspaceScreen(str(self.repo)), decided)
+
+    async def _update_stale(self) -> None:
+        try:
+            await asyncio.to_thread(self.backend.update_stale)
+        except VcsError as exc:
+            self.notify(f"could not update the working copy: {exc}", severity="error", timeout=8)
+        else:
+            self.notify("updated the stale working copy")
+        # Reopens the dialog if it is still stale.
+        self._stale_prompt = False
+        await self.refresh_data()
 
     async def _sync_graph(self, listed_at: float) -> None:
         """Adopt bookmarks created elsewhere and record finished runs."""
@@ -577,9 +642,14 @@ class SandboxTUI(App[None]):
         selected = self._pending_select or self.selected_branch_name()
         rows = self.visible_rows()
         baseline = self.main_name()
+        baseline = baseline or self.cfg.project.main_branch or "main"
+        narrow = self.main.size.width < NARROW
         comparison_col = table.columns[ColumnKey("vs main")]
-        comparison_col.label = Text(f"vs {baseline or self.cfg.project.main_branch or 'main'}")
-        comparison_col.content_width = cell_len(comparison_col.label.plain)
+        comparison_col.label = Text(baseline if narrow else f"vs {baseline}")
+        # Measured here, not as rows arrive: rows already drawn keep the old width.
+        comparison_col.content_width = max(
+            [cell_len(comparison_col.label.plain), *(r.comparison_cell().cell_len for r in rows)]
+        )
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
         # place (update_cell) never has to widen the column.
@@ -591,6 +661,9 @@ class SandboxTUI(App[None]):
         if graph_col is not None:  # shrinks again once wide parts of the graph are gone
             graph_col.auto_width = False
             graph_col.width = max([1, *(row.graph_cell().cell_len for row in rows)])
+        subject_col = table.columns.get(ColumnKey("subject"))
+        if subject_col is not None:
+            subject_col.width = self._subject_width(rows)
         table.clear()
         for row in rows:
             table.add_row(*row.cells(row.branch.name in chosen), key=row.branch.name)
@@ -603,34 +676,73 @@ class SandboxTUI(App[None]):
         # clear() resets scrolling. Restore now so consecutive redraws retain the
         # offset, then clamp it after layout/cursor scrolling settles.
         table.scroll_to(x=scroll_x, animate=False)
-        table.call_after_refresh(table.scroll_to, x=scroll_x, animate=False)
+        table.call_after_refresh(
+            # Clamped: a table that now fits keeps no stale target to jump back to.
+            lambda: table.scroll_to(x=min(scroll_x, table.max_scroll_x), animate=False, force=True)
+        )
         self._render_header(chosen)
+
+    def _subject_width(self, rows: list[Row]) -> int:
+        """Up to SUBJECT_WIDTH, but narrow enough to leave room for the status."""
+        table = self.table
+        status = max([len("status"), *(cell_len(row.status()[2]) for row in rows)])
+        others = sum(
+            column.get_render_width(table)
+            for key, column in table.columns.items()
+            if key.value not in ("subject", "status")
+        )
+        padding = 2 * table.cell_padding
+        room = self.main.size.width - 1 - others - status - 2 * padding  # 1: the scrollbar
+        return max(MIN_SUBJECT, min(SUBJECT_WIDTH, room))
 
     def _render_header(self, chosen: set[str]) -> None:
         running = self.jobs.running_count()
         busy_other = sum(
             1 for n in self.sessions if not (n in self.jobs.jobs and self.jobs.jobs[n].running)
         )
-        header = Text()
-        header.append(" sbx-tui ", style="bold reverse")
-        header.append(f"  {self.repo}", style="bold")
         count = sum(1 for b in self.branches if not b.working_copy)
-        stats = f"{count_label(count)} · {running} running"
+        stats = [f"{count_label(count)} · {running} running"]
+        short = [f"{count} bm · {running} run"]
         if busy_other:
-            stats += f" · {busy_other} external"
+            stats.append(f"{busy_other} external")
+            short.append(f"{busy_other} ext")
         if self.filter_text:
-            stats += f" · filter: {self.filter_text}"
+            stats.append(f"filter: {self.filter_text}")
+            short.append(f"/{self.filter_text}")
         if self._visual_anchor is not None:
-            stats += " · VISUAL"
+            stats.append("VISUAL")
+            short.append("VISUAL")
         if chosen:
-            stats += f" · {len(chosen)} selected"
+            stats.append(f"{len(chosen)} selected")
+            short.append(f"{len(chosen)} sel")
             needle = self.filter_text.lower()
             if hidden := sum(needle not in name.lower() for name in chosen):
-                stats += f" ({hidden} outside the filter)"
-        header.append(f"   {stats}", style="dim")
-        if pending := self._prefix.pending:  # like vim's showcmd
-            header.append(f"   {pending}…", style="bold yellow")
-        self.main.query_one("#header", Static).update(header)
+                stats[-1] += f" ({hidden} outside the filter)"
+                short[-1] += f" ({hidden} hidden)"
+        pending = self._prefix.pending  # like vim's showcmd
+        leader = self._leader.pending
+
+        def header(repo: str, stats: list[str]) -> Text:
+            text = Text(" sbx-tui ", style="bold reverse", no_wrap=True, overflow="ellipsis")
+            if repo:
+                text.append(f"  {repo}", style="bold")
+            text.append(f"   {' · '.join(stats)}", style="dim")
+            if pending:
+                text.append(f"   {pending}…", style="bold yellow")
+            if leader is not None:
+                text.append(f"   {self.cfg.ui.leader}{leader}…", style="bold yellow")
+            return text
+
+        # Narrower terminals drop the repository's parent directories, then
+        # abbreviate the counts, then drop the repository.
+        name = self.repo.name
+        variants = (
+            header(str(self.repo), stats),
+            header(name, stats),
+            header(name, short),
+            header("", short),
+        )
+        self.main.query_one("#header", Static).update(Fitted(*variants))
 
     def branch(self, name: str) -> Branch | None:
         return next((b for b in self.branches if b.name == name), None)
@@ -750,6 +862,8 @@ class SandboxTUI(App[None]):
             self._render_header(set(self.selection()))
         if self._prefix.pending:
             self.set_timer(PrefixKeys.TIMEOUT + 0.05, self._show_pending)
+        elif self._leader.pending is not None:
+            self.set_timer(commands.LeaderKeys.TIMEOUT + 0.05, self._show_pending)
 
     def action_filter(self) -> None:
         box = self.main.query_one("#filter", Input)
@@ -912,17 +1026,39 @@ class SandboxTUI(App[None]):
             target = chosen[0]
         else:
             base, target = chosen
-        self._show_diff(base, target)
+        self._review_diff(base, target)
 
-    def _show_diff(self, base: str, target: str) -> None:
+    @work(exclusive=True, group="diff")
+    async def _review_diff(self, base: str, target: str) -> None:
+        """The changed files, to view and mark as seen one by one."""
+        try:
+            changes = await asyncio.to_thread(self.backend.changed_files, base, target)
+        except VcsError as exc:
+            self.notify(f"could not diff {base} and {target}: {exc}", severity="error")
+            return
+        if not changes.files:
+            self.notify(f"no differences between {base} and {target}")
+            return
+        seen = await asyncio.to_thread(SeenFiles.for_repo, self.repo)
+        title = f"{base} → {target}"
+
+        def view(files: Sequence[FileChange]) -> None:
+            shown = files[0].display if len(files) == 1 else f"{len(files)} files"
+            paths = [path for change in files for path in change.paths]
+            self._show_diff(
+                f"{title}: {shown}",
+                self.backend.diff_files_command(changes.base, changes.target, paths),
+            )
+
+        self.push_screen(DiffReviewScreen(title, target, changes, seen, view))
+
+    def _show_diff(self, title: str, argv: list[str]) -> None:
         try:
             with self._suspended():
-                print(f"\n── sbx-tui: diff {base} → {target} ──\n", flush=True)
+                print(f"\n── sbx-tui: diff {title} ──\n", flush=True)
                 with terminal.preserved():
                     try:
-                        code = subprocess.call(
-                            self.backend.diff_command(base, target), cwd=self.backend.root
-                        )
+                        code = subprocess.call(argv, cwd=self.backend.root)
                     except KeyboardInterrupt:
                         code = 130
                 # Pagers can exit immediately for short diffs. Keep the output
@@ -1046,8 +1182,30 @@ class SandboxTUI(App[None]):
             self.clear_branch_selection()
             self.call_after_refresh(self._integrate, spec, draft_key)
             return
-        self.call_after_refresh(
-            self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
+
+        def start() -> None:
+            self.call_after_refresh(
+                self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
+            )
+
+        if spec.mode != "background" or spec.branch != self.main_name():
+            start()
+            return
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                start()
+            elif draft_key in self._drafts:
+                self.notify("prompt kept as a draft: r brings it back")
+
+        body = (
+            f"{spec.branch} is the main bookmark. The agent's changes land on it "
+            "unsupervised, with no separate bookmark to review first.\n\n"
+            "Run it on a new bookmark instead to review the diff (=) and "
+            "fast-forward main (f) later."
+        )
+        self.push_screen(
+            ConfirmScreen(f"start an unsupervised run on {spec.branch}?", body, "start"), decided
         )
 
     @work(exclusive=True, group="octopus")
@@ -1515,19 +1673,26 @@ class SandboxTUI(App[None]):
         body = "\n".join(chosen) + "\n\nEach one opens in its own editor."
         self.push_screen(ConfirmScreen(f"open {len(chosen)} workspaces?", body, "open"), decided)
 
-    def _open_editor(self, name: str) -> None:
+    def _workspace_dir(self, name: str) -> Path:
+        """The repository for the working copy, else the bookmark's sandbox workspace."""
         branch = self.branch(name)
-        path = (
-            self.repo
-            if branch is not None and branch.working_copy
-            else workspace_path(self.repo, name, self.worktree_dir)
-        )
+        if branch is not None and branch.working_copy:
+            return self.repo
+        return workspace_path(self.repo, name, self.worktree_dir)
+
+    def _open_editor(self, name: str) -> None:
+        path = self._workspace_dir(name)
         if not path.exists():
-            self.notify(
-                f"{name}: no workspace yet (run a session with keep_workspace)",
-                severity="warning",
-            )
-            return
+            if self.jobs.busy_reason(name, self.sessions):
+                # Its session is about to create the workspace: never race it.
+                self.notify(f"{name}: workspace not created yet; try again", severity="warning")
+                return
+            try:
+                self.backend.add_workspace(name, path)
+            except (VcsError, OSError) as exc:
+                self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
+                return
+            self.notify(f"{name}: created workspace {path}")
         if self.cfg.ui.editor_command:
             try:
                 tokens = launchers.fill_command(self.cfg.ui.editor_command, {"path": str(path)})
@@ -1747,7 +1912,7 @@ class SandboxTUI(App[None]):
 
         body = (
             "This file comes with the repository. It can set commands that run on this "
-            "machine (sandbox.command, ui.*_command) and loosen the sandbox (network, "
+            "machine (sandbox.command, ui.*_command, [commands]) and loosen the sandbox (network, "
             f"credentials, extra_args). Trusting it copies it to {trusted_config_path(self.repo)}; "
             "later changes are shown here again before they take effect.\n\n" + trust.diff()
         )
@@ -1786,7 +1951,108 @@ class SandboxTUI(App[None]):
         self.main.update_help_layout()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen())
+        extra = []
+        if self.cfg.commands:
+            extra.append(
+                ("configured commands", tuple((f":{n}", c) for n, c in self.cfg.commands.items()))
+            )
+        if self.cfg.leader:
+            mapped = tuple(
+                (self.cfg.ui.leader + k, f":{line.removeprefix(':')}")
+                for k, line in self.cfg.leader.items()
+            )
+            extra.append(("leader mappings", mapped))
+        self.push_screen(HelpScreen(tuple(extra)))
+
+    # ------------------------------------------------------------ commands
+
+    def action_command_line(self) -> None:
+        names = [*commands.BUILTINS, *self.cfg.commands]
+        screen = CommandScreen(names, self.command_history, self.repo)
+
+        def entered(line: str | None) -> None:
+            if line:
+                self.command_history.add(line)
+                # After the screen is gone: a shell command suspends the TUI.
+                self.call_after_refresh(self.run_command, line)
+
+        self.push_screen(screen, entered)
+
+    def leader_key(self, event: events.Key) -> bool:
+        """The leader, then keys spelling a [leader] mapping, run its command line.
+
+        Returns whether the key was taken: every key while a mapping is half
+        typed, so an unmapped one cannot trigger a binding by accident.
+        """
+        char = event.character if event.is_printable else None
+        if self._leader.pending is None:
+            if not char or char != self.cfg.ui.leader:
+                return False
+            self._leader.start()
+        elif char is None:  # esc, arrows, …: give up on the mapping
+            self._leader.cancel()
+        else:
+            typed = self._leader.pending + char
+            line = self._leader.feed(char, self.cfg.leader)
+            if line is not None:
+                self.call_after_refresh(self.run_command, line)
+            elif self._leader.pending is None:
+                self.notify(f"no leader mapping {self.cfg.ui.leader}{typed}", severity="warning")
+        self._show_pending()
+        return True
+
+    async def run_command(self, line: str) -> None:
+        """Run a command line as typed after ``:``."""
+        try:
+            command = commands.parse(line, self.cfg.commands)
+        except commands.CommandError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if command.builtin == "quit":
+            await self.action_quit()
+        elif command.builtin == "help":
+            self.action_help()
+        elif command.builtin == "refresh":
+            await self.refresh_data()
+        elif command.builtin == "reload":
+            await self.action_reload_config()
+        else:
+            self._run_shell(command)
+
+    def _run_shell(self, command: commands.Command) -> None:
+        """Run a shell command in this terminal, like vim's ``:!``, then wait for Enter."""
+        name = self.selected_branch_name() or ""
+        workspace = self._workspace_dir(name) if name else None
+        env = {
+            **os.environ,
+            "SBX_REPO": str(self.repo),
+            "SBX_BOOKMARK": name,
+            "SBX_WORKSPACE": str(workspace) if workspace and workspace.is_dir() else "",
+        }
+        try:
+            with self._suspended():
+                shown = (
+                    command.line
+                    if command.line.startswith("!")
+                    else f"{command.line} → {command.script}"
+                )
+                print(f"\n── sbx-tui: :{shown} ──\n", flush=True)
+                with terminal.preserved():
+                    proc = subprocess.Popen(["sh", "-c", command.script], cwd=self.repo, env=env)
+                    while True:
+                        try:
+                            code = proc.wait()
+                            break
+                        except KeyboardInterrupt:
+                            continue  # the command got the SIGINT too; let it wind down
+                with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
+                    input(f"\n── exited with {code}; press Enter to return to sbx-tui ──")
+        except OSError as exc:
+            self.notify(f"could not run :{command.line}: {exc}", severity="error")
+            return
+        if code:
+            self.notify(f":{command.line} exited with {code}", severity="warning")
+        self.call_later(self.refresh_data)  # the command may have changed bookmarks
 
     async def action_quit(self) -> None:
         """Quit, asking first while runs or sessions are still going (q and ctrl+q)."""

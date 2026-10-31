@@ -25,6 +25,8 @@ def cli(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str, str]:
         ("project.base_image", "[x]", "[x]"),
         ("models.codex", '["a", "b"]', ["a", "b"]),
         ("models.codex", "[]", []),
+        ("commands.test", "uv run pytest", "uv run pytest"),
+        ("leader.t", "test", "test"),
     ],
 )
 def test_parse_key_and_value(key: str, text: str, expected: object) -> None:
@@ -49,7 +51,7 @@ def test_parse_invalid_value(key: str, value: str, message: str) -> None:
         s.parse_value(s.parse_key(key), value)
 
 
-@pytest.mark.parametrize("key", ["nope.x", "ui.nope", "models.gpt", "ui"])
+@pytest.mark.parametrize("key", ["nope.x", "ui.nope", "models.gpt", "ui", "commands", "leader."])
 def test_parse_invalid_key(key: str) -> None:
     with pytest.raises(config.ConfigError, match="unknown key"):
         s.parse_key(key)
@@ -153,3 +155,16 @@ def test_failed_edit_preserves_file_and_trusted_copy(
     assert config.load(repo).defaults.agent == "codex"
     assert not config.ProjectTrust.check(repo).needs_review
     assert list(repo.glob("*.tmp")) == []
+
+
+def test_set_commands_and_leader_mappings(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, err = cli(capsys, "config", "set", "--global", "leader.t", "test")
+    assert code == 2 and "unknown command :test" in err  # validated before writing
+    assert not config.global_config_path().exists()
+    assert cli(capsys, "config", "set", "--global", "commands.test", "uv run pytest")[0] == 0
+    assert cli(capsys, "config", "set", "--global", "leader.t", "test")[0] == 0
+    assert cli(capsys, "config", "get", "commands.test")[1] == "uv run pytest\n"
+    listed = cli(capsys, "config", "list")[1]
+    assert 'commands.test = "uv run pytest"' in listed and 'leader.t = "test"' in listed
+    code, _, err = cli(capsys, "config", "unset", "--global", "commands.test")
+    assert code == 2 and "unknown command :test" in err  # [leader] t still uses it

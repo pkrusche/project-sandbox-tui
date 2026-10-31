@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -9,10 +10,15 @@ import subprocess
 from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 
 class VcsError(RuntimeError):
     """A VCS command failed or the directory is not a repository."""
+
+
+class StaleWorkingCopyError(VcsError):
+    """jj refuses to snapshot: another workspace rewrote this one's working-copy commit."""
 
 
 @dataclass(frozen=True)
@@ -40,17 +46,55 @@ class Branch:
         return "@ working copy" if self.working_copy else self.name
 
 
+@dataclass(frozen=True)
+class FileChange:
+    """One file in a diff between two revisions."""
+
+    path: str  # the target side for copies and renames
+    source_path: str
+    display: str  # ``{old => new}`` for copies and renames
+    status: str  # M, A, D, R or C
+    key: str  # the same for the same change to this file: both sides' content, type, path
+    added: int | None = None  # lines; None for binary files
+    removed: int | None = None
+    size: int | None = None  # bytes in the target revision; None if removed or unknown
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Both sides of a copy or rename, so jj still pairs them in a restricted diff."""
+        return (self.path,) if self.source_path == self.path else (self.source_path, self.path)
+
+
+@dataclass(frozen=True)
+class FileChanges:
+    """Changed files between two revisions, pinned to the commits they were read from."""
+
+    base: str  # commit id
+    target: str  # commit id
+    files: list[FileChange]
+
+
 def _run(args: list[str], cwd: Path) -> str:
     return _run_with_stderr(args, cwd)[0]
 
 
 def _run_with_stderr(args: list[str], cwd: Path) -> tuple[str, str]:
+    proc = _completed(args, cwd, text=True)
+    return proc.stdout, proc.stderr
+
+
+def _run_bytes(args: list[str], cwd: Path) -> bytes:
+    """``_run`` for file contents and paths, which need not be valid text."""
+    return _completed(args, cwd, text=False).stdout
+
+
+def _completed(args: list[str], cwd: Path, *, text: bool) -> subprocess.CompletedProcess[Any]:
     try:
         proc = subprocess.run(
             args,
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=text,
             check=False,
             timeout=30,
         )
@@ -59,9 +103,14 @@ def _run_with_stderr(args: list[str], cwd: Path) -> tuple[str, str]:
     except subprocess.TimeoutExpired as exc:
         raise VcsError(f"{' '.join(args[:3])} timed out") from exc
     if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout).strip().splitlines()
+        output = proc.stderr or proc.stdout
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        if "working copy is stale" in output:
+            raise StaleWorkingCopyError("the jj working copy is stale")
+        msg = output.strip().splitlines()
         raise VcsError(msg[-1] if msg else f"{' '.join(args[:3])} failed")
-    return proc.stdout, proc.stderr
+    return proc
 
 
 _INVALID_NAME = re.compile(r"[\s\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|^[-/.]|[/.]$|\.lock(?:/|$)|/\.|//")
@@ -124,6 +173,74 @@ _JJ_WORKING_COPY_TEMPLATE = (
     'change_id.shortest(8) ++ "\\x00" ++ description.first_line() ++ "\\x00" ++ '
     'committer.timestamp().format("%s") ++ "\\x00" ++ commit_id ++ "\\n"'
 )
+
+
+# Every field ends with NUL: paths may contain newlines.
+_DIFF_FIELDS = (
+    "status_char",
+    "source.path()",
+    "path",
+    "display_diff_path",
+    "source.normal_value()",
+    "target.normal_value()",
+    "source.file_type()",
+    "target.file_type()",
+    "source.executable()",
+    "target.executable()",
+    "(source.conflict() || target.conflict())",
+)
+_JJ_DIFF_TEMPLATE = " ++ ".join(f'{field} ++ "\\x00"' for field in _DIFF_FIELDS)
+# A context large enough for whole files: line counts and sizes from one jj call.
+_FULL_CONTEXT = str(1 << 30)
+SIZE_LOOKUPS = 50  # files whose size needs a jj call of its own: binaries, renames, modes
+
+
+def _decode_path(raw: bytes) -> str:
+    return raw.decode("utf-8", errors="surrogateescape")
+
+
+def _file_pattern(path: str) -> str:
+    """A fileset matching exactly one repository path."""
+    return f"root-file:{json.dumps(path, ensure_ascii=False)}"
+
+
+def _git_file_diffs(out: bytes) -> dict[bytes, list[bytes]]:
+    """``jj diff --git`` split by file: header line → the lines after it."""
+    files: dict[bytes, list[bytes]] = {}
+    lines: list[bytes] = []
+    for line in out.split(b"\n"):
+        if line.startswith(b"diff --git "):
+            lines = files.setdefault(line, [])
+        else:
+            lines.append(line)
+    return files
+
+
+def _git_stats(lines: list[bytes]) -> tuple[int | None, int | None, int | None]:
+    """(added, removed, target size) from one file's whole-file git diff; None if unknown.
+
+    With whole-file context, the target is the context and added lines.
+    """
+    added = removed = size = 0
+    in_hunk = kept = False
+    for line in lines:
+        if not in_hunk:
+            if line.startswith(b"Binary files "):
+                return None, None, None
+            in_hunk = line.startswith(b"@@")
+            continue
+        tag = line[:1]
+        if tag in (b"+", b" "):
+            added += tag == b"+"
+            size += len(line)  # the tag stands for the newline
+            kept = True
+        elif tag == b"-":
+            removed += 1
+            kept = False
+        elif tag == b"\\" and kept:  # "\ No newline at end of file"
+            size -= 1
+    # No hunk: only the name or mode changed, or the file is empty.
+    return added, removed, size if in_hunk else None
 
 
 class JjBackend:
@@ -231,6 +348,28 @@ class JjBackend:
             self.root,
         )
 
+    def add_workspace(self, name: str, path: Path) -> None:
+        """Create workspace ``name`` at ``path`` on a new change on top of bookmark ``name``.
+
+        Named after the bookmark, like project-sandbox's own workspaces, so its
+        sessions reuse it and cleanup finds it.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                "jj",
+                "--no-pager",
+                "--color=never",
+                "workspace",
+                "add",
+                f"--name={name}",
+                f"--revision={revset_symbol(name)}",
+                "--",
+                str(path),
+            ],
+            self.root,
+        )
+
     def delete_bookmark(self, name: str) -> str:
         """Delete a local bookmark; return the commit it pointed to, for restoring it."""
         # Snapshot first: edits to @ may move the bookmark, and the restored
@@ -289,6 +428,57 @@ class JjBackend:
     def diff_command(self, base: str, target: str) -> list[str]:
         """Interactive diff: let jj choose the formatter, colors and pager."""
         return ["jj", "diff", "--from", revset_symbol(base), "--to", revset_symbol(target)]
+
+    def diff_files_command(self, base: str, target: str, paths: Collection[str]) -> list[str]:
+        """Interactive diff of some files, as ``diff_command``."""
+        return [*self.diff_command(base, target), " | ".join(map(_file_pattern, paths)) or "none()"]
+
+    def changed_files(self, base: str, target: str) -> FileChanges:
+        """Files differing between ``base`` and ``target``, with line counts and sizes."""
+        # Snapshot once and pin both sides: the list, its seen marks and the
+        # diffs opened from it must all show the same change.
+        _run(["jj", "--no-pager", "--color=never", "status"], self.root)
+        base_commit, target_commit = (
+            self._jj("log", "--no-graph", "-r", revset_symbol(name), "-T", "commit_id").strip()
+            for name in (base, target)
+        )
+        span = ("--from", base_commit, "--to", target_commit)
+        fields = self._jj_bytes("diff", *span, "-T", _JJ_DIFF_TEMPLATE).split(b"\0")[:-1]
+        git = _git_file_diffs(self._jj_bytes("diff", *span, "--git", "--context", _FULL_CONTEXT))
+        files: list[FileChange] = []
+        lookups = 0
+        width = len(_DIFF_FIELDS)
+        for start in range(0, len(fields), width):
+            status, source, path, display, *ids, conflict = fields[start : start + width]
+            lines = git.get(b"diff --git a/" + source + b" b/" + path, [])
+            identity = b"\0".join([source, path, *ids])
+            if conflict == b"true":  # no object ids: the conflict's own text identifies it
+                identity += b"\0" + b"\n".join(lines)
+            added, removed, size = _git_stats(lines)
+            target_type = ids[3]
+            if size is None and target_type in (b"file", b"symlink") and lookups < SIZE_LOOKUPS:
+                lookups += 1
+                with contextlib.suppress(VcsError):
+                    pattern = _file_pattern(_decode_path(path))
+                    size = len(self._jj_bytes("file", "show", "-r", target_commit, pattern))
+            files.append(
+                FileChange(
+                    path=_decode_path(path),
+                    source_path=_decode_path(source),
+                    display=display.decode(errors="replace"),
+                    status=status.decode(),
+                    key=hashlib.sha256(identity).hexdigest()[:32],
+                    added=added,
+                    removed=removed,
+                    size=None if status == b"D" else size,
+                )
+            )
+        return FileChanges(base_commit, target_commit, files)
+
+    def _jj_bytes(self, *args: str) -> bytes:
+        return _run_bytes(
+            ["jj", "--no-pager", "--color=never", "--ignore-working-copy", *args], self.root
+        )
 
     def _bookmark_commit(self, name: str, *, snapshot: bool = False) -> str:
         if name == WORKING_COPY:
@@ -399,6 +589,10 @@ class JjBackend:
             )
         _run(["jj", "--no-pager", "--color=never", "new", destination], self.root)
         return saved
+
+    def update_stale(self) -> None:
+        """Check out the rewritten working-copy commit: ``jj workspace update-stale``."""
+        _run(["jj", "--no-pager", "--color=never", "workspace", "update-stale"], self.root)
 
     def default_start(self) -> str:
         names = {b.name for b in self.list_branches() if not b.working_copy}

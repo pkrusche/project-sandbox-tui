@@ -40,9 +40,12 @@ class OctopusSetup:
 class LaunchScreen(ModalScreen[LaunchSpec | None]):
     DEFAULT_CSS = """
     LaunchScreen { align: center middle; }
+    /* A stable gutter: a scrollbar that appeared in a short terminal would narrow
+       the form, wrap its hints and so never go away again once it grew back. */
     LaunchScreen > Vertical {
         width: 90; max-width: 100%; height: auto; max-height: 100%; overflow-y: auto;
-        background: $panel; padding: 1 2; border: none;
+        scrollbar-gutter: stable; scrollbar-size-vertical: 1;
+        background: $panel; padding: 1 1 1 2; border: none;
     }
     LaunchScreen .title { text-style: bold; margin-bottom: 1; }
     LaunchScreen Input, LaunchScreen Input:focus {
@@ -60,7 +63,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
     LaunchScreen .inputs { color: $text-muted; padding: 0 1; margin-bottom: 1; }
     LaunchScreen .prompt-hint { color: $text-disabled; height: auto; padding: 0 1; }
-    LaunchScreen #command-scroll { height: 3; margin-top: 1; }
+    LaunchScreen #command-scroll {
+        height: 3; margin-top: 1; scrollbar-gutter: stable; scrollbar-size-vertical: 1;
+    }
     LaunchScreen .preview { color: $text-muted; height: auto; }
     LaunchScreen .hint { color: $text-disabled; margin-top: 1; }
     LaunchScreen #launch-row { height: auto; margin-top: 1; }

@@ -287,6 +287,23 @@ def test_validate_branch_name(name: str, ok: bool) -> None:
     assert (vcs.validate_branch_name(name) is None) == ok
 
 
+@pytest.mark.parametrize("name", ["feature/x", "fix-", "a+b"])
+def test_add_workspace_on_bookmark(repo: Path, name: str) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    if name != "feature/x":
+        backend.create_branch(name, "feature/x")
+    path = vcs.workspace_path(repo, name, None)
+    backend.add_workspace(name, path)
+    assert (path / "b.txt").exists()  # feature/x's file
+    assert name in jj(repo, "workspace", "list", "-T", 'stringify(name) ++ "\\n"').splitlines()
+    parent = jj(path, "log", "--no-graph", "-r", "@-", "-T", "commit_id")
+    assert parent == jj(repo, "log", "--no-graph", "-r", vcs.revset_symbol(name), "-T", "commit_id")
+    with pytest.raises(vcs.VcsError):
+        backend.add_workspace(name, path)  # already exists
+
+
 def test_workspace_path_matches_project_sandbox(tmp_path: Path) -> None:
     repo = tmp_path / "proj"
     suffix = hashlib.sha256(b"feat/x").hexdigest()[:6]
@@ -584,3 +601,88 @@ def test_fast_forward_rechecks_at_mutation(
     with pytest.raises(vcs.VcsError):
         backend.fast_forward("main", "feature/x")
     assert backend._bookmark_commit("main") == (side if changed == "main" else old)
+
+
+def test_changed_files_counts_sizes_and_statuses(repo: Path) -> None:
+    from tests.conftest import jj
+
+    (repo / "a.txt").write_text("a\nB\nc\nd")  # modified, no final newline
+    (repo / "bin.dat").write_bytes(b"\x00\x01binary")
+    (repo / "new file ü.txt").write_text("new\n")
+    (repo / "old.txt").write_text("same\n")
+    (repo / "gone.txt").write_text("bye\n")
+    jj(repo, "commit", "--quiet", "-m", "base")
+    jj(repo, "bookmark", "set", "--quiet", "main", "-r", "@-")
+    (repo / "a.txt").write_text("a\nb\nc\n")
+    (repo / "bin.dat").write_bytes(b"\x00\x02other bytes")
+    (repo / "new file ü.txt").write_text("newer\nlines\n")
+    (repo / "old.txt").rename(repo / "renamed.txt")
+    (repo / "gone.txt").unlink()
+    changes = vcs.detect(repo).changed_files("main", "@")
+    files = {f.path: f for f in changes.files}
+    assert sorted(files) == ["a.txt", "bin.dat", "gone.txt", "new file ü.txt", "renamed.txt"]
+    a = files["a.txt"]
+    assert (a.status, a.added, a.removed, a.size) == ("M", 1, 2, len("a\nb\nc\n"))
+    assert (files["bin.dat"].added, files["bin.dat"].size) == (None, len(b"\x00\x02other bytes"))
+    assert (files["gone.txt"].status, files["gone.txt"].size) == ("D", None)
+    renamed = files["renamed.txt"]
+    assert (renamed.status, renamed.added, renamed.removed, renamed.size) == ("R", 0, 0, 5)
+    assert renamed.paths == ("old.txt", "renamed.txt")
+    assert renamed.display == "{old.txt => renamed.txt}"
+    assert len({f.key for f in changes.files}) == 5
+    # Pinned to the commits the list was read from.
+    assert changes.base == jj(repo, "log", "--no-graph", "-r", "main", "-T", "commit_id")
+    assert changes.target == jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id")
+
+
+def test_changed_file_keys_follow_each_file_change(repo: Path) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+
+    def keys() -> dict[str, str]:
+        return {f.path: f.key for f in backend.changed_files("main", "feature/x").files}
+
+    first = keys()
+    assert list(first) == ["b.txt"]
+    assert keys() == first  # stable across calls
+    jj(repo, "new", "--quiet", "feature/x")
+    (repo / "c.txt").write_text("c\n")
+    jj(repo, "bookmark", "set", "--quiet", "feature/x", "-r", "@")
+    second = keys()
+    assert second["b.txt"] == first["b.txt"]  # another file changed: same key
+    (repo / "b.txt").write_text("b changed\n")
+    third = keys()
+    assert third["b.txt"] != first["b.txt"] and third["c.txt"] == second["c.txt"]
+    # The same change on another bookmark has the same key.
+    assert backend.changed_files("main", "@") == backend.changed_files("main", "feature/x")
+
+
+def test_diff_files_command_shows_only_those_files(repo: Path) -> None:
+    from tests.conftest import jj, run
+
+    jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":summary")
+    (repo / "c d.txt").write_text("c\n")
+    (repo / 'quote".txt').write_text("q\n")
+    backend = vcs.detect(repo)
+    changes = backend.changed_files("main", "@")
+    assert [f.path for f in changes.files] == ["c d.txt", 'quote".txt']
+
+    def diff(paths: list[str]) -> str:
+        return run(*backend.diff_files_command(changes.base, changes.target, paths), cwd=repo)
+
+    assert diff(["c d.txt"]) == "A c d.txt\n"
+    assert diff(['quote".txt', "c d.txt"]) == 'A c d.txt\nA quote".txt\n'
+    assert diff([]) == ""
+
+
+def test_stale_working_copy_is_detected_and_updated(repo: Path, tmp_path: Path) -> None:
+    from tests.conftest import make_stale
+
+    make_stale(repo, tmp_path / "other")
+    backend = vcs.detect(repo)
+    with pytest.raises(vcs.StaleWorkingCopyError, match="working copy is stale"):
+        backend.list_branches(compare_to_main="")
+    backend.update_stale()
+    assert not (repo / "wip.txt").exists()  # @ was abandoned elsewhere
+    assert backend.list_branches(compare_to_main="")[0].working_copy
