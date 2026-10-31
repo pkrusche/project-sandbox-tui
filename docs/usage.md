@@ -50,6 +50,7 @@ existing bookmark main/master/trunk. Counts omit zeros:
 | `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark): repeat to cancel harder, a third time to forget it; clears a finished status at once; asks first before signalling several runs |
 | `l` / `enter` | [Logs](#log-viewer), or run details while a bookmark has no runs |
 | `P` | Last run details (agent, times, IDs, log, command line), history and the interactive command |
+| `L` | [Op history](#op-history): every prompt, session, merge and rebase as a graph |
 | `n` | New bookmark: name and start revision |
 | `e` | Edit the full description of one bookmark or the working copy (`ctrl+s` saves, `esc` cancels) |
 | `dd` · `u` · `ctrl+r` | Delete bookmark, keeping its history · [undo · redo](#bookmark-history) |
@@ -125,6 +126,40 @@ bookmark is never deleted by `dd`. Workspace removal, `@` and other jj commands
 are not undone; `@` keeps the previous change as `saved/…`, and `jj undo`
 covers the rest. The history is kept in the
 [state directory](configuration.md#state-directory) and shared by TUI instances.
+
+## Op history
+
+`L` opens the operations history: the [bookmark history](#bookmark-history)
+with a line for every event rather than every bookmark. Each prompt or session
+continues its bookmark's line, so repeated runs stack up in order; merges and
+rebases join the lines of their inputs. Newest first, starting at the
+highlighted bookmark's latest event.
+
+```text
+✓     merge/parser-tui  background claude → completed: Merge feature/parser, spike/tui…
+○─╮   merge/parser-tui  merge of feature/parser, spike/tui
+✓ │   feature/parser    background codex → completed: Add streaming parser
+✗ │   feature/parser    background codex → failed: Add a streaming parser
+○ │   feature/parser    created from main
+│ ⚠   spike/tui         interactive claude → interrupted
+│ ○   spike/tui         created from main
+○─╯   main              existing bookmark
+```
+
+Each line also shows its time and the commit the bookmark pointed to when it
+was created or the run ended. Runs show their outcome as in the bookmark list
+(`?` if it was never seen); bookmarks deleted since are marked `(deleted)`.
+
+| Key | Action |
+|---|---|
+| `j` `k` · `ctrl+d` `ctrl+u` · `gg` `G` | Move · half page · top/bottom |
+| `enter` / `P` | Details: time, what it followed or started from, commit, agent, prompt, log |
+| `l` | [Log viewer](#log-viewer) for a background run, including earlier runs |
+| `q` / `esc` / `h` / `L` | Back to the list |
+
+Runs record only their prompt's first line. Logs of earlier runs stay in the
+[state directory](configuration.md#state-directory); interactive sessions have
+none.
 
 ## Log viewer
 

@@ -138,6 +138,40 @@ def test_runs_extend_the_lineage_and_finish_with_their_commit() -> None:
     assert second.status == "unknown" and second.commit == ""
 
 
+def test_op_log_shows_each_run_and_merge() -> None:
+    def run(branch: str, prompt: str) -> JobRecord:
+        spec = LaunchSpec(branch, "codex", mode="background", prompt_text=prompt)
+        return JobRecord(branch, spec, 1, "2026-01-01T00:00:00Z", log_path=f"/logs/{branch}.log")
+
+    state = State()
+    steps = [
+        state.add_lineage("main", "existing", []),
+        state.add_lineage("a", "create", ["main"]),
+        state.add_lineage("b", "create", ["main"]),
+        state.add_run(run("a", "do a")),
+        state.add_run(run("b", "do b\nin detail")),
+        state.add_lineage("m", "merge", ["a", "b"]),
+        state.add_run(run("m", "resolve")),
+    ]
+    for i, node in enumerate(steps):
+        node.at = float(i)
+    steps[3].status = "completed"
+    assert steps[3].log == "/logs/a.log"
+    del state.current["b"]  # deleted: its runs stay in the log
+    log = [f"{line}  {node.bookmark}: {state.describe(node)}" for node, (line, _) in state.op_log()]
+    assert log == [
+        "○  m: background codex: resolve",
+        "○─╮  m: merge of a, b",  # the first input continues the line
+        "○ │  a: background codex → completed: do a",
+        "○ │  a: created from main",
+        "│ ○  b: background codex: do b",
+        "│ ○  b: created from main",
+        "○─╯  main: existing bookmark",
+    ]
+    assert state.describe(steps[6], "running") == "background codex → running: resolve"
+    assert not state.is_current(steps[4]) and state.is_current(steps[3])
+
+
 def test_undo_stack_drops_redo_entries_and_old_ones() -> None:
     state = State()
     for i in range(3):

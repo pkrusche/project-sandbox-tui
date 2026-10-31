@@ -8,7 +8,7 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 - Run agents interactively or in the background with completion notifications.
 - Merge or rebase tasks from separate jj workspaces with agent assistance.
-- Follow each bookmark's prompts and merges in a history graph; delete and undo with `dd` / `u`.
+- Follow each bookmark's prompts and merges in a history graph (`L` for every run); delete and undo with `dd` / `u`.
 - Let project-sandbox handle isolation, credentials and workspace teardown.
 
 ```text

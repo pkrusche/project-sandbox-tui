@@ -16,8 +16,8 @@ require a `.jj/` directory.
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt history and notifications |
-| `opgraph.py` | Bookmark history graph, undo stack and jj-style graph layout |
-| `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs and history |
+| `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
+| `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
 
 ## Launches and job lifecycle
 

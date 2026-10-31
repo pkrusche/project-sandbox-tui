@@ -68,6 +68,7 @@ from project_sandbox_tui.screens.dialogs import (
 )
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
+from project_sandbox_tui.screens.oplog import OpLogScreen
 from project_sandbox_tui.vcs import (
     WORKING_COPY,
     Branch,
@@ -77,20 +78,9 @@ from project_sandbox_tui.vcs import (
     sort_branches,
     workspace_path,
 )
-from project_sandbox_tui.widgets import KeyHints, PrefixKeys, modifier_key
+from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys, modifier_key
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
-
-GLYPHS = {
-    "running": ("▶", "green"),
-    "completed": ("✓", "green"),
-    "failed": ("✗", "red"),
-    "timeout": ("⏱", "yellow"),
-    "rate_limited": ("⚠", "yellow"),
-    "interrupted": ("⚠", "yellow"),
-    "orphaned": ("⚠", "yellow"),
-    "external": ("◆", "cyan"),
-}
 
 
 def human_age(seconds: float) -> str:
@@ -230,6 +220,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("f", "app.fast_forward_main", show=False),
     Binding("at", "app.move_working_copy", show=False),
     Binding("P", "app.preview", show=False),
+    Binding("L", "app.op_log", show=False),
     Binding("W", "app.cleanup_workspaces", show=False),
     Binding("x", "app.cancel", show=False),
     Binding("R", "app.refresh", show=False),
@@ -261,6 +252,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("x", "cancel · 3×: forget"),
             ("l ⏎", "log / transcript"),
             ("P", "details / command"),
+            ("L", "op history graph"),
         ),
     ),
     (
@@ -359,7 +351,8 @@ class MainScreen(Screen[None]):
         if modifier:
             hints = {
                 "ctrl": "ctrl+d/u half page down/up · ctrl+r redo · ctrl+l reload configuration",
-                "shift": "G bottom · V select · P details · R refresh · W clean up · H sheet",
+                "shift": "G bottom · V select · P details · L op history · R refresh · W clean up"
+                " · H sheet",
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
@@ -1390,23 +1383,10 @@ class SandboxTUI(App[None]):
 
     def _history_lines(self, name: str) -> list[str]:
         state = self.graph.state
-        verbs = {"create": "created", "merge": "merge of", "rebase": "rebase of"}
-        lines = []
-        for node in state.history(name)[:HISTORY_LINES]:
-            if node.kind == "run":
-                what = f"{node.mode or 'run'} {node.agent}".rstrip()
-                if node.status:
-                    what += f" → {node.status.replace('_', ' ')}"
-                if node.prompt:
-                    what += f": {node.prompt}"
-            else:
-                parents = [state.nodes[p].bookmark for p in node.parents if p in state.nodes]
-                what = verbs.get(node.kind, "existing bookmark")
-                if parents:
-                    joined = ", ".join(parents)
-                    what += f" {joined}" if node.kind in ("merge", "rebase") else f" from {joined}"
-            lines.append(f"{_clock(node.at)}  {what}")
-        return lines
+        return [
+            f"{_clock(node.at)}  {state.describe(node)}"
+            for node in state.history(name)[:HISTORY_LINES]
+        ]
 
     def _job_details(self, job: JobRecord) -> list[str]:
         now = time.time()
@@ -1607,6 +1587,12 @@ class SandboxTUI(App[None]):
             else f"{len(chosen)} bookmarks"
         )
         self.push_screen(MessageScreen(title, "\n\n".join(sections)))
+
+    def action_op_log(self) -> None:
+        """L: every creation, merge, rebase and run, starting at the highlighted bookmark."""
+        name = self.selected_branch_name()
+        head = self.graph.state.head(name) if name else None
+        self.push_screen(OpLogScreen(self.graph, self.jobs, head.id if head else None))
 
     def action_cleanup_workspaces(self) -> None:
         self._cleanup_workspaces()

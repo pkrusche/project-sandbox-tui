@@ -17,6 +17,18 @@ from textual.widgets import TextArea
 
 from project_sandbox_tui.history import PromptHistory
 
+# Run status → (graph node glyph, colour), in the bookmark list and the op history.
+GLYPHS = {
+    "running": ("▶", "green"),
+    "completed": ("✓", "green"),
+    "failed": ("✗", "red"),
+    "timeout": ("⏱", "yellow"),
+    "rate_limited": ("⚠", "yellow"),
+    "interrupted": ("⚠", "yellow"),
+    "orphaned": ("⚠", "yellow"),
+    "external": ("◆", "cyan"),
+}
+
 
 class CycleField(Widget, can_focus=True):
     """A one-line choice field: ``label  ‹ value ›`` cycled with h/l.

@@ -4,6 +4,7 @@ Every bookmark starts a *lineage*: a first node whose parents are the bookmarks
 it started from (one for a new bookmark, several for a merge or rebase). Each
 prompt on the bookmark appends a node to its lineage. Bookmarks created outside
 sbx-tui are adopted with their nearest bookmarked jj ancestors as parents.
+``op_log`` lays out every node, so each prompt and merge gets a line of its own.
 
 Deleting a bookmark keeps its lineage, so the bookmarks that started from it
 still connect through it to its parents, and undo can restore it. ``u`` /
@@ -48,6 +49,8 @@ class Node:
     prompt: str = ""  # runs: the prompt's first line
     job: str = ""  # runs: the job's started_at, linking the node to its record
     status: str = ""  # runs: the final job status, once seen
+    log: str = ""  # background runs: the agent log and captured output
+    stdout: str = ""
 
     @classmethod
     def from_dict(cls, raw: Any) -> Node:
@@ -115,6 +118,9 @@ class UndoEntry:
         return ", ".join(item.bookmark for item in self.items)
 
 
+DESCRIPTIONS = {"create": "created", "merge": "merge of", "rebase": "rebase of"}
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
@@ -173,11 +179,37 @@ class State:
         lineage = self.current.get(bookmark)
         return [n for n in reversed(self.nodes.values()) if n.lineage == lineage]
 
+    def is_current(self, node: Node) -> bool:
+        """Whether the node's bookmark still exists as this lineage (not deleted)."""
+        return self.current.get(node.bookmark) == node.lineage
+
+    def describe(self, node: Node, status: str = "") -> str:
+        """What happened at the node; ``status`` stands in for a run's unrecorded one."""
+        if node.kind == "run":
+            what = f"{node.mode or 'run'} {node.agent}".rstrip()
+            if status := node.status or status:
+                what += f" → {status.replace('_', ' ')}"
+            return what + (f": {node.prompt}" if node.prompt else "")
+        parents = ", ".join(self.nodes[p].bookmark for p in node.parents if p in self.nodes)
+        what = DESCRIPTIONS.get(node.kind, "existing bookmark")
+        if parents:
+            what += f" {parents}" if node.kind in ("merge", "rebase") else f" from {parents}"
+        return what
+
+    def op_log(self) -> list[tuple[Node, tuple[str, int]]]:
+        """Every node with its graph line, children above parents, newest first."""
+        parents = {i: [p for p in n.parents if p in self.nodes] for i, n in self.nodes.items()}
+        order = toposort(
+            list(reversed(self.nodes)), parents, {i: n.at for i, n in self.nodes.items()}
+        )
+        lines = draw(order, parents)
+        return [(self.nodes[i], lines[i]) for i in order]
+
     def activity(self) -> dict[str, float]:
         """When each bookmark's lineage last had a node added; adopting is no activity."""
         latest: dict[str, float] = {}
         for node in self.nodes.values():
-            if node.kind != "existing" and self.current.get(node.bookmark) == node.lineage:
+            if node.kind != "existing" and self.is_current(node):
                 latest[node.bookmark] = max(latest.get(node.bookmark, 0.0), node.at)
         return latest
 
@@ -267,6 +299,8 @@ class State:
             mode=job.mode,
             prompt=prompt[0] if prompt else "",
             job=job.started_at,
+            log=job.log_path,
+            stdout=job.stdout_path,
         )
         self.nodes[node.id] = node
         return node
@@ -346,7 +380,7 @@ class State:
             if status is None:
                 continue
             node.status = status
-            if status != "unknown" and self.current.get(node.bookmark) == node.lineage:
+            if status != "unknown" and self.is_current(node):
                 node.commit = commits.get(node.bookmark, "")
 
     def needs_sync(

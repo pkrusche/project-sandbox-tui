@@ -134,6 +134,46 @@ def test_bookmark_comparison_markers(
     run_app(repo, fake_cfg(main_branch=main), scenario)
 
 
+def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Config]) -> None:
+    from textual.widgets import Log
+
+    from project_sandbox_tui.jobs import JobRecord
+    from project_sandbox_tui.sandbox import LaunchSpec
+    from project_sandbox_tui.screens.oplog import OpLogScreen
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        with app.graph.transaction() as state:
+            for i, prompt in enumerate(["first try", "second try"]):
+                log = tmp_path / f"run{i}.log"
+                log.write_text(f"output of {prompt}\n")
+                spec = LaunchSpec("feature/x", "codex", mode="background", prompt_text=prompt)
+                job = JobRecord("feature/x", spec, 1, f"2026-01-0{i + 1}T00:00:00Z")
+                job.log_path, job.stdout_path = str(log), str(log.with_suffix(".out"))
+                state.add_run(job).status = "completed" if i else "failed"
+        await pilot.press("j", "L")  # starts on feature/x's newest run
+        screen = app.screen
+        assert isinstance(screen, OpLogScreen)
+        rows = [[str(c) for c in screen.table.get_row_at(i)] for i in range(3)]
+        assert [(r[0], r[2], r[4]) for r in rows] == [
+            ("✓", "feature/x", "background codex → completed: second try"),
+            ("✗", "feature/x", "background codex → failed: first try"),
+            ("○", "feature/x", "existing bookmark from main"),
+        ]
+        head = app.graph.state.head("feature/x")
+        assert head is not None and screen.selected_id() == head.id
+        await pilot.press("enter")
+        assert isinstance(app.screen, MessageScreen)
+        assert "after       feature/x: background codex → failed: first try" in app.screen.body
+        await pilot.press("q", "j", "l")  # an earlier run's log
+        assert isinstance(app.screen, LogScreen)
+        await pilot.pause(0.2)
+        assert "output of first try" in "\n".join(app.screen.query_one(Log).lines)
+        await pilot.press("q", "q")
+        assert app.screen is app.main
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         rows = row_texts(app)
