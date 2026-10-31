@@ -93,3 +93,66 @@ def test_interactive_job_without_log_files() -> None:
             assert app.screen is not screen
 
     asyncio.run(scenario())
+
+
+def test_log_follow_tracks_scroll_position(tmp_path: Path) -> None:
+    path = tmp_path / "agent.log"
+    path.write_text("".join(f"line {i}\n" for i in range(200)))
+    job = JobRecord("main", LaunchSpec("main", "claude"), 0, "", log_path=str(path))
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = LogScreen(job)
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one(Log)
+            await pilot.pause()
+            assert screen._follow and log.scroll_y == log.max_scroll_y
+            await pilot.press("pageup")  # not only k: any scrolling away pauses
+            await pilot.pause()
+            assert not screen._follow
+            with path.open("a") as stream:
+                stream.write("more\n")
+            screen._poll()
+            await pilot.pause()
+            assert log.scroll_y < log.max_scroll_y  # the view stays put
+            await pilot.press("G")
+            await pilot.pause()
+            assert screen._follow and log.scroll_y == log.max_scroll_y
+            await pilot.press("f")  # an explicit pause at the end sticks
+            with path.open("a") as stream:
+                stream.write("again\n")
+            screen._poll()
+            await pilot.pause()
+            assert not screen._follow and log.scroll_y < log.max_scroll_y
+            await pilot.press("g", "g")
+            await pilot.pause()
+            assert log.scroll_y == 0
+            await pilot.press("j", "j", "ctrl+f")
+            await pilot.pause()
+            assert log.scroll_y > 2 and not screen._follow
+
+    asyncio.run(scenario())
+
+
+def test_log_shift_tab_cycles_files_backwards(tmp_path: Path) -> None:
+    path = tmp_path / "agent.log"
+    stdout = tmp_path / "agent.out"
+    job = JobRecord(
+        "main", LaunchSpec("main", "claude"), 0, "", log_path=str(path), stdout_path=str(stdout)
+    )
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test() as pilot:
+            screen = LogScreen(job)
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen.current == path.with_suffix(".md")
+            await pilot.press("shift+tab")
+            assert screen.current == stdout
+            await pilot.press("shift+tab")
+            assert screen.current == path
+
+    asyncio.run(scenario())

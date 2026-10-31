@@ -532,6 +532,10 @@ class JobManager:
             self.load()
             return self._cancel(branch, sessions)
 
+    def cancel_started(self, branch: str) -> bool:
+        """Whether ``cancel`` already signalled (or tried to) the branch's current run."""
+        return branch in self._stop_stage
+
     def _forget(self, branch: str) -> None:
         self._record_path(branch).unlink(missing_ok=True)
         self.jobs.pop(branch, None)

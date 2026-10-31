@@ -1,8 +1,9 @@
-"""Small modal dialogs: new branch, help, message/preview."""
+"""Small modal dialogs: new branch, help, message/preview, confirmation, cleanup."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 from rich.cells import cell_len
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
@@ -17,7 +18,7 @@ from textual.widgets import Input, OptionList, Static
 
 from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.vcs import validate_branch_name
-from project_sandbox_tui.widgets import KeyHints, modifier_key
+from project_sandbox_tui.widgets import KeyHints, PrefixKeys, modifier_key
 
 _MODAL_CSS = """
 {name} {{ align: center middle; }}
@@ -71,8 +72,52 @@ class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
-class MessageScreen(ModalScreen[None]):
-    """Show scrollable plain text; navigation scrolls, other keys close."""
+class ScrollModal[ResultT](ModalScreen[ResultT]):
+    """A pop-up with a scrolling body and less/vim keys; subclasses handle other keys.
+
+    j/k and arrows scroll a line, ctrl+d/u half a page, ctrl+f/b and pgdn/pgup
+    a page, gg/G and home/end to either end. Every key is consumed so it cannot
+    also trigger a binding on the screen below.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._prefix = PrefixKeys()
+
+    def on_key(self, event: events.Key) -> None:
+        event.stop()
+        event.prevent_default()
+        if not modifier_key(event.key) and not self._scroll(event.key):
+            self.other_key(event.key)
+
+    def _scroll(self, key: str) -> bool:
+        """Scroll for a navigation key; return whether ``key`` was one."""
+        self._prefix.other_key(key)
+        scroll = self.query_one(VerticalScroll)
+        half = max(1, scroll.size.height // 2)
+        steps = {"j": 1, "down": 1, "k": -1, "up": -1, "ctrl+d": half, "ctrl+u": -half}
+        pages = {"ctrl+f": 1, "pagedown": 1, "ctrl+b": -1, "pageup": -1}
+        if key in steps:
+            scroll.scroll_relative(y=steps[key], animate=False)
+        elif key in pages:
+            scroll.scroll_relative(y=pages[key] * max(1, scroll.size.height), animate=False)
+        elif key in ("G", "end"):
+            scroll.scroll_end(animate=False)
+        elif key == "home" or (key == "g" and self._prefix.press(key)):
+            scroll.scroll_home(animate=False)
+        elif key != "g":
+            return False
+        return True
+
+    def other_key(self, key: str) -> None:
+        """A key that does not scroll."""
+
+
+SCROLL_HINT = "j/k ^d/^u gg/G scroll"
+
+
+class MessageScreen(ScrollModal[None]):
+    """Show scrollable plain text; q, esc or enter closes."""
 
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="MessageScreen")
@@ -80,6 +125,7 @@ class MessageScreen(ModalScreen[None]):
     MessageScreen .message-body { height: auto; max-height: 60vh; }
     """
     )
+    CLOSE_KEYS: ClassVar[frozenset[str]] = frozenset({"q", "escape", "enter"})
 
     def __init__(self, title: str, body: str) -> None:
         super().__init__()
@@ -91,29 +137,14 @@ class MessageScreen(ModalScreen[None]):
             yield Static(self.title_text, classes="title")
             with VerticalScroll(classes="message-body"):
                 yield Static(Text(self.body))
-            yield Static("↑/↓, pgup/pgdn scroll · any other key to close", classes="hint")
+            yield Static(KeyHints(f"{SCROLL_HINT} · q/esc close"), classes="hint")
 
-    def on_key(self, event: events.Key) -> None:
-        # Consume the key so it cannot also trigger a binding on the screen below.
-        event.stop()
-        event.prevent_default()
-        scroll = self.query_one(VerticalScroll)
-        actions = {
-            "up": scroll.scroll_up,
-            "down": scroll.scroll_down,
-            "pageup": scroll.scroll_page_up,
-            "pagedown": scroll.scroll_page_down,
-            "home": scroll.scroll_home,
-            "end": scroll.scroll_end,
-        }
-        if event.key in actions:
-            actions[event.key]()
-            return
-        if not modifier_key(event.key):
+    def other_key(self, key: str) -> None:
+        if key in self.CLOSE_KEYS:
             self.dismiss(None)
 
 
-class ConfirmScreen(ModalScreen[bool]):
+class ConfirmScreen(ScrollModal[bool]):
     """Show scrollable plain text; y confirms, navigation scrolls, other keys cancel."""
 
     DEFAULT_CSS = (
@@ -135,28 +166,12 @@ class ConfirmScreen(ModalScreen[bool]):
             with VerticalScroll():
                 yield Static(Text(self.body))
             yield Static(
-                KeyHints(f"y {self.action_text} · arrows/pgup/pgdn scroll · any other key cancels"),
+                KeyHints(f"y {self.action_text} · {SCROLL_HINT} · any other key cancels"),
                 classes="hint",
             )
 
-    def on_key(self, event: events.Key) -> None:
-        # Consume the key so it cannot also trigger a binding on the screen below.
-        event.stop()
-        event.prevent_default()
-        scroll = self.query_one(VerticalScroll)
-        actions = {
-            "up": scroll.scroll_up,
-            "down": scroll.scroll_down,
-            "pageup": scroll.scroll_page_up,
-            "pagedown": scroll.scroll_page_down,
-            "home": scroll.scroll_home,
-            "end": scroll.scroll_end,
-        }
-        if event.key in actions:
-            actions[event.key]()
-            return
-        if not modifier_key(event.key):
-            self.dismiss(event.key == "y")
+    def other_key(self, key: str) -> None:
+        self.dismiss(key == "y")
 
 
 @dataclass(frozen=True)
@@ -208,7 +223,7 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
             yield OptionList(*(self._label(i) for i in range(len(self.workspaces))))
             yield Static(
                 KeyHints(
-                    "space toggle · a all/none · enter remove · D force-delete kept · esc cancel"
+                    "space toggle · a all/none · enter remove… · D force-delete kept · esc cancel"
                 ),
                 classes="hint",
             )
@@ -270,7 +285,34 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
             self.dismiss(ForceRemove(ws))
 
     def action_confirm(self) -> None:
-        self.dismiss([self.workspaces[i] for i in sorted(self.selected)])
+        """enter: list what goes and ask; workspace removal cannot be undone."""
+        chosen = [self.workspaces[i] for i in sorted(self.selected)]
+        if not chosen:
+            self.dismiss([])
+            return
+        spaces = [ws for ws in chosen if ws.path is not None]
+        bookmarks = [ws.branch for ws in chosen if ws.branch]
+        what = []
+        if spaces:
+            what.append(f"{len(spaces)} workspace{'' if len(spaces) == 1 else 's'}")
+        if bookmarks:
+            what.append(f"{len(bookmarks)} bookmark{'' if len(bookmarks) == 1 else 's'}")
+        lines = [f"remove {ws.name}  {ws.path}" for ws in spaces]
+        lines += [f"delete bookmark {name}" for name in bookmarks]
+        lines.append("")
+        if spaces:
+            lines.append(
+                "Workspace directories are deleted with their ignored files; u cannot undo it."
+            )
+        if bookmarks:
+            lines.append("u restores the deleted bookmarks.")
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                self.dismiss(chosen)
+
+        title = f"remove {' and '.join(what)}?"
+        self.app.push_screen(ConfirmScreen(title, "\n".join(lines), "remove"), decided)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -312,7 +354,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 ("i", "interactive (ui.terminal)"),
                 ("r", "unsupervised run"),
                 ("x", "cancel · 3×: forget"),
-                ("l / enter", "log (one bookmark or @)"),
+                ("l / enter", "log, else details"),
                 ("P", "run details and command"),
             ),
         ),
@@ -321,7 +363,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
             (
                 ("n", "new bookmark"),
                 ("dd", "delete (history kept)"),
-                ("u / ctrl+r", "undo / redo n and dd"),
+                ("u / ctrl+r", "undo / redo n, dd, f"),
                 (
                     "v V space",
                     "select a range / mark; r/i merge, esc clears",
@@ -386,8 +428,7 @@ class HelpScreen(MessageScreen):
     HelpScreen > Vertical { width: 84; }
     HelpScreen VerticalScroll { height: auto; scrollbar-size-vertical: 1; }
     """
-
-    SCROLL_KEYS = {"j": 1, "down": 1, "k": -1, "up": -1}
+    CLOSE_KEYS = MessageScreen.CLOSE_KEYS | {"question_mark"}
 
     def __init__(self) -> None:
         super().__init__("sbx-tui keys", "")
@@ -397,18 +438,8 @@ class HelpScreen(MessageScreen):
             yield Static(self.title_text, classes="title")
             with VerticalScroll():
                 yield Static(HelpBody())
-            yield Static("any key to close", classes="hint")
+            yield Static(KeyHints(f"{SCROLL_HINT} · q/esc/? close"), classes="hint")
 
     def on_resize(self, event: events.Resize) -> None:
         chrome = 6  # padding, title + margin, hint + margin
         self.query_one(VerticalScroll).styles.max_height = max(3, event.size.height - chrome)
-
-    def on_key(self, event: events.Key) -> None:
-        body = self.query_one(VerticalScroll)
-        step = self.SCROLL_KEYS.get(event.key)
-        if step and body.max_scroll_y:
-            event.stop()
-            event.prevent_default()
-            body.scroll_relative(y=step, animate=False)
-            return
-        super().on_key(event)

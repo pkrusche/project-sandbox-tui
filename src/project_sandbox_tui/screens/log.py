@@ -6,13 +6,14 @@ import codecs
 from pathlib import Path
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Log, Static
 
 from project_sandbox_tui.jobs import JobRecord
-from project_sandbox_tui.widgets import KeyHints
+from project_sandbox_tui.widgets import KeyHints, PrefixKeys
 
 INITIAL_TAIL_BYTES = 256 * 1024
 
@@ -26,11 +27,14 @@ class LogScreen(Screen[None]):
 
     BINDINGS = [
         Binding("q,escape,h", "app.pop_screen", "back", show=False),
-        Binding("tab", "next_file", "next file", show=False),
+        Binding("tab", "next_file(1)", "next file", show=False),
+        Binding("shift+tab", "next_file(-1)", "previous file", show=False),
         Binding("j", "scroll(1)", show=False),
         Binding("k", "scroll(-1)", show=False),
-        Binding("ctrl+d", "page(1)", show=False),
-        Binding("ctrl+u", "page(-1)", show=False),
+        Binding("ctrl+d", "page(0.5)", show=False),
+        Binding("ctrl+u", "page(-0.5)", show=False),
+        Binding("ctrl+f", "page(1)", show=False),
+        Binding("ctrl+b", "page(-1)", show=False),
         Binding("G", "bottom", show=False),
         Binding("g", "g_prefix", show=False),
         Binding("f", "toggle_follow", show=False),
@@ -44,7 +48,7 @@ class LogScreen(Screen[None]):
         self._idx = next((i for i, p in enumerate(self._files) if p.exists()), 0)
         self._pos = 0
         self._follow = True
-        self._g_pending = False
+        self._prefix = PrefixKeys()
         self._missing = False
         self._file_id: tuple[int, int] | None = None
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -53,13 +57,27 @@ class LogScreen(Screen[None]):
         yield Static("", id="log-title")
         yield Log(highlight=False, auto_scroll=True, max_lines=10_000)
         yield Static(
-            KeyHints("q back · tab next file · j/k scroll · gg/G top/bottom · f follow"),
+            KeyHints("q back · tab/shift+tab file · j/k ^d/^u scroll · gg/G top/bottom · f follow"),
             id="log-hint",
         )
 
     def on_mount(self) -> None:
         self._load()
         self.set_interval(1.0, self._poll)
+        self.watch(self.query_one(Log), "scroll_y", self._scrolled, init=False)
+
+    def on_key(self, event: events.Key) -> None:
+        self._prefix.other_key(event.key)
+
+    def _scrolled(self, _old: float, new: float) -> None:
+        """Like ``less +F``: scrolling away from the end pauses following, any
+        scrolling (keys, mouse) back to the end resumes it."""
+        log = self.query_one(Log)
+        follow = new >= log.max_scroll_y
+        if follow != self._follow:
+            self._follow = follow
+            log.auto_scroll = follow
+            self._title()
 
     @property
     def current(self) -> Path | None:
@@ -134,41 +152,31 @@ class LogScreen(Screen[None]):
         self._append()
         self._title()
 
-    def action_next_file(self) -> None:
+    def action_next_file(self, step: int) -> None:
         if self._files:
-            self._idx = (self._idx + 1) % len(self._files)
+            self._idx = (self._idx + step) % len(self._files)
             self._load()
 
     def action_scroll(self, lines: int) -> None:
-        log = self.query_one(Log)
-        log.scroll_relative(y=lines, animate=False)
-        if lines < 0:
-            self._follow = False
-            self._title()
+        self.query_one(Log).scroll_relative(y=lines, animate=False)
 
-    def action_page(self, direction: int) -> None:
-        self.action_scroll(direction * max(1, self.query_one(Log).size.height // 2))
+    def action_page(self, pages: float) -> None:
+        self.action_scroll(round(pages * max(2, self.query_one(Log).size.height)))
 
     def action_bottom(self) -> None:
-        self.query_one(Log).scroll_end(animate=False)
-        self._follow = True
-        self._title()
+        self._set_follow(True)
 
     def action_g_prefix(self) -> None:
-        if self._g_pending:
+        if self._prefix.press("g"):
             self.query_one(Log).scroll_home(animate=False)
-            self._follow = False
-            self._g_pending = False
-            self._title()
-        else:
-            self._g_pending = True
-            self.set_timer(0.8, self._reset_g)
-
-    def _reset_g(self) -> None:
-        self._g_pending = False
 
     def action_toggle_follow(self) -> None:
-        self._follow = not self._follow
-        if self._follow:
-            self.query_one(Log).scroll_end(animate=False)
+        self._set_follow(not self._follow)
+
+    def _set_follow(self, follow: bool) -> None:
+        """Follow from the end, or pause where the view is (also at the end)."""
+        log = self.query_one(Log)
+        self._follow = log.auto_scroll = follow
+        if follow:
+            log.scroll_end(animate=False)
         self._title()

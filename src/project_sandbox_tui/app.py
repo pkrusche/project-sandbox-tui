@@ -76,7 +76,7 @@ from project_sandbox_tui.vcs import (
     sort_branches,
     workspace_path,
 )
-from project_sandbox_tui.widgets import KeyHints, modifier_key
+from project_sandbox_tui.widgets import KeyHints, PrefixKeys, modifier_key
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
 
@@ -119,6 +119,7 @@ def _clock(timestamp: float) -> str:
 
 
 HISTORY_LINES = 12  # history entries in the P pop-up
+EDITOR_BATCH = 3  # o asks before opening more workspaces than this at once
 
 
 @dataclass
@@ -344,9 +345,12 @@ class MainScreen(Screen[None]):
         self.set_class(expanded, "with-cheatsheet")
 
     def on_key(self, event: events.Key) -> None:
-        if event.key != "d":  # dd deletes only when typed in a row
-            cast("SandboxTUI", self.app)._d_pressed = 0.0
         modifier = modifier_key(event.key)
+        if not modifier:  # gg / dd only when typed in a row
+            app = cast("SandboxTUI", self.app)
+            if app._prefix.pending:
+                app._prefix.other_key(event.key)
+                app._show_pending()
         if modifier:
             hints = {
                 "ctrl": "ctrl+d/u half page down/up · ctrl+r redo · ctrl+l reload configuration",
@@ -399,8 +403,7 @@ class SandboxTUI(App[None]):
         self.branches: list[Branch] = []
         self.sessions: dict[str, SessionRecord] = {}
         self.filter_text = ""
-        self._g_pending = False
-        self._d_pressed = 0.0  # when d was pressed, for dd
+        self._prefix = PrefixKeys()  # gg and dd
         self._refreshing = False
         self._refresh_again = False
         self._refreshed = asyncio.Event()  # set when the current refresh pass ends
@@ -418,6 +421,7 @@ class SandboxTUI(App[None]):
         self.marked: list[str] = []
         self._visual_anchor: str | None = None
         self._confirming_quit = False
+        self._drafts: dict[tuple[str, ...], str] = {}  # unsent prompts, by launch target
 
     def notify(
         self,
@@ -550,7 +554,13 @@ class SandboxTUI(App[None]):
     def visible_rows(self) -> list[Row]:
         """The working copy, then bookmarks in history order: children above parents."""
         needle = self.filter_text.lower()
-        shown = {b.name: b for b in self.branches if not needle or needle in b.name.lower()}
+        # Selected rows stay visible: an action must never hit a row the filter hides.
+        pinned = {*self.marked, self._visual_anchor}
+        shown = {
+            b.name: b
+            for b in self.branches
+            if not needle or needle in b.name.lower() or b.name in pinned
+        }
         state = self.graph.state
         bookmarks = [name for name, b in shown.items() if not b.working_copy]
         parents = state.bookmark_parents(bookmarks)
@@ -616,7 +626,12 @@ class SandboxTUI(App[None]):
             stats += " · VISUAL"
         if chosen:
             stats += f" · {len(chosen)} selected"
+            needle = self.filter_text.lower()
+            if hidden := sum(needle not in name.lower() for name in chosen):
+                stats += f" ({hidden} outside the filter)"
         header.append(f"   {stats}", style="dim")
+        if pending := self._prefix.pending:  # like vim's showcmd
+            header.append(f"   {pending}…", style="bold yellow")
         self.main.query_one("#header", Static).update(header)
 
     def branch(self, name: str) -> Branch | None:
@@ -685,6 +700,13 @@ class SandboxTUI(App[None]):
         self.action_cursor(1)  # like ranger: mark and move on
         self._refresh_marks()
 
+    def _end_visual(self) -> None:
+        """An action ends visual mode, as in vim; the range stays marked until esc."""
+        if self._visual_anchor is not None:
+            self.marked = self.selection()
+            self._visual_anchor = None
+            self._refresh_marks()
+
     def clear_branch_selection(self) -> bool:
         had = bool(self.marked) or self._visual_anchor is not None
         self.marked = []
@@ -715,23 +737,21 @@ class SandboxTUI(App[None]):
             table.move_cursor(row=table.row_count - 1, animate=False)
 
     def action_g_prefix(self) -> None:
-        if self._g_pending:
-            self._g_pending = False
+        if self._prefix.press("g"):
             self.table.move_cursor(row=0, animate=False)
-        else:
-            self._g_pending = True
-            self.set_timer(0.8, self._reset_g)
-
-    def _reset_g(self) -> None:
-        self._g_pending = False
+        self._show_pending()
 
     def action_d_prefix(self) -> None:
-        # A timestamp, not a timer: a timer from an earlier d could cancel a new one.
-        if time.monotonic() - self._d_pressed < 0.8:
-            self._d_pressed = 0.0
+        if self._prefix.press("d"):
             self.action_delete_bookmarks()
-        else:
-            self._d_pressed = time.monotonic()
+        self._show_pending()
+
+    def _show_pending(self) -> None:
+        """Show a half-typed gg / dd in the header until it completes or times out."""
+        with contextlib.suppress(NoMatches):
+            self._render_header(set(self.selection()))
+        if self._prefix.pending:
+            self.set_timer(PrefixKeys.TIMEOUT + 0.05, self._show_pending)
 
     def action_filter(self) -> None:
         box = self.main.query_one("#filter", Input)
@@ -784,6 +804,7 @@ class SandboxTUI(App[None]):
 
     def _action_branches(self) -> list[str]:
         """Use the selection when present, otherwise the highlighted row."""
+        self._end_visual()
         chosen = self.selection()
         if chosen:
             return chosen
@@ -851,16 +872,30 @@ class SandboxTUI(App[None]):
     @work(exclusive=True, group="vcs")
     async def _fast_forward_main(self, main: str, target: str) -> None:
         try:
-            moved = await asyncio.to_thread(self.backend.fast_forward, main, target)
+            async with self._history_lock:
+                moved = await asyncio.to_thread(self._fast_forward_recorded, main, target)
         except VcsError as exc:
             self.notify(str(exc), severity="error", timeout=8)
+        except OSError as exc:
+            self.notify(f"could not update the bookmark history: {exc}", severity="error")
         else:
             self.notify(
-                f"fast-forwarded {main} to {target}"
+                f"fast-forwarded {main} to {target} (u undoes)"
                 if moved
                 else f"{main} already points to {target}"
             )
         await self.refresh_data()
+
+    def _fast_forward_recorded(self, main: str, target: str) -> bool:
+        """Fast-forward ``main`` and make the move undoable."""
+        with self.graph.transaction() as state:
+            old = self.backend._bookmark_commit(main)
+            if not self.backend.fast_forward(main, target):
+                return False
+            new = self.backend._bookmark_commit(main)
+            lineage = state.current.get(main, "")
+            state.push_undo(UndoEntry("move", [UndoItem(main, lineage, old, new)]))
+        return True
 
     def action_diff(self) -> None:
         chosen = self._action_branches()
@@ -903,11 +938,12 @@ class SandboxTUI(App[None]):
             self.notify(f"jj diff exited with {code}", severity="error")
 
     def action_launch(self, mode: Mode) -> None:
+        self._end_visual()
         selected = self.selection()
-        if selected:
+        if len(selected) > 1:
             self._launch_octopus(mode, selected)
             return
-        name = self._require_branch()
+        name = selected[0] if selected else self._require_branch()  # one mark wins, as for f
         if name is None:
             return
         reason = self.jobs.busy_reason(name, self.sessions)
@@ -934,23 +970,19 @@ class SandboxTUI(App[None]):
             else "",
             prompt_history=self.prompt_history,
             branches=[b.name for b in self.branches],
+            draft=self._drafts.get((name,), ""),
         )
         known_branches = {b.name for b in self.branches}
 
         def chosen(spec: LaunchSpec | None) -> None:
+            self._keep_draft((name,), screen.draft, spec)
             start = name if spec is not None and spec.branch not in known_branches else None
-            self._launch_chosen(spec, new_branch_start=start)
+            self._launch_chosen(spec, new_branch_start=start, draft_key=(name,))
 
         self.push_screen(screen, chosen)
 
     def _launch_octopus(self, mode: Mode, chosen: list[str]) -> None:
         """r / i with bookmarks selected: merge or rebase into a new bookmark."""
-        if len(chosen) < 2:
-            self.notify(
-                "select at least two bookmarks to merge or rebase (esc clears the selection)",
-                severity="warning",
-            )
-            return
         try:
             default_base = self.default_start or self.backend.default_start()
         except VcsError:
@@ -980,11 +1012,32 @@ class SandboxTUI(App[None]):
             else "",
             prompt_history=self.prompt_history,
             octopus=setup,
+            draft=self._drafts.get(tuple(chosen), ""),
         )
-        self.push_screen(screen, self._launch_chosen)
+
+        def launched(spec: LaunchSpec | None) -> None:
+            self._keep_draft(tuple(chosen), screen.draft, spec)
+            self._launch_chosen(spec, draft_key=tuple(chosen))
+
+        self.push_screen(screen, launched)
+
+    def _keep_draft(self, key: tuple[str, ...], draft: str | None, spec: LaunchSpec | None) -> None:
+        """Keep an edited prompt until its launch starts, so esc never loses it."""
+        if draft is None:  # not an unsupervised run
+            return
+        if not draft:
+            self._drafts.pop(key, None)
+            return
+        self._drafts[key] = draft
+        if spec is None:
+            self.notify("prompt kept as a draft: r brings it back")
 
     def _launch_chosen(
-        self, spec: LaunchSpec | None, *, new_branch_start: str | None = None
+        self,
+        spec: LaunchSpec | None,
+        *,
+        new_branch_start: str | None = None,
+        draft_key: tuple[str, ...] = (),
     ) -> None:
         if spec is None:
             return
@@ -993,12 +1046,14 @@ class SandboxTUI(App[None]):
         # interactive session blocks the event loop until the agent exits.
         if spec.operation:
             self.clear_branch_selection()
-            self.call_after_refresh(self._integrate, spec)
+            self.call_after_refresh(self._integrate, spec, draft_key)
             return
-        self.call_after_refresh(self._start_launch, spec, new_branch_start=new_branch_start)
+        self.call_after_refresh(
+            self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
+        )
 
     @work(exclusive=True, group="octopus")
-    async def _integrate(self, spec: LaunchSpec) -> None:
+    async def _integrate(self, spec: LaunchSpec, draft_key: tuple[str, ...] = ()) -> None:
         """Merge / rebase the inputs into the result branch on the host, then start
         the session that resolves what is left and reviews the integration."""
         operation: octopus.Operation = "rebase" if spec.operation == "rebase" else "merge"
@@ -1040,7 +1095,7 @@ class SandboxTUI(App[None]):
             else:
                 spec.prompt_text = f"{typed.rstrip()}\n\n{state.report()}\n"
         await self.refresh_data()  # the result branch exists now
-        self._start_launch(spec, history_text=typed, banner=state.report())
+        self._start_launch(spec, history_text=typed, banner=state.report(), draft_key=draft_key)
 
     def _start_launch(
         self,
@@ -1049,6 +1104,7 @@ class SandboxTUI(App[None]):
         new_branch_start: str | None = None,
         history_text: str | None = None,
         banner: str = "",
+        draft_key: tuple[str, ...] = (),
     ) -> None:
         try:
             # Bookmarks and external sessions may have changed while the
@@ -1084,6 +1140,7 @@ class SandboxTUI(App[None]):
         except OSError as exc:
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
         else:
+            self._drafts.pop(draft_key, None)
             if spec.mode == "background":
                 self.prompt_history.add(spec.prompt_text if history_text is None else history_text)
             # Only a launch that actually started becomes the new default.
@@ -1284,6 +1341,16 @@ class SandboxTUI(App[None]):
             entry = state.redo_entry() if redo else state.undo_entry()
             if entry is None:
                 return f"nothing to {verb}", None
+            if entry.op == "move":  # f: put the bookmark back, unless it moved again
+                for item in entry.items:
+                    before, after = item.commit, item.moved_to
+                    if redo:
+                        self.backend.move_bookmark(item.bookmark, before, after)
+                    else:
+                        self.backend.move_bookmark(item.bookmark, after, before)
+                state.position += 1 if redo else -1
+                moved = entry.items[0].bookmark
+                return f"{verb} fast-forward: moved {moved} {'forward' if redo else 'back'}", moved
             existing = {b.name: b.commit for b in self.backend.list_branches()}
             names = [item.bookmark for item in entry.items]
             if (entry.op == "create") != redo:  # remove the bookmarks again
@@ -1411,14 +1478,25 @@ class SandboxTUI(App[None]):
             return
         name = chosen[0]
         job = self.jobs.jobs.get(name)
-        if job is None:
-            self.notify(f"{name}: no runs yet", severity="information")
+        if job is None:  # no log yet: the history and command are the next best thing
+            self.action_preview()
             return
         self.push_screen(LogScreen(job))
 
     def action_open_editor(self) -> None:
-        for name in self._action_branches():
-            self._open_editor(name)
+        chosen = self._action_branches()
+        if len(chosen) <= EDITOR_BATCH:
+            for name in chosen:
+                self._open_editor(name)
+            return
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                for name in chosen:
+                    self._open_editor(name)
+
+        body = "\n".join(chosen) + "\n\nEach one opens in its own editor."
+        self.push_screen(ConfirmScreen(f"open {len(chosen)} workspaces?", body, "open"), decided)
 
     def _open_editor(self, name: str) -> None:
         branch = self.branch(name)
@@ -1521,22 +1599,44 @@ class SandboxTUI(App[None]):
         if not chosen:
             return
         try:
-            results = await asyncio.to_thread(
-                remove_workspaces,
+            async with self._history_lock:
+                results, deleted = await asyncio.to_thread(self._remove_workspaces, chosen)
+        except (VcsError, OSError) as exc:
+            self.notify(f"cleanup failed: {exc}", severity="error", timeout=8)
+            return
+        removed = sum(line.startswith("removed") for line in results)
+        done = [f"removed {removed} workspace{'' if removed == 1 else 's'}"] if removed else []
+        if deleted:
+            done.append(f"deleted {', '.join(deleted)} (u restores)")
+        self.notify("; ".join(done) or "nothing removed")
+        if any(line.startswith(("skipped", "kept")) for line in results):
+            self.push_screen(MessageScreen("workspace cleanup", "\n".join(results)))
+        await self.refresh_data()
+
+    def _remove_workspaces(self, chosen: list[Workspace]) -> tuple[list[str], list[str]]:
+        """Remove the chosen rows; the bookmarks they delete can be restored with u."""
+        with self.graph.transaction() as state:
+            commits: dict[str, str] = {}
+            for ws in chosen:
+                if ws.branch:
+                    with contextlib.suppress(VcsError):  # removal rechecks and reports it
+                        commits[ws.branch] = self.backend._bookmark_commit(ws.branch)
+            results = remove_workspaces(
                 self.backend,
                 self.cfg,
                 chosen,
                 state_dir=self.jobs.state_dir,
                 sessions_dir=self.sessions_dir,
             )
-        except (VcsError, OSError) as exc:
-            self.notify(f"cleanup failed: {exc}", severity="error", timeout=8)
-            return
-        removed = sum(line.startswith("removed") for line in results)
-        self.notify(f"removed {removed} workspace{'' if removed == 1 else 's'}")
-        if removed != len(results):
-            self.push_screen(MessageScreen("workspace cleanup", "\n".join(results)))
-        await self.refresh_data()
+            existing = {b.name for b in self.backend.list_branches()} if commits else set()
+            items = [
+                UndoItem(name, state.current.pop(name, ""), commit)
+                for name, commit in commits.items()
+                if name not in existing
+            ]
+            if items:
+                state.push_undo(UndoEntry("delete", items))
+        return results, [item.bookmark for item in items]
 
     async def _force_remove_workspace(self, ws: Workspace) -> None:
         try:
@@ -1564,8 +1664,34 @@ class SandboxTUI(App[None]):
         await self.refresh_data()
 
     def action_cancel(self) -> None:
-        """x: cancel a run, harder on the second press, forget it on the third."""
-        for name in self._action_branches():
+        """x: cancel a run, harder on the second press, forget it on the third.
+
+        Asks first before the first signal reaches several runs at once."""
+        chosen = self._action_branches()
+        fresh = [
+            name
+            for name in chosen
+            if (job := self.jobs.jobs.get(name)) is not None
+            and job.running
+            and not self.jobs.cancel_started(name)
+        ]
+        if len(fresh) < 2:
+            self._cancel(chosen)
+            return
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                self._cancel(chosen)
+
+        body = (
+            "\n".join(f"{name}  {self.jobs.jobs[name].spec.label()}" for name in fresh)
+            + "\n\nEach run gets SIGINT, so project-sandbox can commit its work and close "
+            "the session. Pressing x again escalates without asking."
+        )
+        self.push_screen(ConfirmScreen(f"cancel {len(fresh)} runs?", body, "cancel"), decided)
+
+    def _cancel(self, names: list[str]) -> None:
+        for name in names:
             self.notify(self.jobs.cancel(name, self.sessions))
         self._render_table()
 

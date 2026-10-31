@@ -226,6 +226,7 @@ def test_delete_undo_and_redo_bookmarks(repo: Path, fake_cfg: Callable[..., Conf
         await pilot.pause()
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._prefix.TIMEOUT = 60  # dd spans waits for workers; only other keys cancel it here
         feature = app.backend._bookmark_commit("feature/x")
         # n records a lineage started from main; its creation can be undone.
         await pilot.press("n")
@@ -1108,9 +1109,10 @@ def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config], visual_key:
         assert len(app.selection()) == 3 and app._visual_anchor is None
         await pilot.press("escape")
         assert app.selection() == []
-        # one branch is not enough
+        # one mark launches on it, as f and @ act on it, instead of a merge
         await pilot.press("j", "space", "r")
-        assert not isinstance(app.screen, LaunchScreen)
+        assert isinstance(app.screen, LaunchScreen) and app.screen.octopus is None
+        assert app.screen.query_one("#branch", Input).value == app.visible_rows()[1].branch.name
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -1195,7 +1197,16 @@ def test_cancel_selected_runs(
         await app.refresh_data()
         await pilot.press("j", *keys)  # skip the unmarkable working-copy row
         chosen = names[:2] if keys else names[:1]
-        await pilot.press("x")
+        if keys:  # several runs at once: ask before the first signal
+            await pilot.press("x")
+            assert isinstance(app.screen, ConfirmScreen) and signals == []
+            await pilot.press("n")
+            assert app.screen is app.main and signals == []
+            await pilot.press("x")
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("y")
+        else:
+            await pilot.press("x")
         assert signals == [(pids[name], signal.SIGINT) for name in chosen]
         assert app.selection() == (chosen if keys else [])
         # Retain the selection so escalation reaches the same runs.
@@ -1394,7 +1405,9 @@ def test_cleanup_workspaces_key(repo: Path, fake_cfg: Callable[..., Config]) -> 
 
         await pilot.press("W")
         await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
-        await pilot.press("enter")
+        await pilot.press("enter")  # asks first
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.press("y")
         await wait_until(pilot, lambda: not path.exists())
         assert dirty.exists()
         assert app.is_running
@@ -1714,3 +1727,197 @@ def test_overlapping_refreshes_wait_for_coalesced_update(
         assert calls == 2 and not app._refreshing
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_marked_rows_stay_visible_under_a_filter(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    """Regression: dd with a mark hidden by the filter deleted a row the user could not see."""
+    add_bookmark(repo, "fix/y", "y.txt", "y\n")
+
+    def names(app: SandboxTUI) -> list[str]:
+        return [r.branch.name for r in app.visible_rows()]
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.marked = ["fix/y"]
+        await pilot.press("slash", *"feature", "enter")
+        assert names(app) == ["fix/y", "feature/x"]  # the mark stays on screen
+        header = str(app.main.query_one("#header").render())
+        assert "1 selected (1 outside the filter)" in header
+        await pilot.press("escape")  # clears the filter, keeps the mark
+        assert app.marked == ["fix/y"]
+        assert "fix/y" in names(app)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_actions_end_visual_mode_keeping_the_range(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "v", "j", "P")
+        assert isinstance(app.screen, MessageScreen)
+        await pilot.press("q")
+        assert app._visual_anchor is None
+        assert app.selection() == ["feature/x", "main"]
+        await pilot.press("k", "k")  # no longer follows the cursor
+        assert app.selection() == ["feature/x", "main"]
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_pending_prefix_is_shown_and_cancelled(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    def header(app: SandboxTUI) -> str:
+        return str(app.main.query_one("#header").render())
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("G", "d")
+        assert "d…" in header(app)
+        await pilot.press("k")  # another key cancels dd
+        assert "d…" not in header(app)
+        await pilot.press("d")
+        await pilot.pause(1.0)  # and so does waiting
+        assert "d…" not in header(app)
+        await pilot.press("d")
+        await app.workers.wait_for_complete()
+        assert "feature/x" in {b.name for b in app.backend.list_branches()}
+        await pilot.press("g", "j", "g")  # gg with a key in between does not jump
+        assert app.selected_branch_name() == "main"
+        await pilot.press("g", "g")
+        assert app.selected_branch_name() == "@"
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_fast_forward_main_undo_and_redo(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from tests.conftest import jj
+
+    async def vim(pilot: Any, app: SandboxTUI, *keys: str) -> None:
+        await pilot.press(*keys)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    def messages(app: SandboxTUI) -> list[str]:
+        return [str(n.message) for n in app._notifications]
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        old = app.backend._bookmark_commit("main")
+        new = app.backend._bookmark_commit("feature/x")
+        await vim(pilot, app, "j", "f")
+        assert app.backend._bookmark_commit("main") == new
+        assert "fast-forwarded main to feature/x (u undoes)" in messages(app)
+        await vim(pilot, app, "u")
+        assert app.backend._bookmark_commit("main") == old
+        assert "undo fast-forward: moved main back" in messages(app)
+        assert app.selected_branch_name() == "main"
+        await vim(pilot, app, "ctrl+r")
+        assert app.backend._bookmark_commit("main") == new
+        # Moved again elsewhere: undo refuses instead of losing that move.
+        add_bookmark(repo, "next", "next.txt", "next\n", start="feature/x")
+        jj(repo, "bookmark", "move", "main", "--to", "next")
+        await vim(pilot, app, "u")
+        assert messages(app)[-1] == "undo failed: main has moved since"
+        assert app.backend._bookmark_commit("main") == app.backend._bookmark_commit("next")
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_cleanup_bookmark_deletion_can_be_undone(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.screens.dialogs import CleanupScreen
+    from tests.conftest import jj
+
+    jj(repo, "bookmark", "create", "old", "-r", "main")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        commit = app.backend._bookmark_commit("old")
+        await pilot.press("W")
+        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await pilot.press("enter")
+        assert isinstance(app.screen, ConfirmScreen)
+        assert "delete bookmark old" in app.screen.body
+        await pilot.press("y")
+        await app.workers.wait_for_complete()
+        assert "old" not in {b.name for b in app.backend.list_branches()}
+        assert any(str(n.message) == "deleted old (u restores)" for n in app._notifications)
+        assert app.screen is app.main  # nothing was skipped: no report
+        await pilot.press("u")
+        await app.workers.wait_for_complete()
+        assert app.backend._bookmark_commit("old") == commit
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_unsent_prompt_is_kept_as_a_draft(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "r")
+        assert isinstance(app.screen, LaunchScreen)
+        await pilot.press(*"fix it", "escape")
+        assert app.screen is app.main
+        assert any("kept as a draft" in str(n.message) for n in app._notifications)
+        await pilot.press("i", "escape")  # an interactive form leaves the draft alone
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        assert form.query_one("#prompt", TextArea).text == "fix it"
+        await pilot.press("escape", "k", "r")  # drafts belong to their bookmark
+        assert isinstance(app.screen, LaunchScreen)
+        assert app.screen.query_one("#prompt", TextArea).text == ""
+        await pilot.press("escape", "j", "r")
+        area = app.screen.query_one("#prompt", TextArea)
+        area.text = "exit:0"
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+        assert app._drafts == {}  # launched: nothing left to keep
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_open_many_workspaces_asks_first(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    add_bookmark(repo, "a", "a2.txt", "a\n")
+    add_bookmark(repo, "b", "b2.txt", "b\n")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_open_editor", opened.append)
+        app.marked = ["a", "b", "feature/x", "main"]
+        await pilot.press("o")
+        assert isinstance(app.screen, ConfirmScreen) and opened == []
+        await pilot.press("escape")
+        assert opened == []
+        await pilot.press("o", "y")
+        assert opened == ["a", "b", "feature/x", "main"]
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_log_key_without_runs_shows_details(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "l")
+        assert isinstance(app.screen, MessageScreen)
+        assert "interactive command" in app.screen.body
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_launch_form_flags_a_new_bookmark_name(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "i")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+
+        def hint() -> str:
+            return str(form.query_one("#branch-hint", Static).content)
+
+        assert "existing name selects it" in hint()
+        form.query_one("#branch", Input).value = "feature/typo"
+        await pilot.pause()
+        assert hint() == "new bookmark feature/typo, created from feature/x"
+        form.query_one("#branch", Input).value = "main"
+        await pilot.pause()
+        assert "existing name selects it" in hint()
+
+    run_app(repo, fake_cfg(), scenario)

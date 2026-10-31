@@ -119,7 +119,7 @@ def test_help_fits_a_small_terminal() -> None:
                     for _key, what in keys:
                         # Long descriptions wrap; their first word must still be there.
                         assert what.split()[0] in shot, what
-            assert "any key to close" in shot
+            assert "q/esc/? close" in shot
 
     asyncio.run(scenario())
 
@@ -149,7 +149,15 @@ def test_help_wraps_under_its_own_column_when_narrow() -> None:
             await pilot.press("j")
             assert isinstance(app.screen, HelpScreen)  # scrolls instead of closing
             assert body.scroll_y == 1
-            await pilot.press("x")
+            await pilot.press("x")  # other keys neither close nor fall through
+            assert isinstance(app.screen, HelpScreen)
+            await pilot.press("G")
+            assert body.scroll_y == body.max_scroll_y
+            await pilot.press("g", "j", "g")  # another key in between cancels gg
+            assert body.scroll_y == body.max_scroll_y
+            await pilot.press("g", "g")
+            assert body.scroll_y == 0
+            await pilot.press("question_mark")
             assert not isinstance(app.screen, HelpScreen)
 
     asyncio.run(scenario())
@@ -174,5 +182,82 @@ def test_confirmation_contents_scroll_without_dismissing() -> None:
             assert app.screen is screen and scroll.scroll_y > 0
             await pilot.press("n")
             assert app.screen is not screen
+
+    asyncio.run(scenario())
+
+
+def test_message_scrolls_with_vim_keys_and_closes_on_q() -> None:
+    from project_sandbox_tui.screens.dialogs import MessageScreen
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = MessageScreen("details", "\n".join(f"line-{i}" for i in range(100)))
+            app.push_screen(screen)
+            await pilot.pause()
+            scroll = screen.query_one(VerticalScroll)
+            await pilot.press("j", "j")
+            assert app.screen is screen and scroll.scroll_y == 2
+            await pilot.press("ctrl+d")
+            assert scroll.scroll_y == 2 + scroll.size.height // 2
+            await pilot.press("ctrl+u", "k", "x", "P")  # other keys do not close
+            assert app.screen is screen and scroll.scroll_y == 1
+            await pilot.press("q")
+            assert app.screen is not screen
+            for key in ("escape", "enter"):
+                screen = MessageScreen("details", "short")
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press(key)
+                assert app.screen is not screen
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("key", ["j", "k", "g", "G", "ctrl+d", "pagedown"])
+def test_confirmation_scroll_keys_neither_confirm_nor_cancel(key: str) -> None:
+    from project_sandbox_tui.screens.dialogs import ConfirmScreen
+
+    results: list[bool | None] = []
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ConfirmScreen("delete?", "\n".join(f"file-{i}" for i in range(100)), "x")
+            app.push_screen(screen, results.append)
+            await pilot.pause()
+            await pilot.press(key)
+            assert app.screen is screen and results == []
+            await pilot.press("y")
+            assert results == [True]
+
+    asyncio.run(scenario())
+
+
+def test_cleanup_enter_asks_before_removing() -> None:
+    from project_sandbox_tui.screens.dialogs import ConfirmScreen
+
+    rows = [
+        Workspace("done", Path("/tmp/done"), "clean", removable=True, branch="done"),
+        Workspace("old", None, "merged into main", removable=True, branch="old"),
+    ]
+    results: list[object] = []
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(100, 30)) as pilot:
+            screen = CleanupScreen(rows)
+            app.push_screen(screen, results.append)
+            await pilot.pause()
+            await pilot.press("enter")
+            confirm = app.screen
+            assert isinstance(confirm, ConfirmScreen)
+            assert confirm.title_text == "remove 1 workspace and 2 bookmarks?"
+            assert "remove done  /tmp/done" in confirm.body
+            assert "delete bookmark old" in confirm.body
+            await pilot.press("escape")  # back to the list, nothing removed
+            assert app.screen is screen and results == []
+            await pilot.press("enter", "y")
+            assert results == [rows]
 
     asyncio.run(scenario())

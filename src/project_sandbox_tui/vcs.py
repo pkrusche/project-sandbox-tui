@@ -243,6 +243,15 @@ class JjBackend:
         """Recreate a deleted bookmark at ``commit``, even if it was abandoned since."""
         self._jj("bookmark", "create", revset_symbol(name), "-r", commit)
 
+    def move_bookmark(self, name: str, expected: str, to: str) -> None:
+        """Move bookmark ``name`` from ``expected`` to ``to``, backwards too (undoing ``f``).
+
+        Refuses when the bookmark no longer points to ``expected``: it moved since.
+        """
+        if self._bookmark_commit(name) != expected:
+            raise VcsError(f"{name} has moved since")
+        self._jj("bookmark", "set", revset_symbol(name), "-r", to, "--allow-backwards")
+
     def bookmarked_ancestors(self, commit: str) -> list[list[str]]:
         """Bookmarks on the nearest bookmarked proper ancestors of ``commit``,
         one list per such commit."""

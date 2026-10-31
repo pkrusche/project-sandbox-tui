@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 
 from rich.cells import cell_len
@@ -200,6 +201,40 @@ class PromptArea(TextArea):
 
     def action_search_history(self) -> None:
         self.post_message(self.SearchRequested(self))
+
+
+class PrefixKeys:
+    """Two-key vim commands such as ``gg`` and ``dd``.
+
+    The first key waits up to ``TIMEOUT`` seconds for its repeat; any other key
+    cancels it. A timestamp, not a timer: a timer from an earlier press could
+    cancel a newer one. ``pending`` is what vim's ``showcmd`` would show.
+    """
+
+    TIMEOUT = 0.8
+
+    def __init__(self) -> None:
+        self._key = ""
+        self._at = 0.0
+
+    @property
+    def pending(self) -> str:
+        if self._key and time.monotonic() - self._at < self.TIMEOUT:
+            return self._key
+        return ""
+
+    def press(self, key: str) -> bool:
+        """Whether ``key`` completes the command; otherwise it starts waiting."""
+        if self.pending == key:
+            self._key = ""
+            return True
+        self._key, self._at = key, time.monotonic()
+        return False
+
+    def other_key(self, key: str) -> None:
+        """Any key other than the pending one cancels it."""
+        if key != self._key:
+            self._key = ""
 
 
 def modifier_key(key: str) -> str | None:

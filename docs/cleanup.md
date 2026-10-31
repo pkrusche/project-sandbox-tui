@@ -6,8 +6,8 @@ sbx-tui --cleanup-workspaces             # remove eligible workspaces and merged
 ```
 
 Press `W` to review candidates: eligible rows are preselected; others show why
-they are kept. `space` toggles a row, `a` selects all/none, `enter` removes,
-`esc` cancels. The CLI removes all eligible candidates, reporting removals and
+they are kept. `j` `k` move, `space` toggles a row, `a` selects all/none,
+`enter` lists what goes and asks for `y`, and `esc` or `q` cancels. The CLI removes all eligible candidates, reporting removals and
 reasons for keeping others.
 
 Candidates come from `jj workspace list`, regardless of name or location. The
@@ -26,7 +26,8 @@ The [main bookmark](configuration.md#settings-reference) defines merged work:
 Unmerged workspaces with ignored files or missing directories are kept. Removal
 rechecks eligibility, runs `jj workspace forget` and deletes eligible bookmarks;
 tracked remote bookmarks are deleted on the next `jj git push`. Job history and the
-[bookmark history](usage.md#bookmark-history) stay; `u` does not undo cleanup.
+[bookmark history](usage.md#bookmark-history) stay. In the TUI, `u` restores the
+deleted bookmarks; removed workspaces cannot be undone.
 
 ## Force delete
 

@@ -17,7 +17,8 @@ asks for confirmation; `y` quits, and `ctrl+q` again over the dialog also quits.
 3. SIGKILL plus runtime `stop`; the TUI forgets the record.
 
 On a finished run, `x` clears the status at once. Presses within a second count
-once. The [bookmark history](usage.md#bookmark-history) keeps cleared runs.
+once. When the first press would signal several selected runs, sbx-tui lists
+them and asks first; later presses escalate without asking. The [bookmark history](usage.md#bookmark-history) keeps cleared runs.
 
 ## Interactive sessions
 

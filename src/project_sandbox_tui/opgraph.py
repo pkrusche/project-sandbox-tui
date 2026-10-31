@@ -7,7 +7,7 @@ sbx-tui are adopted with their nearest bookmarked jj ancestors as parents.
 
 Deleting a bookmark keeps its lineage, so the bookmarks that started from it
 still connect through it to its parents, and undo can restore it. ``u`` /
-``ctrl+r`` walk a linear undo stack of bookmark creations and deletions.
+``ctrl+r`` walk a linear undo stack of bookmark creations, deletions and moves.
 
 Stored as JSON in the repository's state directory. Every change re-reads the
 file under a lock so TUI instances on the same repository merge their changes.
@@ -72,29 +72,40 @@ class Node:
         return cls(**values)
 
 
+UndoOp = Literal["create", "delete", "move"]  # move: a bookmark moved, e.g. by f
+UNDO_OPS: dict[str, UndoOp] = {"create": "create", "delete": "delete", "move": "move"}
+
+
 @dataclass
 class UndoItem:
     bookmark: str
     lineage: str
     commit: str  # where the bookmark pointed when it was last removed or created
+    moved_to: str = ""  # "move" entries: where it points after the move (commit: before)
 
 
 @dataclass
 class UndoEntry:
-    op: Literal["create", "delete"]
+    op: UndoOp
     items: list[UndoItem]
 
     @classmethod
     def from_dict(cls, raw: Any) -> UndoEntry:
-        if not isinstance(raw, dict) or raw.get("op") not in ("create", "delete"):
+        op = raw.get("op") if isinstance(raw, dict) else None
+        if op not in UNDO_OPS:
             raise ValueError("invalid undo entry")
         items = raw.get("items")
         if not isinstance(items, list):
             raise ValueError("invalid undo items")
         return cls(
-            "create" if raw["op"] == "create" else "delete",
+            UNDO_OPS[op],
             [
-                UndoItem(str(i["bookmark"]), str(i.get("lineage") or ""), str(i["commit"]))
+                UndoItem(
+                    str(i["bookmark"]),
+                    str(i.get("lineage") or ""),
+                    str(i["commit"]),
+                    str(i.get("moved_to") or ""),
+                )
                 for i in items
                 if isinstance(i, dict)
             ],

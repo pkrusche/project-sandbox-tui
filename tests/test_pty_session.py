@@ -87,7 +87,7 @@ def start_tui(repo: Path, command: str, **env_extra: str) -> Tui:
         )
         tui.send(b"?")
         assert tui.wait_for(b"this help"), "TUI does not take keys before the session"
-        tui.send(b"x")
+        tui.send(b"q")  # closes help
         tui.pump(0.5)
         return tui
     except BaseException:

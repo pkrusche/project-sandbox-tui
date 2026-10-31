@@ -89,7 +89,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         opens_in: str = "",
         branches: list[str] | None = None,
         octopus: OctopusSetup | None = None,
+        draft: str = "",
     ) -> None:
+        """``draft``: a prompt typed earlier but not launched; shown instead of ``prompt_text``."""
         super().__init__()
         self.branch = branch
         self.mode = mode
@@ -97,7 +99,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.last = last
         self.defaults = defaults
         self.preview_fn = preview
-        self.initial_prompt = prompt_text
+        self.initial_prompt = draft or prompt_text
+        self._baseline_prompt = prompt_text  # what the prompt shows without edits
+        # On dismissal: the edited prompt to keep for next time, "" for none (background only).
+        self.draft: str | None = None
         self.branch_label = branch_label or branch
         self.prompt_history = prompt_history
         self.opens_in = opens_in
@@ -109,8 +114,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         if octopus is not None:
             self.branch = octopus_mod.default_result_name("merge", octopus.inputs)
             self._auto_result = self.branch
-            self.initial_prompt = self._render_template("merge", self.branch, octopus.default_base)
-            self._auto_prompt = self.initial_prompt
+            self._auto_prompt = self._render_template("merge", self.branch, octopus.default_base)
+            self.initial_prompt = draft or self._auto_prompt
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -149,10 +154,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                         classes="field-value",
                         id="start-branch",
                     )
-                yield Static(
-                    KeyHints("existing name selects it · new name creates it from base"),
-                    classes="prompt-hint",
-                )
+                yield Static("", classes="prompt-hint", id="branch-hint")
             yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
             yield CycleField(
                 "model",
@@ -278,6 +280,19 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.query_one(target).focus()
         self._update_preview()
         self._update_prompt_hint()
+        self._update_branch_hint()
+
+    @on(Input.Changed, "#branch")
+    def _update_branch_hint(self) -> None:
+        """Say when the bookmark field names a bookmark that launching would create."""
+        if self.octopus is not None:  # the result is always new; the title names it
+            return
+        name = self.query_one("#branch", Input).value.strip()
+        hint = self.query_one("#branch-hint", Static)
+        if name and name not in self.branches and not validate_branch_name(name):
+            hint.update(Text(f"new bookmark {name}, created from {self.branch_label}", "yellow"))
+        else:
+            hint.update(KeyHints("existing name selects it · new name creates it from base"))
 
     def _update_prompt_hint(self) -> None:
         if self.mode != "background":
@@ -454,7 +469,16 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             self.notify("an unsupervised run needs a prompt", severity="warning")
             self.query_one("#prompt").focus()
             return
+        self._keep_draft()  # until the launch has started
         self.dismiss(spec)
 
     def action_cancel(self) -> None:
+        self._keep_draft()
         self.dismiss(None)
+
+    def _keep_draft(self) -> None:
+        if self.mode != "background":
+            return
+        text = self.query_one("#prompt", PromptArea).text
+        baseline = self._auto_prompt if self.octopus is not None else self._baseline_prompt
+        self.draft = text if text.strip() and text != baseline else ""
