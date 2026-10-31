@@ -60,6 +60,7 @@ from project_sandbox_tui.sandbox import (
 from project_sandbox_tui.screens.dialogs import (
     CleanupScreen,
     ConfirmScreen,
+    DescriptionScreen,
     ForceRemove,
     HelpScreen,
     MessageScreen,
@@ -219,6 +220,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("i", "app.launch('interactive')", show=False),
     Binding("r", "app.launch('background')", show=False),
     Binding("n", "app.new_branch", show=False),
+    Binding("e", "app.edit_description", show=False),
     Binding("l", "app.open_log", show=False),
     Binding("o", "app.open_editor", show=False),
     Binding("d", "app.d_prefix", show=False),
@@ -264,7 +266,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "bookmarks",
         (
-            ("n", "new bookmark"),
+            ("n e", "new / edit description"),
             ("dd", "delete bookmark"),
             ("u ^r", "undo / redo"),
             ("v V ␣", "select bookmarks"),
@@ -1435,6 +1437,38 @@ class SandboxTUI(App[None]):
         if job.argv:
             lines.append(f"command     {shlex.join(job.argv)}")
         return lines
+
+    def action_edit_description(self) -> None:
+        chosen = self._action_branches()
+        if not chosen:
+            return
+        if len(chosen) != 1:
+            self.notify("select one bookmark or working copy to describe", severity="warning")
+            return
+        self._edit_description(chosen[0])
+
+    @work(group="description", exclusive=True)
+    async def _edit_description(self, name: str) -> None:
+        try:
+            commit, description = await asyncio.to_thread(self.backend.get_description, name)
+        except VcsError as exc:
+            self.notify(str(exc), severity="error", timeout=8)
+            return
+
+        async def save(text: str) -> str | None:
+            try:
+                async with self._history_lock:
+                    await asyncio.to_thread(self.backend.set_description, name, text, commit)
+            except VcsError as exc:
+                return str(exc)
+            return None
+
+        def finished(saved: bool | None) -> None:
+            if saved:
+                self.notify(f"{name}: description updated")
+                self.call_later(self.refresh_data)
+
+        self.push_screen(DescriptionScreen(name, description, save), finished)
 
     def action_new_branch(self) -> None:
         start = self.default_start

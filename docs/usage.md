@@ -51,6 +51,7 @@ existing bookmark main/master/trunk. Counts omit zeros:
 | `l` / `enter` | [Logs](#log-viewer), or run details while a bookmark has no runs |
 | `P` | Last run details (agent, times, IDs, log, command line), history and the interactive command |
 | `n` | New bookmark: name and start revision |
+| `e` | Edit the full description of one bookmark or the working copy (`ctrl+s` saves, `esc` cancels) |
 | `dd` · `u` · `ctrl+r` | Delete bookmark, keeping its history · [undo · redo](#bookmark-history) |
 | `v` / `V` · `space` | Select a range / mark individual bookmarks; `esc` clears |
 | `=` | Diff against main, or compare two selected revisions |
@@ -61,7 +62,7 @@ existing bookmark main/master/trunk. Counts omit zeros:
 | `R` · `ctrl+l` | Refresh list · reload configuration |
 | `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue; asks first while any are running) |
 
-Selections apply to `x`, `dd`, `o` and `P`; `l` requires one bookmark.
+Selections apply to `x`, `dd`, `o` and `P`; `l` and `e` require one bookmark.
 One marked bookmark overrides the highlighted row for `f`, `@`, `r` and `i`.
 With at least two selected, `r` / `i` opens [merge or rebase](merging.md).
 Selected rows stay visible while a filter hides others, so an action never hits
@@ -78,6 +79,12 @@ Its node in the graph shows the outcome as a symbol
 
 Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
 (including delta). Exit the viewer, then press Enter to resume the TUI.
+
+`e` edits the tip commit's description with `jj describe`. The editor loads the
+full description, including multiple paragraphs; `enter` inserts a newline.
+Saving refreshes the list. If the target changes while the editor is open,
+saving is refused and the draft stays visible. Description edits can be undone
+with `jj undo`.
 
 `f` moves only the local main bookmark, requiring main to be an ancestor of the
 target and refusing bookmark or file conflicts. Equal tips do nothing; commits

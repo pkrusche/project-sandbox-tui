@@ -239,6 +239,27 @@ class JjBackend:
         self._jj("bookmark", "delete", f"exact:{revset_symbol(name)}")
         return commit
 
+    def _description_commit(self, name: str) -> str:
+        if name == WORKING_COPY:
+            return self._working_copy(snapshot=True)[1]
+        return self._bookmark_commit(name, snapshot=True)
+
+    def get_description(self, name: str) -> tuple[str, str]:
+        """Return the target commit and its full description, including newlines."""
+        commit = self._description_commit(name)
+        return commit, self._jj("log", "--no-graph", "-r", commit, "-T", "description")
+
+    def set_description(self, name: str, description: str, expected: str) -> None:
+        """Describe the target only if it still points to the commit the user edited."""
+        if self._description_commit(name) != expected:
+            raise VcsError(f"{name} has changed since the editor opened; reopen it to try again")
+        target = (
+            "@"
+            if name == WORKING_COPY
+            else f"bookmarks(exact:{json.dumps(name, ensure_ascii=False)})"
+        )
+        self._jj("describe", "-r", f"{target} & {expected}", f"--message={description}")
+
     def restore_bookmark(self, name: str, commit: str) -> None:
         """Recreate a deleted bookmark at ``commit``, even if it was abandoned since."""
         self._jj("bookmark", "create", revset_symbol(name), "-r", commit)

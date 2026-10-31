@@ -156,6 +156,48 @@ def test_create_branch(repo: Path) -> None:
         backend.create_branch("topic/new", "main")  # already exists
 
 
+@pytest.mark.parametrize("name", ["main", "feature/x", "fix-", "a+b", "naïve", "@"])
+def test_edit_description(repo: Path, name: str) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    if name not in {"main", "feature/x", "@"}:
+        backend.create_branch(name, "feature/x")
+    if name == "@":
+        (repo / "dirty.txt").write_text("uncommitted work\n")
+    commit, original = backend.get_description(name)
+    assert original == ("" if name == "@" else "first commit\n" if name == "main" else "add b\n")
+    description = "--new subject [bold] café\n\nA longer body.\nSecond line.\n"
+    backend.set_description(name, description, commit)
+    updated, text = backend.get_description(name)
+    assert text == description
+    assert updated != commit
+    assert jj(repo, "diff", "--from", commit, "--to", updated) == ""
+    branch = next(b for b in backend.list_branches() if b.name == name)
+    assert branch.subject == description.splitlines()[0]
+    backend.set_description(name, "", updated)
+    assert backend.get_description(name)[1] == ""
+    if name == "@":
+        assert (repo / "dirty.txt").read_text() == "uncommitted work\n"
+
+
+@pytest.mark.parametrize("change", ["move", "delete", "describe"])
+def test_edit_description_rejects_changed_target(repo: Path, change: str) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    commit, _ = backend.get_description("feature/x")
+    if change == "move":
+        jj(repo, "bookmark", "set", "feature/x", "-r", "main", "--allow-backwards")
+    elif change == "delete":
+        jj(repo, "bookmark", "delete", "feature/x")
+    else:
+        jj(repo, "describe", "feature/x", "-m", "external edit")
+    with pytest.raises(vcs.VcsError, match="changed since|does not exist"):
+        backend.set_description("feature/x", "my draft", commit)
+    assert jj(repo, "log", "--no-graph", "-r", commit, "-T", "description") == "add b\n"
+
+
 def test_names_with_revset_operators(repo: Path) -> None:
     """``fix-`` unquoted means "parents of fix": it must name the bookmark."""
     from tests.conftest import run

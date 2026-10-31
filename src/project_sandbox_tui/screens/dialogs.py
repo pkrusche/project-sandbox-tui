@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -14,7 +15,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, Static, TextArea
 
 from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.vcs import validate_branch_name
@@ -70,6 +71,58 @@ class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class DescriptionScreen(ModalScreen[bool]):
+    """Edit a full commit description; keep the draft visible if saving fails."""
+
+    DEFAULT_CSS = (
+        _MODAL_CSS.format(name="DescriptionScreen")
+        + """
+    DescriptionScreen TextArea { height: 12; max-height: 60vh; border: none; }
+    DescriptionScreen TextArea:focus { background: $boost; }
+    """
+    )
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("ctrl+s", "save", show=False, priority=True),
+    ]
+
+    def __init__(
+        self, name: str, description: str, save: Callable[[str], Awaitable[str | None]]
+    ) -> None:
+        super().__init__()
+        self.name_text = name
+        self.description = description
+        self.save = save
+        self._saving = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(Text(f"edit description · {self.name_text}"), classes="title")
+            yield TextArea(self.description, id="description")
+            yield Static("", id="error")
+            yield Static(KeyHints("ctrl+s save · enter newline · esc cancel"), classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one(TextArea).focus()
+
+    async def action_save(self) -> None:
+        if self._saving:
+            return
+        self._saving = True
+        try:
+            error = await self.save(self.query_one(TextArea).text)
+            if error:
+                self.query_one("#error", Static).update(Text(error, style="red"))
+            else:
+                self.dismiss(True)
+        finally:
+            self._saving = False
+
+    def action_cancel(self) -> None:
+        if not self._saving:
+            self.dismiss(False)
 
 
 class ScrollModal[ResultT](ModalScreen[ResultT]):
@@ -361,7 +414,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
         (
             "bookmarks",
             (
-                ("n", "new bookmark"),
+                ("n / e", "new / describe"),
                 ("dd", "delete (history kept)"),
                 ("u / ctrl+r", "undo / redo n, dd, f"),
                 (

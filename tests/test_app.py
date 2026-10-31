@@ -16,6 +16,7 @@ from project_sandbox_tui.config import Config, LastUsed
 from project_sandbox_tui.jobs import JobManager
 from project_sandbox_tui.screens.dialogs import (
     ConfirmScreen,
+    DescriptionScreen,
     HelpScreen,
     MessageScreen,
     NewBranchScreen,
@@ -164,7 +165,22 @@ def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config])
         await pilot.press("slash", *"no-matches", "enter")
         assert app.table.row_count == 0 and app.selected_branch_name() is None
         await pilot.press(
-            "j", "k", "G", "g", "g", "space", "v", "r", "i", "l", "f", "@", "d", "d", "equals_sign"
+            "j",
+            "k",
+            "G",
+            "g",
+            "g",
+            "space",
+            "v",
+            "r",
+            "i",
+            "l",
+            "e",
+            "f",
+            "@",
+            "d",
+            "d",
+            "equals_sign",
         )
         assert app.screen is app.main and not app.jobs.jobs
         assert app.selection() == []
@@ -190,6 +206,66 @@ def test_create_branch(repo: Path, fake_cfg: Callable[..., Config]) -> None:
 
     run_app(repo, fake_cfg(), scenario)
     assert "topic/new" in {b.name for b in detect(repo).list_branches()}
+
+
+@pytest.mark.parametrize("name", ["main", "feature/x", "@"])
+def test_edit_description(repo: Path, fake_cfg: Callable[..., Config], name: str) -> None:
+    from tests.conftest import jj
+
+    jj(repo, "describe", "-r", name, "-m", "old subject\n\nexisting body")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        if name == "main":
+            await pilot.press("G")
+        elif name != "@":
+            await pilot.press("j")
+        await pilot.press("e")
+        await wait_until(pilot, lambda: isinstance(app.screen, DescriptionScreen))
+        editor = app.screen.query_one(TextArea)
+        assert app.focused is editor
+        assert editor.text == "old subject\n\nexisting body\n"
+        editor.load_text("cancelled")
+        await pilot.press("escape")
+        assert app.screen is app.main
+        assert app.backend.get_description(name)[1] == "old subject\n\nexisting body\n"
+
+        await pilot.press("e")
+        await wait_until(pilot, lambda: isinstance(app.screen, DescriptionScreen))
+        app.screen.query_one(TextArea).load_text("new subject")
+        await pilot.press("end", "enter", "enter", *"body jkrq")
+        assert isinstance(app.screen, DescriptionScreen)  # typing doesn't run list actions
+        assert app.screen.query_one(TextArea).text == "new subject\n\nbody jkrq"
+        await pilot.press("ctrl+s")
+        await wait_until(
+            pilot, lambda: app.screen is app.main and app.branch(name).subject == "new subject"
+        )
+        assert app.selected_branch_name() == name
+        assert app.backend.get_description(name)[1] == "new subject\n\nbody jkrq\n"
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_description_editor_keeps_draft_on_error(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from tests.conftest import jj
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "e")
+        await wait_until(pilot, lambda: isinstance(app.screen, DescriptionScreen))
+        app.screen.query_one(TextArea).load_text("my draft")
+        jj(repo, "describe", "feature/x", "-m", "external edit")
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, DescriptionScreen)
+        assert "changed since" in str(app.screen.query_one("#error", Static).render())
+        assert app.screen.query_one(TextArea).text == "my draft"
+        assert app.backend.get_description("feature/x")[1] == "external edit\n"
+        await pilot.press("escape")
+        await pilot.press("g", "g", "j", "v", "j", "e")
+        assert app.screen is app.main
+        assert any("select one bookmark" in str(n.message) for n in app._notifications)
+
+    run_app(repo, fake_cfg(), scenario)
 
 
 def test_undo_right_after_creating_undoes_the_creation(
