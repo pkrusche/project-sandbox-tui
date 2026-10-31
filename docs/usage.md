@@ -65,8 +65,10 @@ Selections apply to `x`, `dd`, `o` and `P`; `l` requires one bookmark.
 One marked bookmark overrides the highlighted row for `f` and `@`.
 With at least two selected, `r` / `i` opens [merge or rebase](merging.md).
 
-The status column shows the last run's outcome; its node in the graph shows
-the same as a symbol (`▶` running, `✓` completed, `✗` failed, `⚠` other).
+The status column shows the last run's outcome and, when inactive, how long ago
+it ended (or started if the end time is unavailable), such as `completed · 5m ago`.
+Its node in the graph shows the outcome as a symbol
+(`▶` running, `✓` completed, `✗` failed, `⚠` other).
 
 Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
 (including delta). Exit the viewer, then press Enter to resume the TUI.

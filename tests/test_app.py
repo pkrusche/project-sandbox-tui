@@ -512,7 +512,8 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].status == "completed")
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
         row = next(r for r in row_texts(app) if r[1] == "feature/x")
-        assert row[0] == "✓" and row[5] == "completed"
+        assert row[0] == "✓"
+        assert row[5].startswith("completed · ") and row[5].endswith(" ago")
         # The history records the outcome once a listing after the run's end is seen.
         await wait_until(pilot, lambda: app.graph.state.history("feature/x")[0].status != "")
         await pilot.press("P")  # the agent moved from the list to the details

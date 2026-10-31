@@ -154,6 +154,9 @@ class Row:
                 status = job.status.replace("_", " ")
                 if job.exit_code is not None and job.status != "completed":
                     status += f" ({job.exit_code})"
+                last_run = _ts(job.ended_at) or _ts(job.started_at)
+                if last_run:
+                    status += f" · {human_age(time.time() - last_run)} ago"
         if sess is not None and (job is None or not job.running):
             glyph, colour = GLYPHS["external"]
             status = "busy (other)"
