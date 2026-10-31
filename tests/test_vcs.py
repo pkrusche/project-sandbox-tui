@@ -176,6 +176,53 @@ def test_names_with_revset_operators(repo: Path) -> None:
     assert vcs.revset_symbol('a"b\\c') == '"a\\"b\\\\c"'
 
 
+@pytest.mark.parametrize("name", ["topic", "fix-", "a+b", "naïve"])
+def test_delete_and_restore_bookmark(repo: Path, name: str) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    backend.create_branch(name, "feature/x")
+    commit = backend.delete_bookmark(name)
+    assert commit == backend._bookmark_commit("feature/x")
+    assert name not in {b.name for b in backend.list_branches()}
+    with pytest.raises(vcs.VcsError, match="does not exist"):
+        backend.delete_bookmark(name)
+    # Restoring also works once the commit has been abandoned, and revives it.
+    jj(repo, "bookmark", "delete", "feature/x")
+    jj(repo, "abandon", commit)
+    backend.restore_bookmark(name, commit)
+    assert backend._bookmark_commit(name) == commit
+    with pytest.raises(vcs.VcsError):
+        backend.restore_bookmark(name, commit)  # exists again
+
+
+def test_delete_bookmark_snapshots_edits_first(repo: Path) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    jj(repo, "bookmark", "create", "wip", "-r", "@")
+    (repo / "edit.txt").write_text("edit\n")
+    commit = backend.delete_bookmark("wip")
+    # The returned commit includes the edit: restoring must not revive the old @.
+    assert commit == backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id")
+    assert "edit.txt" in backend._jj("file", "list", "-r", commit)
+
+
+def test_bookmarked_ancestors(repo: Path) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    add_bookmark(repo, "left", "left.txt", "left\n", start="feature/x")
+    jj(repo, "bookmark", "create", '"fix-"', "-r", "feature/x")
+    jj(repo, "new", "--quiet", "left", "main", "-m", "merge")
+    backend = vcs.detect(repo)
+    merge = backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id")
+    heads = backend.bookmarked_ancestors(merge)
+    assert sorted(sorted(names) for names in heads) == [["left"]]  # main is behind left
+    left = backend._bookmark_commit("left")
+    assert sorted(backend.bookmarked_ancestors(left)[0]) == ["feature/x", "fix-"]
+    assert backend.bookmarked_ancestors(backend._bookmark_commit("main")) == []
+
+
 @pytest.mark.parametrize(
     ("name", "ok"),
     [

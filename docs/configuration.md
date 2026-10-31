@@ -5,7 +5,7 @@ Settings are deep-merged from global
 trusted `<repo>/.project-sandbox-tui.toml`. Unknown keys are errors. `--init`
 writes missing templates.
 
-Edit TOML directly or use `config set/unset`. `ctrl+r` reloads both files,
+Edit TOML directly or use `config set/unset`. `ctrl+l` reloads both files,
 keeping current settings on error; running sessions retain their launch settings.
 
 ## From the command line
@@ -31,7 +31,7 @@ Project config can run host commands (`sandbox.command`, `ui.*_command`) and
 loosen network, credential or sandbox restrictions (`extra_args`). Only reviewed
 settings take effect:
 
-- Startup and `ctrl+r` show new or changed files as a diff against the trusted
+- Startup and `ctrl+l` show new or changed files as a diff against the trusted
   copy; `y` trusts exactly that version. Invalid files are not offered.
 - Until reviewed, new files are ignored; changed files use the trusted copy.
 - `--trust-config` offers the same review in the terminal. `--print-config` and
@@ -113,6 +113,7 @@ as one word.
 | `models.json` | Downloaded model catalog |
 | `<repo>-<hash>/last_used.json` | Launch defaults |
 | `<repo>-<hash>/prompt_history.json` | Prompt history |
+| `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
 | `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output |

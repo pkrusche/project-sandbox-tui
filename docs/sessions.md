@@ -8,8 +8,16 @@ including sessions started from a shell.
 
 Background jobs survive quitting; restarting re-adopts them and announces any
 that finished. Quitting (`q` or `ctrl+q`) while jobs or sessions are running
-asks for confirmation; `y` quits, and `ctrl+q` again over the dialog also quits. `x` sends SIGINT so project-sandbox can commit work; repeated
-presses escalate to SIGTERM, then SIGKILL plus runtime `stop`.
+asks for confirmation; `y` quits, and `ctrl+q` again over the dialog also quits.
+
+`x` cancels a run in three steps, one per press:
+
+1. SIGINT, so project-sandbox can commit work and close its session.
+2. SIGTERM, if the run is still going.
+3. SIGKILL plus runtime `stop`; the TUI forgets the record.
+
+On a finished run, `x` clears the status at once. Presses within a second count
+once. The [bookmark history](usage.md#bookmark-history) keeps cleared runs.
 
 ## Interactive sessions
 
@@ -26,11 +34,12 @@ until the agent exits; multiplexer modes fall back to inline outside that multip
 
 Multiplexers are detected through `$TMUX`, `$ZELLIJ` and `$STY`. External sessions
 show `interactive (ext)` and return immediately; stop them in the agent window
-(`x` cannot). Failed launches leave the window open until Enter.
+(`x` cannot signal them). Failed launches leave the window open until Enter.
 
-If an exited agent's row stays busy, press `C` (`Shift+c`) to forget its TUI record,
-then `i` to restart. `C` sends no signal; `c` clears only finished records. Launches
-that fail before writing a session record may stay busy for 10 minutes unless cleared.
+If an exited agent's row stays busy, press `x` three times to forget its TUI
+record, then `i` to restart. Interactive records are forgotten without sending a
+signal. Launches that fail before writing a session record may stay busy for 10
+minutes unless cleared.
 
 ## Notifications and exit codes
 

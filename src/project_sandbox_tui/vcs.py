@@ -33,6 +33,7 @@ class Branch:
     # sessions on it run in the repository's own workspace.
     working_copy: bool = False
     comparison: MainComparison | None = None
+    commit: str = ""  # full commit id; empty for a conflicted bookmark
 
     @property
     def label(self) -> str:
@@ -156,6 +157,7 @@ class JjBackend:
                     subject=subject,
                     timestamp=int(ts) if ts.isdigit() else 0,
                     is_current=current == "1",
+                    commit=commit,
                 )
             )
         if compare_to_main is not None:
@@ -207,6 +209,7 @@ class JjBackend:
                 timestamp=int(ts) if ts.isdigit() else 0,
                 is_current=True,
                 working_copy=True,
+                commit=commit,
             ),
             commit,
         )
@@ -228,19 +231,49 @@ class JjBackend:
             self.root,
         )
 
+    def delete_bookmark(self, name: str) -> str:
+        """Delete a local bookmark; return the commit it pointed to, for restoring it."""
+        # Snapshot first: edits to @ may move the bookmark, and the restored
+        # bookmark must not point to the pre-snapshot commit.
+        commit = self._bookmark_commit(name, snapshot=True)
+        self._jj("bookmark", "delete", f"exact:{revset_symbol(name)}")
+        return commit
+
+    def restore_bookmark(self, name: str, commit: str) -> None:
+        """Recreate a deleted bookmark at ``commit``, even if it was abandoned since."""
+        self._jj("bookmark", "create", revset_symbol(name), "-r", commit)
+
+    def bookmarked_ancestors(self, commit: str) -> list[list[str]]:
+        """Bookmarks on the nearest bookmarked proper ancestors of ``commit``,
+        one list per such commit."""
+        out = self._jj(
+            "log",
+            "--no-graph",
+            "-r",
+            f"heads(::{commit}- & bookmarks())",
+            "-T",
+            'local_bookmarks.map(|b| stringify(b.name())).join("\\x00") ++ "\\n"',
+        )
+        return [line.split("\0") for line in out.splitlines() if line]
+
     def diff_command(self, base: str, target: str) -> list[str]:
         """Interactive diff: let jj choose the formatter, colors and pager."""
         return ["jj", "diff", "--from", revset_symbol(base), "--to", revset_symbol(target)]
 
-    def _bookmark_commit(self, name: str) -> str:
+    def _bookmark_commit(self, name: str, *, snapshot: bool = False) -> str:
         if name == WORKING_COPY:
             raise VcsError("the working copy is not a local bookmark")
-        commit = self._jj(
+        args = (
             "bookmark",
             "list",
-            f"exact:{name}",
+            f"exact:{revset_symbol(name)}",
             "-T",
             'if(remote, "", if(normal_target, normal_target.commit_id(), "conflicted"))',
+        )
+        commit = (
+            _run(["jj", "--no-pager", "--color=never", *args], self.root)
+            if snapshot
+            else self._jj(*args)
         ).strip()
         if not commit:
             raise VcsError(f"bookmark {name} does not exist")

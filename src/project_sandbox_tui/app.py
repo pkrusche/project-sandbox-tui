@@ -48,6 +48,7 @@ from project_sandbox_tui.config import (
 )
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
+from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
     Mode,
@@ -113,11 +114,19 @@ def _ts(value: str) -> float:
     return _parse_ts(value)
 
 
+def _clock(timestamp: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+
+
+HISTORY_LINES = 12  # history entries in the P pop-up
+
+
 @dataclass
 class Row:
     branch: Branch
     job: JobRecord | None
     session: SessionRecord | None
+    graph: tuple[str, int] | None = None  # history graph line and its node position
 
     def name_cell(self, selected: bool = False) -> Text:
         b = self.branch
@@ -128,12 +137,12 @@ class Row:
             name.append(" ●", style="green")
         return name
 
-    def cells(self, now: float, selected: bool = False) -> tuple[Text, ...]:
-        b, job, sess = self.branch, self.job, self.session
-        glyph, colour, status, agent, when = " ", "", "", "", ""
+    def status(self) -> tuple[str, str, str]:
+        """(glyph, colour, status text); the P pop-up has the details."""
+        job, sess = self.job, self.session
+        glyph, colour, status = "", "", ""
         if job is not None:
             glyph, colour = GLYPHS.get(job.status, ("?", ""))
-            agent = job.spec.label()
             if job.running:
                 status = "interactive" if job.mode == "interactive" else "running"
                 if job.external:
@@ -141,25 +150,36 @@ class Row:
                 if job.spec.operation:  # an integration of several branches
                     verb = "merging" if job.spec.operation == "merge" else "rebasing"
                     status = verb if job.mode == "background" else f"{verb} ({status})"
-                when = human_age(now - _ts(job.started_at))
             else:
                 status = job.status.replace("_", " ")
                 if job.exit_code is not None and job.status != "completed":
                     status += f" ({job.exit_code})"
-                when = human_age(now - _ts(job.ended_at)) + " ago" if job.ended_at else ""
         if sess is not None and (job is None or not job.running):
             glyph, colour = GLYPHS["external"]
-            status, agent = "busy (other)", sess.agent
-            when = human_age(now - _ts(sess.started_at))
+            status = "busy (other)"
+        return glyph, colour, status
+
+    def graph_cell(self) -> Text:
+        """The history graph line, its node showing the run status."""
+        glyph, colour, _status = self.status()
+        if self.graph is None:  # the working copy is not part of the graph
+            return Text(glyph or " ", style=colour)
+        line, at = self.graph
+        cell = Text(line[:at])
+        cell.append(glyph or NODE, style=colour)
+        cell.append(line[at + 1 :])
+        return cell
+
+    def cells(self, selected: bool = False) -> tuple[Text, ...]:
+        b = self.branch
+        _glyph, colour, status = self.status()
         return (
-            Text(glyph, style=colour),
+            self.graph_cell(),
             self.name_cell(selected),
             self.comparison_cell(),
             Text(b.head, style="dim"),
             Text(b.subject, overflow="ellipsis", no_wrap=True),
             Text(status, style=colour),
-            Text(agent, style="dim"),
-            Text(when, style="dim"),
         )
 
     def comparison_cell(self) -> Text:
@@ -197,16 +217,17 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("n", "app.new_branch", show=False),
     Binding("l", "app.open_log", show=False),
     Binding("o", "app.open_editor", show=False),
-    Binding("d", "app.diff", show=False),
+    Binding("d", "app.d_prefix", show=False),
+    Binding("equals_sign", "app.diff", show=False),
+    Binding("u", "app.undo", show=False),
+    Binding("ctrl+r", "app.redo", show=False),
     Binding("f", "app.fast_forward_main", show=False),
     Binding("at", "app.move_working_copy", show=False),
     Binding("P", "app.preview", show=False),
     Binding("W", "app.cleanup_workspaces", show=False),
-    Binding("x", "app.stop", show=False),
-    Binding("c", "app.clear_status", show=False),
-    Binding("C", "app.clear_status(True)", show=False),
+    Binding("x", "app.cancel", show=False),
     Binding("R", "app.refresh", show=False),
-    Binding("ctrl+r", "app.reload_config", show=False),
+    Binding("ctrl+l", "app.reload_config", show=False),
     Binding("question_mark", "app.help", show=False),
     Binding("H", "app.toggle_cheatsheet", show=False),
     Binding("q", "app.quit", show=False),
@@ -231,24 +252,24 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("i", "interactive"),
             ("r", "unsupervised run"),
-            ("x", "stop (again: force)"),
+            ("x", "cancel · 3×: forget"),
             ("l ⏎", "log / transcript"),
-            ("c C", "clear / forget"),
+            ("P", "details / command"),
         ),
     ),
     (
         "bookmarks",
         (
             ("n", "new bookmark"),
+            ("dd", "delete bookmark"),
+            ("u ^r", "undo / redo"),
             ("v V ␣", "select bookmarks"),
-            ("d", "diff revisions"),
+            ("=", "diff revisions"),
             ("f", "fast-forward main"),
             ("@", "working copy to bookmark"),
             ("o", "open in editor"),
-            ("P", "show command"),
             ("W", "clean workspaces"),
-            ("R", "refresh"),
-            ("^r", "reload config"),
+            ("R ^l", "refresh / reload config"),
         ),
     ),
 )
@@ -323,13 +344,13 @@ class MainScreen(Screen[None]):
         self.set_class(expanded, "with-cheatsheet")
 
     def on_key(self, event: events.Key) -> None:
+        if event.key != "d":  # dd deletes only when typed in a row
+            cast("SandboxTUI", self.app)._d_pressed = 0.0
         modifier = modifier_key(event.key)
         if modifier:
             hints = {
-                "ctrl": "ctrl+d/u half page down/up · ctrl+r reload configuration",
-                "shift": (
-                    "G bottom · V select · P preview · R refresh · C force-forget · H toggle sheet"
-                ),
+                "ctrl": "ctrl+d/u half page down/up · ctrl+r redo · ctrl+l reload configuration",
+                "shift": "G bottom · V select · P details · R refresh · W clean up · H sheet",
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
@@ -379,6 +400,7 @@ class SandboxTUI(App[None]):
         self.sessions: dict[str, SessionRecord] = {}
         self.filter_text = ""
         self._g_pending = False
+        self._d_pressed = 0.0  # when d was pressed, for dd
         self._refreshing = False
         self._refresh_again = False
         self._refreshed = asyncio.Event()  # set when the current refresh pass ends
@@ -387,6 +409,10 @@ class SandboxTUI(App[None]):
         self.main = MainScreen()
         self.cheatsheet_visible = cfg.ui.cheatsheet
         self.prompt_history = PromptHistory.for_repo(repo)
+        self.graph = OpGraph(self.jobs.state_dir / "opgraph.json")
+        self._graph_error = ""
+        # Creating, deleting and undoing run in order: u right after n undoes n.
+        self._history_lock = asyncio.Lock()
         # Branch selection for operations on several branches: space marks
         # rows (kept in marking order), v starts a visual range at the cursor.
         self.marked: list[str] = []
@@ -424,10 +450,8 @@ class SandboxTUI(App[None]):
             ("head", 8),
             ("subject", 32),  # Ellipsize long messages to leave room for session status.
             ("status", None),
-            ("agent", None),
-            ("when", 8),
         ):
-            table.add_column(label, width=width, key=label or "glyph")
+            table.add_column(label, width=width, key=label or "graph")
         table.focus()
         await self.refresh_data()
         self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
@@ -459,6 +483,8 @@ class SandboxTUI(App[None]):
             self._refreshed.set()
 
     async def _refresh_once(self) -> None:
+        listed_at = time.time()
+        listed = True
         try:
             branches = await asyncio.to_thread(
                 self.backend.list_branches, compare_to_main=self.cfg.project.main_branch
@@ -466,7 +492,10 @@ class SandboxTUI(App[None]):
         except VcsError as exc:
             self.notify(str(exc), severity="error", timeout=8)
             branches = self.branches
+            listed = False
         self.branches = sort_branches(branches)
+        if listed:  # first: sessions and jobs are read back to back, then redrawn
+            await self._sync_graph(listed_at)
         records = await asyncio.to_thread(read_sessions, self.sessions_dir)
         self.sessions = running_by_branch(
             records, self.repo, [b.name for b in self.branches], self.worktree_dir
@@ -476,6 +505,25 @@ class SandboxTUI(App[None]):
         # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
         with contextlib.suppress(NoMatches):
             self._render_table()
+
+    async def _sync_graph(self, listed_at: float) -> None:
+        """Adopt bookmarks created elsewhere and record finished runs."""
+        try:
+            await asyncio.to_thread(
+                self.graph.sync,
+                self.branches,
+                dict(self.jobs.jobs),  # a snapshot: load() refills the dict in place
+                listed_at,
+                self.backend.bookmarked_ancestors,
+                self.main_name() or "",
+            )
+        except OSError as exc:
+            error = f"could not save the bookmark history: {exc}"
+            if error != self._graph_error:  # once, not on every refresh
+                self.notify(error, severity="error", timeout=8)
+            self._graph_error = error
+        else:
+            self._graph_error = ""
 
     def _announce(self, job: JobRecord) -> None:
         if not self.jobs.mark_notified(job):
@@ -494,27 +542,36 @@ class SandboxTUI(App[None]):
         if self.cfg.ui.bell:
             self.bell()
 
+    def main_name(self) -> str | None:
+        return main_branch(
+            {b.name for b in self.branches if not b.working_copy}, self.cfg.project.main_branch
+        )
+
     def visible_rows(self) -> list[Row]:
-        rows = []
+        """The working copy, then bookmarks in history order: children above parents."""
         needle = self.filter_text.lower()
-        for b in self.branches:
-            if needle and needle not in b.name.lower():
-                continue
-            rows.append(Row(b, self.jobs.jobs.get(b.name), self.sessions.get(b.name)))
-        return rows
+        shown = {b.name: b for b in self.branches if not needle or needle in b.name.lower()}
+        state = self.graph.state
+        bookmarks = [name for name, b in shown.items() if not b.working_copy]
+        parents = state.bookmark_parents(bookmarks)
+        activity = state.activity()
+        recency = {n: max(float(shown[n].timestamp), activity.get(n, 0.0)) for n in bookmarks}
+        order = toposort(bookmarks, parents, recency)
+        lines = draw(order, parents)
+        names = [name for name, b in shown.items() if b.working_copy] + order
+        return [
+            Row(shown[n], self.jobs.jobs.get(n), self.sessions.get(n), lines.get(n)) for n in names
+        ]
 
     def _render_table(self) -> None:
         table = self.table
         scroll_x = table.scroll_target_x
         selected = self._pending_select or self.selected_branch_name()
         rows = self.visible_rows()
-        baseline = main_branch(
-            {b.name for b in self.branches if not b.working_copy}, self.cfg.project.main_branch
-        )
+        baseline = self.main_name()
         comparison_col = table.columns[ColumnKey("vs main")]
         comparison_col.label = Text(f"vs {baseline or self.cfg.project.main_branch or 'main'}")
         comparison_col.content_width = cell_len(comparison_col.label.plain)
-        now = time.time()
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
         # place (update_cell) never has to widen the column.
@@ -522,9 +579,13 @@ class SandboxTUI(App[None]):
         if name_col is not None:
             name_col.auto_width = False
             name_col.width = max([len("bookmark"), *(len(r.branch.label) + 2 for r in rows)])
+        graph_col = table.columns.get(ColumnKey("graph"))
+        if graph_col is not None:  # shrinks again once wide parts of the graph are gone
+            graph_col.auto_width = False
+            graph_col.width = max([1, *(row.graph_cell().cell_len for row in rows)])
         table.clear()
         for row in rows:
-            table.add_row(*row.cells(now, row.branch.name in chosen), key=row.branch.name)
+            table.add_row(*row.cells(row.branch.name in chosen), key=row.branch.name)
         if selected is not None:
             names = [r.branch.name for r in rows]
             if selected in names:
@@ -664,6 +725,14 @@ class SandboxTUI(App[None]):
     def _reset_g(self) -> None:
         self._g_pending = False
 
+    def action_d_prefix(self) -> None:
+        # A timestamp, not a timer: a timer from an earlier d could cancel a new one.
+        if time.monotonic() - self._d_pressed < 0.8:
+            self._d_pressed = 0.0
+            self.action_delete_bookmarks()
+        else:
+            self._d_pressed = time.monotonic()
+
     def action_filter(self) -> None:
         box = self.main.query_one("#filter", Input)
         box.add_class("visible")
@@ -733,9 +802,7 @@ class SandboxTUI(App[None]):
         if branch is None:
             self.notify("select a target to fast-forward main", severity="warning")
             return
-        main = main_branch(
-            {b.name for b in self.branches if not b.working_copy}, self.cfg.project.main_branch
-        )
+        main = self.main_name()
         if main is None:
             self.notify("no main bookmark found; configure project.main_branch", severity="warning")
             return
@@ -956,6 +1023,11 @@ class SandboxTUI(App[None]):
             self.notify(f"{spec.branch}: {exc}", severity="error", timeout=10)
             await self.refresh_data()
             return
+        warning = await asyncio.to_thread(
+            self._record_creation, spec.branch, operation, list(spec.inputs)
+        )
+        if warning:
+            self.notify(warning, severity="warning")
         self.notify(
             f"{spec.branch}: {state.summary()}",
             severity="information" if state.clean else "warning",
@@ -983,7 +1055,12 @@ class SandboxTUI(App[None]):
             # launch form was open. Recheck immediately before starting.
             self.branches = sort_branches(self.backend.list_branches())
             if new_branch_start is not None:
+                known = {b.name for b in self.branches if not b.working_copy}
                 self.backend.create_branch(spec.branch, new_branch_start)
+                if warning := self._record_creation(
+                    spec.branch, "create", [new_branch_start] if new_branch_start in known else None
+                ):
+                    self.notify(warning, severity="warning")
                 self.branches = sort_branches(self.backend.list_branches())
                 self._pending_select = spec.branch
             if self.branch(spec.branch) is None:
@@ -996,6 +1073,7 @@ class SandboxTUI(App[None]):
             )
             if spec.mode == "background":
                 job = self.jobs.start_background(spec, self.sessions)
+                self._record_run(job, history_text)
                 self.notify(f"{spec.branch}: started {spec.label()} (pid {job.pid})")
             elif launchers.effective_mode(self.cfg.ui.terminal_mode()) != "inline":
                 self._launch_external(spec)
@@ -1036,35 +1114,37 @@ class SandboxTUI(App[None]):
             raise error
 
     def _launch_interactive(self, spec: LaunchSpec, banner: str = "") -> None:
-        with self.jobs.interactive(spec, self.sessions) as job, self._suspended():
-            print(
-                f"\n── sbx-tui: {spec.label()} on {spec.branch} ──\n{shlex.join(job.argv)}\n",
-                flush=True,
-            )
-            if banner:  # e.g. what an octopus merge left to resolve; read it first
-                print(banner, flush=True)
-                with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
-                    input("\n── press Enter to start the session ──")
-            # The agent's `container run -it` may die with the terminal still
-            # raw or non-blocking; put it back before prompting or resuming.
-            with terminal.preserved():
-                try:
-                    proc = subprocess.Popen(job.argv, cwd=self.repo)
-                except OSError:
-                    job.exit_code = 127  # like a shell: command could not be run
-                    raise
-                while True:
+        with self.jobs.interactive(spec, self.sessions) as job:
+            self._record_run(job)
+            with self._suspended():
+                print(
+                    f"\n── sbx-tui: {spec.label()} on {spec.branch} ──\n{shlex.join(job.argv)}\n",
+                    flush=True,
+                )
+                if banner:  # e.g. what an octopus merge left to resolve; read it first
+                    print(banner, flush=True)
+                    with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
+                        input("\n── press Enter to start the session ──")
+                # The agent's `container run -it` may die with the terminal still
+                # raw or non-blocking; put it back before prompting or resuming.
+                with terminal.preserved():
                     try:
-                        job.exit_code = proc.wait()
-                        break
-                    except KeyboardInterrupt:
-                        continue  # the child got the SIGINT too; wait for it to wind down
-            if job.exit_code:
-                with contextlib.suppress(EOFError, KeyboardInterrupt):
-                    input(
-                        f"\n── project-sandbox exited with {job.exit_code}; "
-                        "press Enter to return to sbx-tui ──"
-                    )
+                        proc = subprocess.Popen(job.argv, cwd=self.repo)
+                    except OSError:
+                        job.exit_code = 127  # like a shell: command could not be run
+                        raise
+                    while True:
+                        try:
+                            job.exit_code = proc.wait()
+                            break
+                        except KeyboardInterrupt:
+                            continue  # the child got the SIGINT too; wait for it to wind down
+                if job.exit_code:
+                    with contextlib.suppress(EOFError, KeyboardInterrupt):
+                        input(
+                            f"\n── project-sandbox exited with {job.exit_code}; "
+                            "press Enter to return to sbx-tui ──"
+                        )
 
     def _launch_external(self, spec: LaunchSpec) -> None:
         """Hand the session to tmux / zellij / screen / a custom terminal command."""
@@ -1078,7 +1158,213 @@ class SandboxTUI(App[None]):
         except (OSError, launchers.LaunchError):
             self.jobs.discard(job)
             raise
+        self._record_run(job)
         self.notify(f"{spec.branch}: {launch.message}", timeout=8)
+
+    # ------------------------------------------------------------ history
+
+    def _record_creation(self, name: str, kind: str, parents: list[str] | None) -> str | None:
+        """Start the new bookmark's lineage and make its creation undoable.
+
+        ``parents`` defaults to the bookmarks on the nearest ancestors. Returns
+        a warning instead of raising: the bookmark exists either way.
+        """
+        try:
+            branches = self.backend.list_branches()
+            commit = next((b.commit for b in branches if b.name == name), "")
+            names = {b.name for b in branches if not b.working_copy}
+            main = main_branch(names, self.cfg.project.main_branch) or ""
+            with self.graph.transaction() as state:
+                if parents is None:
+                    parents = state.infer_parents(
+                        name, commit, branches, self.backend.bookmarked_ancestors, main
+                    )
+                node = state.add_lineage(name, kind, parents, commit)
+                state.push_undo(UndoEntry("create", [UndoItem(name, node.id, commit)]))
+        except (OSError, VcsError) as exc:
+            return f"{name}: not recorded in the bookmark history: {exc}"
+        return None
+
+    def _record_run(self, job: JobRecord, prompt: str | None = None) -> None:
+        """``prompt``: what was typed, if the run's prompt has generated parts."""
+        if job.branch == WORKING_COPY:  # not a bookmark
+            return
+        try:
+            with self.graph.transaction() as state:
+                state.add_run(job, prompt)
+        except OSError as exc:
+            self.notify(f"{job.branch}: run not recorded in the history: {exc}", severity="warning")
+
+    def _sessions_now(self, names: list[str]) -> dict[str, SessionRecord]:
+        """Sessions read again, not the UI cache, for busy checks under the jobs lock."""
+        return running_by_branch(
+            read_sessions(self.sessions_dir), self.repo, names, self.worktree_dir
+        )
+
+    def action_delete_bookmarks(self) -> None:
+        """dd: delete the selected bookmarks, keeping their history; u restores them."""
+        main = self.main_name()
+        names = []
+        for name in self._action_branches():
+            branch = self.branch(name)
+            if branch is None:
+                continue
+            if branch.working_copy:
+                self.notify("the working copy is not a bookmark", severity="warning")
+            elif name == main:
+                self.notify(f"{name} is the main bookmark; not deleted", severity="warning")
+            else:
+                names.append(name)
+        if names:
+            self._delete_bookmarks(names)
+
+    @work(group="history")  # not exclusive: cancelling would drop what jj already did
+    async def _delete_bookmarks(self, names: list[str]) -> None:
+        try:
+            async with self._history_lock:
+                deleted, problems = await asyncio.to_thread(self._delete_idle, names)
+        except OSError as exc:
+            deleted, problems = [], [f"could not update the bookmark history: {exc}"]
+        for problem in problems:
+            self.notify(problem, severity="warning", timeout=8)
+        if deleted:
+            self.clear_branch_selection()
+            self.notify(f"deleted {', '.join(deleted)} (u restores)")
+        await self.refresh_data()
+
+    def _delete_idle(self, names: list[str]) -> tuple[list[str], list[str]]:
+        problems: list[str] = []
+        items: list[UndoItem] = []
+        # The jobs lock keeps other instances from starting a session meanwhile.
+        with self.graph.transaction() as state, self.jobs._locked():
+            self.jobs.load()
+            sessions = self._sessions_now(names)
+            for name in names:
+                reason = self.jobs._busy_reason(name, sessions)
+                if reason:
+                    problems.append(f"not deleted: {reason}")
+                    continue
+                try:
+                    commit = self.backend.delete_bookmark(name)
+                except VcsError as exc:
+                    problems.append(f"could not delete {name}: {exc}")
+                    continue
+                items.append(UndoItem(name, state.current.pop(name, ""), commit))
+            if items:
+                state.push_undo(UndoEntry("delete", items))
+        return [item.bookmark for item in items], problems
+
+    def action_undo(self) -> None:
+        self._undo(redo=False)
+
+    def action_redo(self) -> None:
+        self._undo(redo=True)
+
+    @work(group="history")
+    async def _undo(self, redo: bool) -> None:
+        try:
+            async with self._history_lock:
+                message, restored = await asyncio.to_thread(self._undo_step, redo)
+        except (BusyError, OSError, VcsError) as exc:
+            self.notify(f"{'redo' if redo else 'undo'} failed: {exc}", severity="error", timeout=8)
+        else:
+            self.notify(message)
+            if restored:
+                self._pending_select = restored
+        await self.refresh_data()
+
+    def _undo_step(self, redo: bool) -> tuple[str, str | None]:
+        """Undo or redo the latest bookmark creation or deletion.
+
+        Returns a message and a restored bookmark to select. Steps interrupted
+        by a jj failure are not recorded, and complete when retried.
+        """
+        verb = "redo" if redo else "undo"
+        with self.graph.transaction() as state, self.jobs._locked():
+            entry = state.redo_entry() if redo else state.undo_entry()
+            if entry is None:
+                return f"nothing to {verb}", None
+            existing = {b.name: b.commit for b in self.backend.list_branches()}
+            names = [item.bookmark for item in entry.items]
+            if (entry.op == "create") != redo:  # remove the bookmarks again
+                self.jobs.load()
+                sessions = self._sessions_now(names)
+                for name in names:
+                    if reason := self.jobs._busy_reason(name, sessions):
+                        raise BusyError(reason)
+                for item in entry.items:
+                    if item.bookmark in existing:
+                        item.commit = self.backend.delete_bookmark(item.bookmark)
+                    if state.current.get(item.bookmark) == item.lineage:
+                        del state.current[item.bookmark]
+                done, restored = "deleted", None
+            else:
+                taken = [
+                    i.bookmark
+                    for i in entry.items
+                    if existing.get(i.bookmark, i.commit) != i.commit
+                ]
+                if taken:
+                    raise VcsError(f"{', '.join(taken)} exists again; delete it first")
+                for item in entry.items:
+                    if item.bookmark not in existing:
+                        self.backend.restore_bookmark(item.bookmark, item.commit)
+                    if item.lineage in state.nodes:
+                        state.current[item.bookmark] = item.lineage
+                done, restored = "restored", names[0]
+            state.position += 1 if redo else -1
+        what = "creation" if entry.op == "create" else "deletion"
+        return f"{verb} {what}: {done} {entry.names()}", restored
+
+    def _history_lines(self, name: str) -> list[str]:
+        state = self.graph.state
+        verbs = {"create": "created", "merge": "merge of", "rebase": "rebase of"}
+        lines = []
+        for node in state.history(name)[:HISTORY_LINES]:
+            if node.kind == "run":
+                what = f"{node.mode or 'run'} {node.agent}".rstrip()
+                if node.status:
+                    what += f" → {node.status.replace('_', ' ')}"
+                if node.prompt:
+                    what += f": {node.prompt}"
+            else:
+                parents = [state.nodes[p].bookmark for p in node.parents if p in state.nodes]
+                what = verbs.get(node.kind, "existing bookmark")
+                if parents:
+                    joined = ", ".join(parents)
+                    what += f" {joined}" if node.kind in ("merge", "rebase") else f" from {joined}"
+            lines.append(f"{_clock(node.at)}  {what}")
+        return lines
+
+    def _job_details(self, job: JobRecord) -> list[str]:
+        now = time.time()
+        status = job.status.replace("_", " ")
+        if job.exit_code is not None:
+            status += f" (exit {job.exit_code})"
+        lines = [f"last run    {status}", f"agent       {job.spec.label()} · {job.mode}"]
+        if job.external:
+            lines[-1] += " · external terminal"
+        started = _ts(job.started_at)
+        if started:
+            lines.append(f"started     {_clock(started)} ({human_age(now - started)} ago)")
+        if job.ended_at:
+            ended = _ts(job.ended_at)
+            lines.append(f"ended       {_clock(ended)} (after {human_age(ended - started)})")
+        ids = [
+            f"pid {job.pid}" if job.pid > 0 else "",
+            f"session {job.session_id}" if job.session_id else "",
+            f"container {job.container_name}" if job.container_name else "",
+        ]
+        if any(ids):
+            lines.append(f"ids         {' · '.join(i for i in ids if i)}")
+        prompt = job.spec.prompt_text.strip().splitlines()
+        if prompt:
+            lines.append(f"prompt      {prompt[0]}" + (" …" if len(prompt) > 1 else ""))
+        if job.log_path:
+            lines.append(f"log         {job.log_path}")
+        if job.argv:
+            lines.append(f"command     {shlex.join(job.argv)}")
+        return lines
 
     def action_new_branch(self) -> None:
         start = self.default_start
@@ -1097,12 +1383,19 @@ class SandboxTUI(App[None]):
         if result is None:
             return
         name, start = result
-        try:
-            await asyncio.to_thread(self.backend.create_branch, name, start)
-        except VcsError as exc:
-            self.notify(f"could not create {name}: {exc}", severity="error", timeout=8)
-            return
-        self.notify(f"created {name} at {start}")
+        known = {b.name for b in self.branches if not b.working_copy}
+        async with self._history_lock:
+            try:
+                await asyncio.to_thread(self.backend.create_branch, name, start)
+            except VcsError as exc:
+                self.notify(f"could not create {name}: {exc}", severity="error", timeout=8)
+                return
+            warning = await asyncio.to_thread(
+                self._record_creation, name, "create", [start] if start in known else None
+            )
+        if warning:
+            self.notify(warning, severity="warning")
+        self.notify(f"created {name} at {start} (u undoes)")
         self._pending_select = name  # applied by whichever refresh sees it first
         await self.refresh_data()
 
@@ -1164,27 +1457,41 @@ class SandboxTUI(App[None]):
             self.notify(f"editor failed: {exc}", severity="error")
 
     def action_preview(self) -> None:
+        """P: last run details, history and the interactive command for each selected row."""
         chosen = self._action_branches()
         if not chosen:
             return
         d = resolve_launch_defaults(self.cfg, LastUsed.load(self.repo))
-        previews = []
+        sections = []
         for name in chosen:
-            try:
-                spec = LaunchSpec(
-                    branch=name,
-                    agent=d.agent,
-                    model=d.model,
-                    effort=d.effort,
+            parts = []
+            job = self.jobs.jobs.get(name)
+            if job is not None:
+                parts.append("\n".join(self._job_details(job)))
+            session = self.sessions.get(name)
+            if session is not None and (job is None or not job.running):
+                started = _ts(session.started_at)
+                parts.append(
+                    f"busy (other): {session.agent} session {session.session_id}"
+                    + (f" since {_clock(started)}" if started else "")
                 )
-                body = self._spec_preview(spec)
+            if history := self._history_lines(name):
+                parts.append("history\n" + "\n".join(history))
+            try:
+                spec = LaunchSpec(branch=name, agent=d.agent, model=d.model, effort=d.effort)
+                command = self._spec_preview(spec)
             except ConfigError as exc:
-                body = f"! {exc}"
-            previews.append(f"{name}\n{body}" if len(chosen) > 1 else body)
+                command = f"! {exc}"
+            parts.append(f"interactive command\n{command}")
+            body = "\n\n".join(parts)
+            sections.append(f"── {name} ──\n{body}" if len(chosen) > 1 else body)
+        branch = self.branch(chosen[0])
         title = (
-            f"interactive command for {chosen[0]}" if len(chosen) == 1 else "interactive commands"
+            (branch.label if branch is not None else chosen[0])
+            if len(chosen) == 1
+            else f"{len(chosen)} bookmarks"
         )
-        self.push_screen(MessageScreen(title, "\n\n".join(previews)))
+        self.push_screen(MessageScreen(title, "\n\n".join(sections)))
 
     def action_cleanup_workspaces(self) -> None:
         self._cleanup_workspaces()
@@ -1256,19 +1563,10 @@ class SandboxTUI(App[None]):
         self.notify(result, severity="information" if removed else "error", timeout=8)
         await self.refresh_data()
 
-    def action_stop(self) -> None:
+    def action_cancel(self) -> None:
+        """x: cancel a run, harder on the second press, forget it on the third."""
         for name in self._action_branches():
-            self.notify(self.jobs.stop(name, self.sessions))
-
-    def action_clear_status(self, force: bool = False) -> None:
-        for name in self._action_branches():
-            if not self.jobs.clear(name, force=force):
-                self.notify(
-                    f"{name} is still running (C forgets the record without stopping it)",
-                    severity="warning",
-                )
-            elif force:
-                self.notify(f"{name}: record cleared (no process was signalled)")
+            self.notify(self.jobs.cancel(name, self.sessions))
         self._render_table()
 
     async def action_refresh(self) -> None:

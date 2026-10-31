@@ -27,8 +27,8 @@ See [configuration](configuration.md), [models](models.md) and
 
 ## Bookmark list
 
-`@ working copy` appears first. The cheat-sheet collapses to one line in small
-terminals.
+`@ working copy` appears first, then bookmarks in [history](#bookmark-history)
+order. The cheat-sheet collapses to one line in small terminals.
 
 The `vs main` heading names the baseline: `project.main_branch`, or the first
 existing bookmark main/master/trunk. Counts omit zeros:
@@ -36,7 +36,7 @@ existing bookmark main/master/trunk. Counts omit zeros:
 | Symbol | Meaning |
 |---|---|
 | `↑N` / `↓N` | Commits only in this revision / main; both appear for diverged histories |
-| `ΔN` | Files differing between tips, as with `d` |
+| `ΔN` | Files differing between tips, as with `=` |
 | `=` | Matching tips |
 | `?` | Comparison unavailable, e.g. missing main or conflicted bookmark |
 
@@ -47,22 +47,26 @@ existing bookmark main/master/trunk. Counts omit zeros:
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
 | `/` | Filter (`enter` keeps it, `esc` clears) |
 | `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout |
-| `x` | [Stop a run](sessions.md#one-sandbox-per-bookmark); repeat to escalate |
+| `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark): repeat to cancel harder, a third time to forget it; clears a finished status at once |
 | `l` / `enter` | Logs: `tab` cycles transcript/log/output, `f` toggles follow |
+| `P` | Last run details (agent, times, IDs, log, command line), history and the interactive command |
 | `n` | New bookmark: name and start revision |
+| `dd` · `u` · `ctrl+r` | Delete bookmark, keeping its history · undo · redo |
 | `v` / `V` · `space` | Select a range / mark individual bookmarks; `esc` clears |
-| `d` | Diff against main, or compare two selected revisions |
+| `=` | Diff against main, or compare two selected revisions |
 | `f` | Fast-forward main to highlighted bookmark or `@` |
 | `@` | Start a working-copy change on highlighted bookmark |
-| `o` · `P` | Open workspace in editor · preview sandbox command |
-| `c` · `C` | Clear finished status · [forget a running record](sessions.md#interactive-sessions) without stopping it |
+| `o` | Open workspace in editor |
 | `W` | [Clean up workspaces](cleanup.md) |
-| `R` · `ctrl+r` | Refresh list · reload configuration |
+| `R` · `ctrl+l` | Refresh list · reload configuration |
 | `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue; asks first while any are running) |
 
-Selections apply to `c`, `C`, `x`, `o` and `P`; `l` requires one bookmark.
+Selections apply to `x`, `dd`, `o` and `P`; `l` requires one bookmark.
 One marked bookmark overrides the highlighted row for `f` and `@`.
 With at least two selected, `r` / `i` opens [merge or rebase](merging.md).
+
+The status column shows the last run's outcome; its node in the graph shows
+the same as a symbol (`▶` running, `✓` completed, `✗` failed, `⚠` other).
 
 Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
 (including delta). Exit the viewer, then press Enter to resume the TUI.
@@ -74,6 +78,35 @@ and working-copy files stay unchanged.
 `@` saves an unbookmarked working-copy change, including edits, as
 `saved/<change-id>` for later recovery, then runs `jj new` on the chosen bookmark
 and checks out its files. Running sessions in `@` block the move.
+
+## Bookmark history
+
+sbx-tui records how bookmarks came about, a coarse map of the jj history that
+keeps only bookmark revisions. New bookmarks start from the bookmark they were
+created on; merges and rebases from all their inputs. Each prompt or session on
+a bookmark adds a node with its agent, outcome and resulting commit; `P` lists
+them. Bookmarks created elsewhere join the history from their nearest
+bookmarked ancestors when sbx-tui first sees them.
+
+The list is drawn like `jj log`: children above their parents, the most
+recently active first, lines from each bookmark down to those it started from.
+`○─╮` starts a line to a further parent; `○─╯` ends lines at a common parent.
+
+```text
+▶─╮     merge/parser-tui
+✓ │     feature/parser
+│ ✗     spike/tui
+○─╯     main ●
+```
+
+`dd` deletes the local bookmark but keeps its history, so its descendants stay
+connected to its parents. Commits stay in jj. `u` and `ctrl+r` undo and redo
+bookmark creations (`n`, new bookmarks from the launch form, merge and rebase
+results) and deletions, restoring the commit the bookmark last pointed to.
+Bookmarks with running sessions are not deleted, and the main bookmark is never
+deleted by `dd`. Cleanup, `f` and other jj commands are not undone; use
+`jj undo` for those. The history is kept in the
+[state directory](configuration.md#state-directory) and shared by TUI instances.
 
 ## Launch form
 

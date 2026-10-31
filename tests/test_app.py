@@ -14,7 +14,12 @@ from textual.widgets import Input, Static, TextArea
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
 from project_sandbox_tui.jobs import JobManager
-from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen, NewBranchScreen
+from project_sandbox_tui.screens.dialogs import (
+    ConfirmScreen,
+    HelpScreen,
+    MessageScreen,
+    NewBranchScreen,
+)
 from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.vcs import detect
@@ -130,15 +135,17 @@ def test_bookmark_comparison_markers(
 
 def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        assert [r[1] for r in row_texts(app)] == ["@ working copy ●", "main ●", "feature/x"]
+        rows = row_texts(app)
+        assert [r[1] for r in rows] == ["@ working copy ●", "feature/x", "main ●"]
+        assert [r[0] for r in rows] == [" ", "○", "○"]  # history graph: feature/x on main
         assert "2 bookmarks ·" in str(app.main.query_one("#header").render())
         assert app.selected_branch_name() == "@"
         await pilot.press("j")
-        assert app.selected_branch_name() == "main"
+        assert app.selected_branch_name() == "feature/x"
         await pilot.press("g", "g")
         assert app.selected_branch_name() == "@"
         await pilot.press("G")
-        assert app.selected_branch_name() == "feature/x"
+        assert app.selected_branch_name() == "main"
 
         await pilot.press("slash", "m", "a")
         assert isinstance(app.focused, Input)
@@ -156,7 +163,9 @@ def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config])
 
         await pilot.press("slash", *"no-matches", "enter")
         assert app.table.row_count == 0 and app.selected_branch_name() is None
-        await pilot.press("j", "k", "G", "g", "g", "space", "v", "r", "i", "l", "f", "@", "d")
+        await pilot.press(
+            "j", "k", "G", "g", "g", "space", "v", "r", "i", "l", "f", "@", "d", "d", "equals_sign"
+        )
         assert app.screen is app.main and not app.jobs.jobs
         assert app.selection() == []
         await pilot.press("escape")
@@ -183,6 +192,100 @@ def test_create_branch(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     assert "topic/new" in {b.name for b in detect(repo).list_branches()}
 
 
+def test_undo_right_after_creating_undoes_the_creation(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("n")
+        app.screen.query_one("#name", Input).value = "topic/quick"
+        await pilot.press("enter", "u")  # before the creation has finished
+        await app.workers.wait_for_complete()
+        assert any(
+            "undo creation: deleted topic/quick" in str(n.message) for n in app._notifications
+        )
+        assert "topic/quick" not in {b.name for b in app.backend.list_branches()}
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_delete_undo_and_redo_bookmarks(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    import os
+
+    from project_sandbox_tui.jobs import JobRecord
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    def names(app: SandboxTUI) -> list[str]:
+        return [r.branch.name for r in app.visible_rows()]
+
+    def messages(app: SandboxTUI) -> list[str]:
+        return [str(n.message) for n in app._notifications]
+
+    async def vim(pilot: Any, app: SandboxTUI, *keys: str) -> None:
+        await pilot.press(*keys)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        feature = app.backend._bookmark_commit("feature/x")
+        # n records a lineage started from main; its creation can be undone.
+        await pilot.press("n")
+        app.screen.query_one("#name", Input).value = "topic/new"
+        app.screen.query_one("#start", Input).value = "feature/x"
+        await vim(pilot, app, "enter")
+        assert names(app) == ["@", "topic/new", "feature/x", "main"]
+        assert row_texts(app)[1][0] == "○"
+        assert app.graph.state.bookmark_parents(names(app)[1:])["topic/new"] == ["feature/x"]
+
+        await vim(pilot, app, "d", "j", "d")  # another key in between cancels dd
+        assert names(app) == ["@", "topic/new", "feature/x", "main"]
+        await vim(pilot, app, "d")  # the second d in a row: feature/x, keeping its history
+        assert names(app) == ["@", "topic/new", "main"]
+        assert any("deleted feature/x (u restores)" in m for m in messages(app))
+        # topic/new still connects to main through the deleted bookmark.
+        assert app.graph.state.bookmark_parents(names(app)[1:])["topic/new"] == ["main"]
+
+        await vim(pilot, app, "u")
+        assert names(app) == ["@", "topic/new", "feature/x", "main"]
+        assert app.backend._bookmark_commit("feature/x") == feature
+        assert app.selected_branch_name() == "feature/x"
+        assert app.graph.state.bookmark_parents(names(app)[1:])["topic/new"] == ["feature/x"]
+        await vim(pilot, app, "u")  # undo n
+        assert names(app) == ["@", "feature/x", "main"]
+        await vim(pilot, app, "u")
+        assert "nothing to undo" in messages(app)[-1]
+        await vim(pilot, app, "ctrl+r", "ctrl+r")  # redo n, then the deletion
+        assert names(app) == ["@", "topic/new", "main"]
+        await vim(pilot, app, "ctrl+r")
+        assert "nothing to redo" in messages(app)[-1]
+        # Another instance sees the same history and can undo there.
+        assert SandboxTUI(repo, detect(repo), app.cfg).graph.state.undo_entry() is not None
+
+        # Refused: the main bookmark, the working copy and busy bookmarks.
+        await vim(pilot, app, "G", "d", "d")
+        await vim(pilot, app, "g", "g", "d", "d")
+        assert "main is the main bookmark; not deleted" in messages(app)
+        assert "the working copy is not a bookmark" in messages(app)
+        app.jobs.save(
+            JobRecord(
+                branch="topic/new",
+                spec=LaunchSpec(branch="topic/new", agent="claude"),
+                pid=os.getpid(),
+                started_at="2026-01-01T00:00:00Z",
+            )
+        )
+        await vim(pilot, app, "j", "d", "d")
+        assert "topic/new" in names(app)
+        assert any("not deleted: topic/new already has" in m for m in messages(app))
+        await vim(pilot, app, "u")  # restoring feature/x is fine…
+        assert "undo deletion: restored feature/x" in messages(app)[-1]
+        await vim(pilot, app, "u")  # …but undoing the busy bookmark's creation is not
+        assert messages(app)[-1].startswith("undo failed: topic/new already has")
+        assert names(app) == ["@", "topic/new", "feature/x", "main"]
+        assert app.graph.state.position == 1
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 @pytest.mark.parametrize("marked", [False, True])
 def test_fast_forward_main_shortcut(
     repo: Path, fake_cfg: Callable[..., Config], marked: bool
@@ -191,7 +294,7 @@ def test_fast_forward_main_shortcut(
         if marked:
             app.marked = ["feature/x"]  # selection wins over the highlighted working copy
         else:
-            await pilot.press("G")
+            await pilot.press("j")
         target = app.backend._bookmark_commit("feature/x")
         await pilot.press("f")
         await app.workers.wait_for_complete()
@@ -268,7 +371,7 @@ def test_move_working_copy_shortcut(
         if marked:
             app.marked = ["feature/x"]
         else:
-            await pilot.press("G")
+            await pilot.press("j")
         await pilot.press("@")
         await app.workers.wait_for_complete()
         assert app.backend._jj("log", "--no-graph", "-r", "@-", "-T", "commit_id").strip() == (
@@ -380,7 +483,7 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
     cfg.models = {"codex": ["gpt-x"]}
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("G", "r")  # feature/x, unsupervised
+        await pilot.press("j", "r")  # feature/x, unsupervised
         form = app.screen
         assert isinstance(form, LaunchScreen)
         assert isinstance(app.focused, TextArea)
@@ -409,7 +512,15 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].status == "completed")
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
         row = next(r for r in row_texts(app) if r[1] == "feature/x")
-        assert row[0] == "✓" and row[5] == "completed" and row[6] == "codex/gpt-x"
+        assert row[0] == "✓" and row[5] == "completed"
+        # The history records the outcome once a listing after the run's end is seen.
+        await wait_until(pilot, lambda: app.graph.state.history("feature/x")[0].status != "")
+        await pilot.press("P")  # the agent moved from the list to the details
+        assert isinstance(app.screen, MessageScreen)
+        assert "last run    completed (exit 0)" in app.screen.body
+        assert "codex/gpt-x · background" in app.screen.body
+        assert "background codex/gpt-x → completed: sleep:0.6 exit:0" in app.screen.body
+        await pilot.press("q")
 
         await pilot.press("l")
         assert isinstance(app.screen, LogScreen)
@@ -418,8 +529,12 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await pilot.press("q")
         assert not isinstance(app.screen, LogScreen)
 
-        await pilot.press("c")
+        await pilot.press("x")  # a finished run is cleared at once
         assert "feature/x" not in app.jobs.jobs
+        # The history keeps the run, with the commit it ended on.
+        (run,) = [n for n in app.graph.state.history("feature/x") if n.kind == "run"]
+        assert run.status == "completed" and run.agent == "codex/gpt-x"
+        assert run.commit == app.backend._bookmark_commit("feature/x")
 
     run_app(repo, cfg, scenario)
     # the choice became the new default for this repo
@@ -616,7 +731,7 @@ def test_jj_repo_without_bookmarks_runs_in_working_copy(
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
         assert not [a for a in app.jobs.jobs["@"].argv if a.startswith("--branch")]
         await wait_until(pilot, lambda: "@" in app.sessions)  # session in the repo itself
-        app.jobs.stop("@", app.sessions)
+        app.jobs.cancel("@", app.sessions)
         await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
 
     run_app(jj_repo_no_bookmarks, fake_cfg(), scenario)
@@ -647,7 +762,7 @@ def test_jj_working_copy_alongside_bookmarks(
         argv = app.jobs.jobs["main"].argv
         assert "--branch=main" in argv
 
-        app.jobs.stop("@", app.sessions)
+        app.jobs.cancel("@", app.sessions)
         await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
 
     run_app(jj_repo, fake_cfg(), scenario)
@@ -665,7 +780,7 @@ def test_prompt_history_completion_browse_and_search(
         history.add(p)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("G", "r")  # feature/x: no previous run, empty prompt
+        await pilot.press("j", "r")  # feature/x: no previous run, empty prompt
         form = app.screen
         assert isinstance(form, LaunchScreen)
         area = form.query_one("#prompt", PromptArea)
@@ -881,7 +996,7 @@ def test_reload_config(repo: Path, tmp_path: Path) -> None:
                 "[ui]\nrefresh_seconds = 7\ncheatsheet = false\n"
             )
             # A changed project config is reviewed first; declining keeps the trusted copy.
-            await pilot.press("ctrl+r")
+            await pilot.press("ctrl+l")
             assert isinstance(app.screen, ConfirmScreen)
             assert '+base_image = "new"' in app.screen.body
             await pilot.press("n")
@@ -890,7 +1005,7 @@ def test_reload_config(repo: Path, tmp_path: Path) -> None:
             assert app.cfg.project.base_image == "old"
             assert any("changed since it was trusted" in str(n.message) for n in app._notifications)
 
-            await pilot.press("ctrl+r")
+            await pilot.press("ctrl+l")
             assert isinstance(app.screen, ConfirmScreen)
             await pilot.press("y")
             await pilot.pause()
@@ -903,7 +1018,7 @@ def test_reload_config(repo: Path, tmp_path: Path) -> None:
             assert app.cfg.ui.refresh_seconds == 7
             good_cfg, good_timer = app.cfg, app._refresh_timer
             project_path.write_text("[ui]\nrefresh_seconds = 0\n")
-            await pilot.press("ctrl+r")  # invalid: not offered; the trusted copy stays in effect
+            await pilot.press("ctrl+l")  # invalid: not offered; the trusted copy stays in effect
             assert not isinstance(app.screen, ConfirmScreen)
             assert app.cfg.ui.refresh_seconds == 7
             assert any("Project config not trusted" in str(n.message) for n in app._notifications)
@@ -911,7 +1026,7 @@ def test_reload_config(repo: Path, tmp_path: Path) -> None:
             global_path.write_text("[ui]\nrefresh_seconds = 0\n")
             project_path.write_text('[project]\nbase_image = "new"\n')
             ProjectTrust.check(repo).trust(repo)
-            await pilot.press("ctrl+r")
+            await pilot.press("ctrl+l")
             assert app.cfg is good_cfg
             assert app.jobs.cfg is good_cfg
             assert app._refresh_timer is good_timer
@@ -943,7 +1058,7 @@ def test_untrusted_project_config_is_reviewed_at_start(repo: Path) -> None:
 def test_modifier_hints(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("left_control")
-        assert "ctrl+r reload" in str(app.main.query_one("#cheatsheet", Static).content)
+        assert "ctrl+l reload" in str(app.main.query_one("#cheatsheet", Static).content)
         await pilot.press("right_shift")
         assert "G bottom" in str(app.main.query_one("#cheatsheet", Static).content)
         await pilot.press("left_alt")
@@ -977,7 +1092,7 @@ def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config], visual_key:
         await pilot.press("space")  # the working copy cannot be marked
         assert app.selection() == []
         await pilot.press("j", "space")  # mark the first bookmark and move down
-        assert app.selection() == [app.branches[1].name]
+        assert app.selection() == [app.visible_rows()[1].branch.name]
         assert row_texts(app)[1][1].startswith("+ ")
         await pilot.press("space")
         assert len(app.selection()) == 2
@@ -1001,7 +1116,7 @@ def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config], visual_key:
 
 
 @pytest.mark.parametrize("keys", [("v", "j"), ("space", "space"), ()])
-def test_clear_selected_statuses(
+def test_cancel_clears_finished_and_forgets_on_third_press(
     repo: Path, fake_cfg: Callable[..., Config], keys: tuple[str, ...]
 ) -> None:
     import os
@@ -1012,12 +1127,13 @@ def test_clear_selected_statuses(
     add_bookmark(repo, "fix/y", "y.txt", "y\n")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        names = [b.name for b in app.branches if not b.working_copy]
+        names = [r.branch.name for r in app.visible_rows() if not r.branch.working_copy]
         for i, name in enumerate(names):
             app.jobs.save(
                 JobRecord(
                     branch=name,
-                    spec=LaunchSpec(branch=name, agent="claude", mode="background"),
+                    # An interactive record: x never signals the TUI holding it.
+                    spec=LaunchSpec(branch=name, agent="claude", mode="interactive"),
                     pid=os.getpid(),
                     started_at="2026-01-01T00:00:00Z",
                     status="running" if i == 0 else "completed",
@@ -1027,24 +1143,28 @@ def test_clear_selected_statuses(
         await app.refresh_data()
         await pilot.press("j", *keys)  # skip the unmarkable working-copy row
         chosen = names[:2] if keys else names[:1]
-        await pilot.press("c")
+        app.jobs.STOP_DEBOUNCE_S = 0
+        await pilot.press("x")
         # A running record must not prevent later selected records from clearing.
         remaining = set(names) - (set(chosen) - {names[0]})
         assert set(app.jobs.jobs) == remaining
         assert set(JobManager(repo, app.cfg).jobs) == remaining
-        assert any(f"{names[0]} is still running" in str(n.message) for n in app._notifications)
+        assert any("x 2 more times forgets" in str(n.message) for n in app._notifications)
         for row in app.visible_rows():
             assert (row.job is None) == (row.branch.name not in remaining)
 
-        await pilot.press("C")
+        await pilot.press("x")
+        assert names[0] in app.jobs.jobs
+        await pilot.press("x")
         assert set(app.jobs.jobs) == set(names) - set(chosen)
         assert set(JobManager(repo, app.cfg).jobs) == set(names) - set(chosen)
+        assert any("no process was signalled" in str(n.message) for n in app._notifications)
 
     run_app(repo, fake_cfg(), scenario)
 
 
 @pytest.mark.parametrize("keys", [("v", "j"), ("space", "space"), ()])
-def test_stop_selected_runs(
+def test_cancel_selected_runs(
     repo: Path,
     fake_cfg: Callable[..., Config],
     monkeypatch: pytest.MonkeyPatch,
@@ -1061,7 +1181,7 @@ def test_stop_selected_runs(
     monkeypatch.setattr("os.killpg", lambda pid, sig: signals.append((pid, sig)))
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        names = [b.name for b in app.branches if not b.working_copy]
+        names = [r.branch.name for r in app.visible_rows() if not r.branch.working_copy]
         pids = {name: 1_000_000 + i for i, name in enumerate(names)}
         for name in names:
             app.jobs.save(
@@ -1082,6 +1202,9 @@ def test_stop_selected_runs(
         monkeypatch.setattr(app.jobs, "STOP_DEBOUNCE_S", 0)
         await pilot.press("x")
         assert signals[len(chosen) :] == [(pids[name], signal.SIGTERM) for name in chosen]
+        await pilot.press("x")
+        assert signals[2 * len(chosen) :] == [(pids[name], signal.SIGKILL) for name in chosen]
+        assert set(app.jobs.jobs) == set(names) - set(chosen)  # and forgotten
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -1149,12 +1272,14 @@ def test_log_and_preview_respect_selection(repo: Path, fake_cfg: Callable[..., C
             )
         )
         await app.refresh_data()
-        await pilot.press("j", "space")  # main selected; cursor on feature/x
+        await pilot.press("G", "space", "k")  # main selected; cursor on feature/x
         await pilot.press("l")
         assert isinstance(app.screen, LogScreen) and app.screen.job.branch == "main"
         await pilot.press("q", "P")
         assert isinstance(app.screen, MessageScreen)
-        assert app.screen.title_text == "interactive command for main"
+        assert app.screen.title_text == "main"
+        assert "last run    completed" in app.screen.body
+        assert "interactive command\n" in app.screen.body
         assert "--branch=feature/x" not in app.screen.body
         await pilot.press("q", "space")  # both branches marked
         for key in ("l", "enter"):
@@ -1164,7 +1289,7 @@ def test_log_and_preview_respect_selection(repo: Path, fake_cfg: Callable[..., C
         app.cfg.sandbox.extra_args = ["--example"] * 200
         await pilot.press("P")
         assert isinstance(app.screen, MessageScreen)
-        assert "main\n" in app.screen.body and "feature/x\n" in app.screen.body
+        assert "── main ──\n" in app.screen.body and "── feature/x ──\n" in app.screen.body
         assert "--branch=feature/x" in app.screen.body
         await pilot.press("end")
         await pilot.pause()
@@ -1179,7 +1304,7 @@ def test_log_and_preview_respect_selection(repo: Path, fake_cfg: Callable[..., C
 @pytest.mark.parametrize("target", ["@", "main", "topic/from-form"])
 def test_launch_branch_field(repo: Path, fake_cfg: Callable[..., Config], target: str) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("G", "r")
+        await pilot.press("j", "r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         field = form.query_one("#branch", Input)
@@ -1201,7 +1326,7 @@ def test_launch_branch_field(repo: Path, fake_cfg: Callable[..., Config], target
 
 def test_launch_form_rejects_empty_bookmark(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("G", "r")
+        await pilot.press("j", "r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         form.query_one("#branch", Input).value = "  "
@@ -1293,7 +1418,7 @@ def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -
     add_bookmark(repo, "fix/y", "y.txt", "y\n")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        order = [b.name for b in app.branches if not b.working_copy]
+        order = [r.branch.name for r in app.visible_rows() if not r.branch.working_copy]
         await pilot.press("v", "G", "r")  # select all three bookmarks, unsupervised
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.octopus is not None
@@ -1338,6 +1463,12 @@ def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -
         assert "--branch=merge/all" in job.argv
         assert app.selection() == []  # cleared after launching
         await wait_until(pilot, lambda: not app.jobs.jobs["merge/all"].running, timeout=15)
+        # The history graph joins the inputs into the result, above all of them.
+        rows = app.visible_rows()
+        assert app.graph.state.bookmark_parents([r.branch.name for r in rows])["merge/all"] == order
+        assert rows[1].branch.name == "merge/all"
+        assert row_texts(app)[1][0][1:] == "─┬─╮"  # the node shows the run status
+        assert [n.kind for n in app.graph.state.history("merge/all")] == ["run", "merge"]
 
     run_app(repo, fake_cfg(), scenario)
     parents = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", '"merge/all"', "-T",
@@ -1454,17 +1585,17 @@ def test_diff_selection(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         monkeypatch.setattr(app, "_show_diff", lambda base, target: shown.append((base, target)))
-        await pilot.press("G", "d")
+        await pilot.press("j", "equals_sign")
         assert shown[-1] == ("main", "feature/x")
         app.marked = ["feature/x"]
-        await pilot.press("d")
+        await pilot.press("equals_sign")
         assert shown[-1] == ("main", "feature/x")
         app.marked = ["feature/x", "main"]
-        await pilot.press("d")
+        await pilot.press("equals_sign")
         assert shown[-1] == ("feature/x", "main")
         app.cfg.project.main_branch = "feature/x"
         app.marked = ["main"]
-        await pilot.press("d")
+        await pilot.press("equals_sign")
         assert shown[-1] == ("feature/x", "main")
         assert len(shown) == 4
 
@@ -1491,7 +1622,7 @@ def test_diff_viewer_failure_recovers(
         monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
         monkeypatch.setattr("subprocess.call", viewer)
         monkeypatch.setattr("builtins.input", lambda _: "")
-        await pilot.press("G", "d")
+        await pilot.press("j", "equals_sign")
         if not isinstance(failure, KeyboardInterrupt):
             assert any("jj diff" in str(n.message) for n in app._notifications)
         await pilot.press("?")
@@ -1516,7 +1647,7 @@ def test_launch_rechecks_bookmark_deleted_while_form_is_open(
     from tests.conftest import jj
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("G", "r")
+        await pilot.press("j", "r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         form.query_one("#prompt", TextArea).text = "do not launch"

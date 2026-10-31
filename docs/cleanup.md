@@ -25,7 +25,8 @@ The [main bookmark](configuration.md#settings-reference) defines merged work:
 
 Unmerged workspaces with ignored files or missing directories are kept. Removal
 rechecks eligibility, runs `jj workspace forget` and deletes eligible bookmarks;
-tracked remote bookmarks are deleted on the next `jj git push`. Job history stays.
+tracked remote bookmarks are deleted on the next `jj git push`. Job history and the
+[bookmark history](usage.md#bookmark-history) stay; `u` does not undo cleanup.
 
 ## Force delete
 

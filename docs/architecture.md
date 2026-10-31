@@ -16,6 +16,7 @@ require a `.jj/` directory.
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt history and notifications |
+| `opgraph.py` | Bookmark history graph, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs and history |
 
 ## Launches and job lifecycle
@@ -38,7 +39,10 @@ and optional `--timeout`.
 5. **Restart:** adopt live processes; finalise dead ones.
 
 Inline sessions use temporary job records to mark workspaces busy across
-instances. See [sessions](sessions.md) for terminal behavior and
+instances. Job records keep only each bookmark's latest run; `opgraph.json`
+keeps every run as a node of the [bookmark history](usage.md#bookmark-history),
+finalised with the bookmark's commit on the first refresh that lists bookmarks
+after the run ended. See [sessions](sessions.md) for terminal behavior and
 [state storage](configuration.md#state-directory) for paths and permissions.
 
 ## Limitations
