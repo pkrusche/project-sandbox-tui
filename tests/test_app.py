@@ -147,6 +147,7 @@ def test_bookmark_comparison_markers(
 
 
 def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Config]) -> None:
+    from textual.containers import VerticalScroll
     from textual.widgets import Log
 
     from project_sandbox_tui.jobs import JobRecord
@@ -154,12 +155,19 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
     from project_sandbox_tui.screens.oplog import OpLogScreen
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        long_prompt = "second try\n" + "Keep [brackets] literal and show all prompt details. " * 40
         with app.graph.transaction() as state:
             for i, prompt in enumerate(["first try", "second try"]):
                 log = tmp_path / f"run{i}.log"
                 log.write_text(f"output of {prompt}\n")
-                spec = LaunchSpec("feature/x", "codex", mode="background", prompt_text=prompt)
+                spec = LaunchSpec(
+                    "feature/x",
+                    "codex",
+                    mode="background",
+                    prompt_text=long_prompt if i else prompt,
+                )
                 job = JobRecord("feature/x", spec, 1, f"2026-01-0{i + 1}T00:00:00Z")
+                job.argv = ["project-sandbox", "--prompt", prompt]
                 job.log_path, job.stdout_path = str(log), str(log.with_suffix(".out"))
                 state.add_run(job).status = "completed" if i else "failed"
         await pilot.press("j", "L")  # starts on feature/x's newest run
@@ -167,23 +175,44 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         assert isinstance(screen, OpLogScreen)
         rows = [[str(c) for c in screen.table.get_row_at(i)] for i in range(3)]
         assert [(r[0], r[2], r[4]) for r in rows] == [
-            ("✓", "feature/x", "background codex → completed: second try"),
-            ("✗", "feature/x", "background codex → failed: first try"),
-            ("○", "feature/x", "existing bookmark from main"),
+            ("✓", "feature/x", "run · completed"),
+            ("✗", "feature/x", "run · failed"),
+            ("○", "feature/x", "existing"),
         ]
         head = app.graph.state.head("feature/x")
         assert head is not None and screen.selected_id() == head.id
-        await pilot.press("enter")
+        details = screen.query_one("#oplog-details", Static)
+        pane = screen.query_one("#oplog-details-pane", VerticalScroll)
+        assert long_prompt.strip() in str(details.content)
+        assert "agent       codex · background" in str(details.content)
+        assert "command     project-sandbox --prompt 'second try'" in str(details.content)
+        assert pane.region.y >= screen.table.region.bottom
+        assert pane.max_scroll_y > 0 and pane.max_scroll_x == 0
+        assert screen.table.max_scroll_x == 0
+        await pilot.press("tab", "end")
+        assert app.focused is pane
+        assert pane.scroll_y > 0
+        screen._render_rows()
+        await pilot.pause()
+        assert pane.scroll_y > 0  # refresh does not reset reading position
+        await pilot.press("shift+tab", "enter")
         assert isinstance(app.screen, MessageScreen)
         assert "after       feature/x: background codex → failed: first try" in app.screen.body
-        await pilot.press("q", "j", "l")  # an earlier run's log
+        await pilot.press("q", "j")
+        assert "prompt      first try" in str(details.content)
+        assert "second try" not in str(details.content)
+        assert pane.scroll_y == 0
+        await pilot.press("j")
+        assert "existing bookmark from main" in str(details.content)
+        assert "agent" not in str(details.content)
+        await pilot.press("k", "l")  # an earlier run's log
         assert isinstance(app.screen, LogScreen)
         await pilot.pause(0.2)
         assert "output of first try" in "\n".join(app.screen.query_one(Log).lines)
         await pilot.press("q", "q")
         assert app.screen is app.main
 
-    run_app(repo, fake_cfg(), scenario)
+    run_app(repo, fake_cfg(), scenario, size=(80, 24))
 
 
 def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config]) -> None:

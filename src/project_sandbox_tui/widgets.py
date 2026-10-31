@@ -30,6 +30,17 @@ GLYPHS = {
 }
 
 
+def human_age(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
 class CycleField(Widget, can_focus=True):
     """A one-line choice field: ``label  ‹ value ›`` cycled with h/l.
 

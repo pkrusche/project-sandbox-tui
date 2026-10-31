@@ -176,28 +176,34 @@ rebases join the lines of their inputs. Newest first, starting at the
 highlighted bookmark's latest event.
 
 ```text
-✓     merge/parser-tui  background claude → completed: Merge feature/parser, spike/tui…
-○─╮   merge/parser-tui  merge of feature/parser, spike/tui
-✓ │   feature/parser    background codex → completed: Add streaming parser
-✗ │   feature/parser    background codex → failed: Add a streaming parser
-○ │   feature/parser    created from main
-│ ⚠   spike/tui         interactive claude → interrupted
-│ ○   spike/tui         created from main
-○─╯   main              existing bookmark
+      age  bookmark          commit    event
+✓     2m   merge/parser-tui   a1b2c3d4  run · completed
+○─╮   5m   merge/parser-tui   b2c3d4e5  merge
+✓ │   10m  feature/parser    c3d4e5f6  run · completed
+✗ │   15m  feature/parser    d4e5f6a7  run · failed
+○ │   20m  feature/parser    e5f6a7b8  create
+│ ⚠   25m  spike/tui         f6a7b8c9  run · interrupted
+│ ○   30m  spike/tui         a7b8c9d0  create
+○─╯   1h   main              b8c9d0e1  existing
 ```
 
-Each line also shows its time and the commit the bookmark pointed to when it
+Each line shows its age and the commit the bookmark pointed to when it
 was created or the run ended. Runs show their outcome as in the bookmark list
 (`?` if it was never seen); bookmarks deleted since are marked `(deleted)`.
+The bottom pane follows the highlighted row and shows the agent, full prompt,
+command line, exact time, parents, commit and log path. Long details wrap;
+focus the pane with `tab` to scroll with arrow keys, Page Up/Down or Home/End.
 
 | Key | Action |
 |---|---|
 | `j` `k` · `ctrl+d` `ctrl+u` · `gg` `G` | Move · half page · top/bottom |
-| `enter` / `P` | Details: time, what it followed or started from, commit, agent, prompt, log |
+| `tab` / `shift+tab` | Switch focus between the table and the details pane |
+| `enter` / `P` | Expand the selected operation's details |
 | `l` | [Log viewer](#log-viewer) for a background run, including earlier runs |
 | `q` / `esc` / `h` / `L` | Back to the list |
 
-Runs record only their prompt's first line. Logs of earlier runs stay in the
+New runs retain the full prompt and command line. Older entries may have only
+the prompt's first line and no recorded command. Logs of earlier runs stay in the
 [state directory](configuration.md#state-directory); interactive sessions have
 none.
 

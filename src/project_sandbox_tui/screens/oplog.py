@@ -6,6 +6,7 @@ session continues its bookmark's line, merges and rebases join their inputs.
 
 from __future__ import annotations
 
+import shlex
 import time
 from typing import ClassVar, cast
 
@@ -13,6 +14,7 @@ from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
@@ -21,10 +23,10 @@ from project_sandbox_tui.opgraph import NODE, Node, OpGraph
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.log import LogScreen
-from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys
+from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys, human_age
 
 UNKNOWN = ("?", "dim")  # a run whose outcome was never seen
-HINT = "q back · j/k ^d/^u gg/G move · enter/P details · l log"
+HINT = "q back · j/k ^d/^u gg/G move · tab pane · enter/P expand · l log"
 
 
 def _clock(timestamp: float, seconds: bool = False) -> str:
@@ -34,8 +36,13 @@ def _clock(timestamp: float, seconds: bool = False) -> str:
 class OpLogScreen(Screen[None]):
     DEFAULT_CSS = """
     OpLogScreen #oplog-title { height: 1; background: $panel; padding: 0 1; }
-    OpLogScreen DataTable { height: 1fr; border: none; scrollbar-size-vertical: 1; }
+    OpLogScreen DataTable { height: 2fr; min-height: 3; border: none; scrollbar-size-vertical: 1; }
     OpLogScreen DataTable > .datatable--header { background: $background; color: $text-muted; }
+    OpLogScreen #oplog-details-pane {
+        height: 1fr; min-height: 4; border-top: solid $primary-muted;
+        padding: 0 1; scrollbar-size-vertical: 1; overflow-x: hidden;
+    }
+    OpLogScreen #oplog-details { height: auto; }
     OpLogScreen #oplog-hint { height: auto; color: $text-disabled; padding: 0 1; }
     """
 
@@ -59,11 +66,14 @@ class OpLogScreen(Screen[None]):
         self._select = select
         self._prefix = PrefixKeys()
         self._shown: list[tuple[str, tuple[Text, ...]]] = []
+        self._details_shown: tuple[str | None, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="oplog-title")
         table: DataTable[Text] = DataTable(cursor_type="row", zebra_stripes=False)
         yield table
+        with VerticalScroll(id="oplog-details-pane"):
+            yield Static("", id="oplog-details", markup=False)
         yield Static(KeyHints(HINT), id="oplog-hint")
 
     @property
@@ -71,7 +81,7 @@ class OpLogScreen(Screen[None]):
         return self.query_one(DataTable)
 
     def on_mount(self) -> None:
-        for label in ("", "when", "bookmark", "commit", "event"):
+        for label in ("", "age", "bookmark", "commit", "event"):
             self.table.add_column(label, key=label or "graph")
         self.table.focus()
         self._render_rows()
@@ -104,12 +114,15 @@ class OpLogScreen(Screen[None]):
         bookmark = Text(node.bookmark, style="" if current else "dim")
         if not current:
             bookmark.append(" (deleted)", style="dim italic")
-        event = Text(state.describe(node, status), no_wrap=True)
+        summary = node.kind
+        if node.kind == "run":
+            summary += f" · {(status or 'unknown').replace('_', ' ')}"
+        event = Text(summary, no_wrap=True)
         if node.kind in ("merge", "rebase"):
             event.stylize("bold", 0, len(node.kind))
         return (
             graph,
-            Text(_clock(node.at), style="dim"),
+            Text(human_age(time.time() - node.at), style="dim"),
             bookmark,
             Text(node.commit[:8], style="dim"),
             event,
@@ -118,6 +131,8 @@ class OpLogScreen(Screen[None]):
     def _render_rows(self) -> None:
         rows = [(node.id, self._cells(node, line)) for node, line in self.graph.state.op_log()]
         if rows == self._shown:
+            self._title()
+            self._render_details()
             return
         table = self.table
         selected = self._select or self.selected_id()
@@ -130,6 +145,7 @@ class OpLogScreen(Screen[None]):
         if selected in keys:
             table.move_cursor(row=keys.index(selected), animate=False)
         self._title()
+        self._render_details()
 
     def _title(self) -> None:
         nodes = list(self.graph.state.nodes.values())
@@ -172,6 +188,21 @@ class OpLogScreen(Screen[None]):
 
     # ------------------------------------------------------------ actions
 
+    @on(DataTable.RowHighlighted)
+    def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        event.stop()
+        self._render_details()
+
+    def _render_details(self) -> None:
+        node = self.selected_node()
+        details = (node.id if node else None, self._details(node) if node else "No operations yet.")
+        if details == self._details_shown:
+            return
+        self.query_one("#oplog-details", Static).update(Text(details[1]))
+        if self._details_shown is None or details[0] != self._details_shown[0]:
+            self.query_one("#oplog-details-pane", VerticalScroll).scroll_home(animate=False)
+        self._details_shown = details
+
     @on(DataTable.RowSelected)
     def _row_selected(self, event: DataTable.RowSelected) -> None:
         event.stop()  # not the bookmark list's enter
@@ -181,12 +212,36 @@ class OpLogScreen(Screen[None]):
         node = self.selected_node()
         if node is None:
             return
+        self.app.push_screen(MessageScreen(node.bookmark, self._details(node)))
+
+    def _details(self, node: Node) -> str:
         state = self.graph.state
         status = self.status(node)
+        event = (
+            f"run · {(status or 'unknown').replace('_', ' ')}"
+            if node.kind == "run"
+            else state.describe(node)
+        )
         lines = [
-            f"event       {state.describe(node, status)}",
+            f"bookmark    {node.bookmark}",
+            f"event       {event}",
             f"time        {_clock(node.at, seconds=True)}",
         ]
+        if node.kind == "run":
+            job = self.jobs.jobs.get(node.bookmark)
+            if job is not None and (job.started_at != node.job or not state.is_current(node)):
+                job = None
+            command = node.command or (shlex.join(job.argv) if job else "")
+            prompt = node.prompt
+            if job and job.spec.prompt_text and not node.command:
+                prompt = job.spec.prompt_text
+            lines.extend(
+                [
+                    f"agent       {node.agent or 'unknown'} · {node.mode or 'run'}",
+                    f"command     {command or '(not recorded)'}",
+                    f"prompt      {prompt or '(not recorded)'}",
+                ]
+            )
         if not state.is_current(node):
             lines.append("bookmark    deleted since (its history is kept)")
         parents = [state.nodes[p] for p in node.parents if p in state.nodes]
@@ -196,14 +251,9 @@ class OpLogScreen(Screen[None]):
             lines.append(f"{label if not i else '':<12}{parent.bookmark}: {what}")
         if node.commit:
             lines.append(f"commit      {node.commit}")
-        if node.kind == "run":
-            if node.agent:
-                lines.append(f"agent       {node.agent} · {node.mode}")
-            if node.prompt:
-                lines.append(f"prompt      {node.prompt}")
-            if node.log:
-                lines.append(f"log         {node.log}")
-        self.app.push_screen(MessageScreen(node.bookmark, "\n".join(lines)))
+        if node.log:
+            lines.append(f"log         {node.log}")
+        return "\n".join(lines)
 
     def action_open_log(self) -> None:
         node = self.selected_node()

@@ -84,20 +84,16 @@ from project_sandbox_tui.vcs import (
     sort_branches,
     workspace_path,
 )
-from project_sandbox_tui.widgets import GLYPHS, Fitted, KeyHints, PrefixKeys, modifier_key
+from project_sandbox_tui.widgets import (
+    GLYPHS,
+    Fitted,
+    KeyHints,
+    PrefixKeys,
+    human_age,
+    modifier_key,
+)
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
-
-
-def human_age(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}m"
-    if seconds < 86400:
-        return f"{seconds // 3600}h"
-    return f"{seconds // 86400}d"
 
 
 def count_label(count: int) -> str:

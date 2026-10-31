@@ -110,14 +110,21 @@ def test_runs_extend_the_lineage_and_finish_with_their_commit() -> None:
         LaunchSpec("topic", "codex", mode="background", prompt_text="fix it\nthoroughly"),
         123,
         "2026-01-01T00:00:00Z",
+        argv=["project-sandbox", "--prompt", "fix it\nthoroughly"],
     )
     run = state.add_run(job)
     assert (run.parents, run.lineage, run.prompt, run.agent) == (
         [created.id],
         created.id,
-        "fix it",
+        "fix it\nthoroughly",
         "codex",
     )
+    assert run.command == "project-sandbox --prompt 'fix it\nthoroughly'"
+    assert State.from_dict(state.to_dict()).nodes[run.id] == run
+    legacy = state.to_dict()
+    for node in legacy["nodes"]:
+        node.pop("command")
+    assert State.from_dict(legacy).nodes[run.id].command == ""
     assert state.head("topic") is run
     assert state.bookmark_parents(["main", "topic"])["topic"] == ["main"]
     assert state.activity()["topic"] == run.at

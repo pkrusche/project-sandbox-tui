@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import shlex
 import time
 import uuid
 from collections.abc import Callable, Collection, Generator, Iterable, Mapping
@@ -46,11 +47,12 @@ class Node:
     commit: str = ""  # the bookmark's commit when recorded; runs: once finished
     agent: str = ""  # runs: agent label and mode
     mode: str = ""
-    prompt: str = ""  # runs: the prompt's first line
+    prompt: str = ""  # runs: full prompt (older records contain only its first line)
     job: str = ""  # runs: the job's started_at, linking the node to its record
     status: str = ""  # runs: the final job status, once seen
     log: str = ""  # background runs: the agent log and captured output
     stdout: str = ""
+    command: str = ""  # runs: shell-quoted command captured at launch
 
     @classmethod
     def from_dict(cls, raw: Any) -> Node:
@@ -201,7 +203,7 @@ class State:
             what = f"{node.mode or 'run'} {node.agent}".rstrip()
             if status := node.status or status:
                 what += f" → {status.replace('_', ' ')}"
-            return what + (f": {node.prompt}" if node.prompt else "")
+            return what + (f": {node.prompt.splitlines()[0]}" if node.prompt else "")
         parents = ", ".join(self.nodes[p].bookmark for p in node.parents if p in self.nodes)
         what = DESCRIPTIONS.get(node.kind, "existing bookmark")
         if parents:
@@ -299,7 +301,7 @@ class State:
     def add_run(self, job: JobRecord, prompt_text: str | None = None) -> Node:
         """Append a prompt's node to its bookmark's lineage."""
         head = self.head(job.branch) or self.add_lineage(job.branch, "existing", [])
-        prompt = (job.spec.prompt_text if prompt_text is None else prompt_text).strip().splitlines()
+        prompt = (job.spec.prompt_text if prompt_text is None else prompt_text).strip()
         node = Node(
             _new_id(),
             job.branch,
@@ -309,7 +311,8 @@ class State:
             time.time(),
             agent=job.spec.label(),
             mode=job.mode,
-            prompt=prompt[0] if prompt else "",
+            prompt=prompt,
+            command=shlex.join(job.argv),
             job=job.started_at,
             log=job.log_path,
             stdout=job.stdout_path,
