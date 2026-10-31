@@ -45,6 +45,11 @@ omit zeros:
 
 `@` includes edits captured on refresh; its commit counts toward `↑N` even if empty.
 
+The `reviewed` column (`seen` in narrow terminals) shows reviewed files out of
+the total differing from main, for example `2/5`. It is blank when there are no
+diffs or the comparison is unavailable. Counts follow the saved marks from
+[diff review](#diff-review) and update when a file's diff changes.
+
 | Key | Action |
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
@@ -212,7 +217,8 @@ and the file's size in the target revision. The header totals them.
 | `q` / `esc` / `h` | Back to the list |
 
 Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
-(including delta). Exit the viewer, then press Enter to return to the file list.
+(including delta). Each viewing starts with a cleared terminal. Exit the viewer,
+then press Enter to return to the file list.
 The list pins both revisions when it opens, so the viewer shows the change
 that was listed even if a run moves the bookmark meanwhile; press `=` on the
 bookmark list again to see later changes.

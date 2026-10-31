@@ -204,15 +204,30 @@ def _file_pattern(path: str) -> str:
     return f"root-file:{json.dumps(path, ensure_ascii=False)}"
 
 
-def _git_file_diffs(out: bytes) -> dict[bytes, list[bytes]]:
-    """``jj diff --git`` split by file: header line → the lines after it."""
+def _git_file_diffs(out: bytes, headers: list[bytes]) -> dict[bytes, list[bytes]]:
+    """Split a git diff using complete headers from the NUL-delimited file list.
+
+    jj emits filenames literally, including newlines. Both outputs follow the
+    same file order, so match whole headers before splitting the body into lines.
+    """
     files: dict[bytes, list[bytes]] = {}
-    lines: list[bytes] = []
-    for line in out.split(b"\n"):
-        if line.startswith(b"diff --git "):
-            lines = files.setdefault(line, [])
+    previous: bytes | None = None
+    offset = 0
+    for header in headers:
+        if offset == 0 and out.startswith(header + b"\n"):
+            start = 0
         else:
-            lines.append(line)
+            # Added/context lines may themselves contain a complete diff header.
+            boundary = out.find(b"\n" + header + b"\n", max(0, offset - 1))
+            if boundary < 0:
+                continue
+            start = boundary + 1
+        if previous is not None:
+            files[previous] = out[offset:start].split(b"\n")
+        previous = header
+        offset = start + len(header) + 1
+    if previous is not None:
+        files[previous] = out[offset:].split(b"\n")
     return files
 
 
@@ -332,6 +347,12 @@ class JjBackend:
         )
 
     def create_branch(self, name: str, start: str) -> None:
+        # A name typed into a launch form is a literal bookmark if it exists;
+        # otherwise it may be a revset such as @- or trunk(). In particular,
+        # ``fix-`` must not silently mean the parents of ``fix``.
+        start = start or "@-"
+        if self._jj("bookmark", "list", f"exact:{json.dumps(start)}", "-T", 'if(remote, "", "1")'):
+            start = revset_symbol(start)
         # Not --ignore-working-copy: creating a bookmark is a write and should
         # see the latest snapshot of the user's working copy.
         _run(
@@ -342,8 +363,7 @@ class JjBackend:
                 "bookmark",
                 "create",
                 revset_symbol(name),  # names like ``fix-`` only parse quoted
-                "-r",
-                start or "@-",
+                f"--revision={start}",
             ],
             self.root,
         )
@@ -444,10 +464,16 @@ class JjBackend:
         )
         span = ("--from", base_commit, "--to", target_commit)
         fields = self._jj_bytes("diff", *span, "-T", _JJ_DIFF_TEMPLATE).split(b"\0")[:-1]
-        git = _git_file_diffs(self._jj_bytes("diff", *span, "--git", "--context", _FULL_CONTEXT))
+        width = len(_DIFF_FIELDS)
+        headers = [
+            b"diff --git a/" + fields[start + 1] + b" b/" + fields[start + 2]
+            for start in range(0, len(fields), width)
+        ]
+        git = _git_file_diffs(
+            self._jj_bytes("diff", *span, "--git", "--context", _FULL_CONTEXT), headers
+        )
         files: list[FileChange] = []
         lookups = 0
-        width = len(_DIFF_FIELDS)
         for start in range(0, len(fields), width):
             status, source, path, display, *ids, conflict = fields[start : start + width]
             lines = git.get(b"diff --git a/" + source + b" b/" + path, [])

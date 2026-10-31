@@ -17,6 +17,7 @@ CONFIGURED = {"test": "uv run pytest", "lint": "uv run ruff check ."}
         (":! ls -l ", "", "ls -l"),
         ("test", "", "uv run pytest"),
         ("test -k 'a b'", "", "uv run pytest -k 'a b'"),
+        ("test\t-k 'a b'", "", "uv run pytest -k 'a b'"),
         ("  lint  ", "", "uv run ruff check ."),
         ("q", "quit", ""),
         ("quit", "quit", ""),
@@ -137,3 +138,19 @@ def test_complete_file_arguments(tmp_path: Path) -> None:
     assert cmd.complete("!./t", [], tmp_path) == (1, ["./tests/", "./tox.ini"])
     assert cmd.complete(f"!ls {tmp_path}/to", [], Path("/")) == (4, [f"{tmp_path}/tox.ini"])
     assert cmd.complete("test missing/x", [], tmp_path) == (5, [])
+
+
+@pytest.mark.parametrize("typed", ["'some dir'/fi", '"some dir/fi', "some\\ dir/fi"])
+def test_complete_paths_with_shell_quoting(tmp_path: Path, typed: str) -> None:
+    directory = tmp_path / "some dir"
+    directory.mkdir()
+    (directory / "file.txt").write_text("")
+    assert cmd.complete(f"!cat {typed}", [], tmp_path) == (5, ["'some dir/file.txt'"])
+
+
+def test_complete_programs_uses_repository_for_relative_path_entries(tmp_path: Path) -> None:
+    program = tmp_path / "local tool"
+    program.write_text("#!/bin/sh\n")
+    program.chmod(0o755)
+    for path in (".", ""):
+        assert cmd.complete("!loc", [], tmp_path, path=path) == (1, ["'local tool'"])

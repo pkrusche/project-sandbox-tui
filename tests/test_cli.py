@@ -98,6 +98,25 @@ def test_init_preserves_existing_untrusted_config(
     assert config.load(repo).sandbox.command == "project-sandbox"
 
 
+def test_init_trusts_only_the_template_even_if_the_file_changes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_template = config.write_template
+    project = config.project_config_path(repo)
+
+    def changed_after_write(path: Path, text: str) -> bool:
+        written = write_template(path, text)
+        if path == project:
+            path.write_text('[sandbox]\ncommand = "unreviewed-command"\n')
+        return written
+
+    monkeypatch.setattr(config, "write_template", changed_after_write)
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    assert main([str(repo), "--init"]) == 0
+    assert config.ProjectTrust.check(repo).needs_review
+    assert config.load(repo).sandbox.command == "project-sandbox"
+
+
 def test_trust_config_eof_is_a_decline(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -77,6 +77,23 @@ def test_project_overrides_global(tmp_path: Path) -> None:
         ("[project]\ndocker_context = '.'\n", "needs project.dockerfile"),
         ("[project]\nbuild = 'node-npm'\nbuild_version = '22'\n", "build_version needs"),
         ("not toml = = \n", "Expected"),
+        ('[sandbox]\ncommand = " "\n', "sandbox.command"),
+        ('[sandbox]\ncommand = "\'unclosed"\n', "sandbox.command"),
+        ("[sandbox]\ncpus = -1\n", "sandbox.cpus"),
+        ("[ui]\nrefresh_seconds = nan\n", "ui.refresh_seconds"),
+        ("[ui]\nrefresh_seconds = inf\n", "ui.refresh_seconds"),
+        ('[ui]\nterminal_command = "\'unclosed"\n', "ui.terminal_command"),
+        ('[ui]\nterminal = "kitty"\n', "ui.terminal must be one of"),
+        ('[ui]\nterminal = "custom"\n', "needs ui.terminal_command"),
+        ('[ui]\nterminal = "tmux"\nterminal_command = "x {cmd}"\n', "only used with"),
+        ('[ui]\neditor_command = " "\n', "ui.editor_command"),
+        ("commands = []\n", "must be a table of name"),
+        ("[commands]\ntest = 1\n", "commands.test must be a string"),
+        ('[commands]\nhelp = "x"\n', "built-in"),
+        ('[leader]\nt = "test"\n', "unknown command :test"),
+        ('[ui]\nleader = ""\n[leader]\nt = "q"\n', "need ui.leader"),
+        ('[ui]\nleader = ",,"\n', "ui.leader"),
+        (f"[ui]\nrefresh_seconds = {10**400}\n", "ui.refresh_seconds"),
     ],
 )
 def test_invalid_config(tmp_path: Path, text: str, message: str) -> None:
@@ -149,33 +166,6 @@ def test_state_dir_is_private(tmp_path: Path) -> None:
     jobs = JobManager(repo, c.Config())
     jobs.save(JobRecord("b", LaunchSpec(branch="b", agent="bash"), pid=1, started_at=""))
     assert stat.S_IMODE(jobs.jobs_dir.stat().st_mode) == 0o700
-
-
-@pytest.mark.parametrize(
-    ("text", "message"),
-    [
-        ('[sandbox]\ncommand = " "\n', "sandbox.command"),
-        ('[sandbox]\ncommand = "\'unclosed"\n', "sandbox.command"),
-        ("[sandbox]\ncpus = -1\n", "sandbox.cpus"),
-        ("[ui]\nrefresh_seconds = nan\n", "ui.refresh_seconds"),
-        ("[ui]\nrefresh_seconds = inf\n", "ui.refresh_seconds"),
-        ('[ui]\nterminal_command = "\'unclosed"\n', "ui.terminal_command"),
-        ('[ui]\nterminal = "kitty"\n', "ui.terminal must be one of"),
-        ('[ui]\nterminal = "custom"\n', "needs ui.terminal_command"),
-        ('[ui]\nterminal = "tmux"\nterminal_command = "x {cmd}"\n', "only used with"),
-        ('[ui]\neditor_command = " "\n', "ui.editor_command"),
-        ("commands = []\n", "must be a table of name"),
-        ("[commands]\ntest = 1\n", "commands.test must be a string"),
-        ('[commands]\nhelp = "x"\n', "built-in"),
-        ('[leader]\nt = "test"\n', "unknown command :test"),
-        ('[ui]\nleader = ""\n[leader]\nt = "q"\n', "need ui.leader"),
-        ('[ui]\nleader = ",,"\n', "ui.leader"),
-    ],
-)
-def test_invalid_commands_and_numeric_settings(tmp_path: Path, text: str, message: str) -> None:
-    write(tmp_path / c.PROJECT_CONFIG_NAME, text)
-    with pytest.raises(c.ConfigError, match=message):
-        candidate(tmp_path)
 
 
 def test_commands_and_leader_merge(tmp_path: Path) -> None:
@@ -317,3 +307,26 @@ def test_config_rejects_placeholders_embedded_in_shell_code(key: str, placeholde
     setattr(cfg.ui, key, f"sh -c 'printf %s \"{{{placeholder}}}\"'")
     with pytest.raises(c.ConfigError, match=rf"ui\.{key}: .*must occupy a whole argument"):
         cfg.validate()
+
+
+def test_template_does_not_overwrite_a_file_created_concurrently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.toml"
+    mkdir = Path.mkdir
+
+    def concurrent_create(directory: Path, *args, **kwargs) -> None:
+        mkdir(directory, *args, **kwargs)
+        path.write_text("existing settings\n")
+
+    monkeypatch.setattr(Path, "mkdir", concurrent_create)
+    assert not c.write_template(path, "template\n")
+    assert path.read_text() == "existing settings\n"
+
+
+def test_trust_reports_an_unwritable_state_directory(tmp_path: Path) -> None:
+    write(tmp_path / c.PROJECT_CONFIG_NAME, c.PROJECT_TEMPLATE)
+    trust = c.ProjectTrust.check(tmp_path)
+    write(c.repo_state_dir(tmp_path), "not a directory")
+    with pytest.raises(c.ConfigError, match="cannot write"):
+        trust.trust(tmp_path)

@@ -14,13 +14,13 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 ```text
  sbx-tui   ~/workspace/myproject   5 bookmarks · 1 running
-         bookmark          vs main    head      subject                       status
-         @ working copy ●  ↑1         qzmvtlno  (no description set)
- ▶─╮     merge/parser-tui  ↑6 Δ9      wnrtlxqz  Merge feature/parser, spike…  merging
- ✓ │     feature/parser    ↑3 Δ5      sutnpmvo  Add streaming parser          completed
- │ ✗     spike/tui         ↑2 ↓1 Δ4   zsuskuln  Try a ranger-style layout     failed (1)
- │ │ ○   fix/flaky-tests   ↑1 Δ2      rlvkpnrz  Stabilise integration tests
- ○─┴─╯   main ●            =          kxyrwpsn  Initial import
+         bookmark          vs main    reviewed  head      subject                       status
+         @ working copy ●  ↑1                   qzmvtlno  (no description set)
+ ▶─╮     merge/parser-tui  ↑6 Δ9      0/9       wnrtlxqz  Merge feature/parser, spike…  merging
+ ✓ │     feature/parser    ↑3 Δ5      5/5       sutnpmvo  Add streaming parser          completed
+ │ ✗     spike/tui         ↑2 ↓1 Δ4   1/4       zsuskuln  Try a ranger-style layout     failed (1)
+ │ │ ○   fix/flaky-tests   ↑1 Δ2      0/2       rlvkpnrz  Stabilise integration tests
+ ○─┴─╯   main ●            =                    kxyrwpsn  Initial import
 ```
 
 ## Requirements

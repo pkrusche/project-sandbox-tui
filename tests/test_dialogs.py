@@ -170,6 +170,25 @@ def test_help_fits_a_small_terminal() -> None:
     asyncio.run(scenario())
 
 
+def test_help_resize_after_children_are_removed() -> None:
+    from textual import events
+
+    from project_sandbox_tui.screens.dialogs import HelpScreen
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = HelpScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            await screen.remove_children()
+            # A queued resize can arrive while the screen is being torn down.
+            screen.on_resize(events.Resize(screen.size, screen.size))
+            await pilot.pause()
+
+    asyncio.run(scenario())
+
+
 def test_help_wraps_under_its_own_column_when_narrow() -> None:
     """Narrow terminals stack the columns and scroll; wrapped text keeps its indent."""
     from project_sandbox_tui.screens.dialogs import HelpScreen

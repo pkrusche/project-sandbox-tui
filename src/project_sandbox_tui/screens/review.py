@@ -62,7 +62,7 @@ class DiffReviewScreen(Screen[None]):
     """
 
     BINDINGS = [
-        Binding("q,escape,h", "app.pop_screen", "back", show=False),
+        Binding("q,escape,h", "back", "back", show=False),
         Binding("j", "cursor(1)", show=False),
         Binding("k", "cursor(-1)", show=False),
         Binding("ctrl+d", "page(1)", show=False),
@@ -115,6 +115,9 @@ class DiffReviewScreen(Screen[None]):
 
     def on_key(self, event: events.Key) -> None:
         self._prefix.other_key(event.key)
+
+    def action_back(self) -> None:
+        self.dismiss(None)
 
     def _cells(self, change: FileChange) -> tuple[Text, ...]:
         seen = change.key in self.seen

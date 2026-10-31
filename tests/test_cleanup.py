@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -42,6 +43,29 @@ def test_cleanup_keeps_untracked_files(repo: Path, capsys) -> None:
     assert main([str(repo), "--cleanup-workspaces"]) == 0
     assert "kept feature/x" in capsys.readouterr().out
     assert (path / "untracked").read_text() == "keep"
+
+
+def test_cleanup_keeps_a_workspace_that_cannot_be_fully_inspected(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _add_workspace(repo, "feature/x")
+    (path / ".gitignore").write_text("private/\n")
+    run("jj", "commit", "-m", "ignore private data", cwd=path)
+    private = path / "private"
+    private.mkdir()
+    (private / "precious").write_text("keep")
+    scandir = os.scandir
+
+    def unreadable(directory):
+        if directory == str(private):
+            raise PermissionError("cannot inspect private directory")
+        return scandir(directory)
+
+    monkeypatch.setattr(os, "scandir", unreadable)
+    [ws] = find_workspaces(detect(repo), Config())
+    assert not ws.removable and "cannot inspect" in ws.status
+    assert remove_workspaces(detect(repo), Config(), [ws])[0].startswith("skipped")
+    assert (private / "precious").read_text() == "keep"
 
 
 def test_cleanup_ignores_git_worktree_metadata(repo: Path) -> None:

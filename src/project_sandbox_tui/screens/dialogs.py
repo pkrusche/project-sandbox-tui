@@ -554,4 +554,9 @@ class HelpScreen(MessageScreen):
             yield Static(KeyHints(f"{SCROLL_HINT} · q/esc/? close"), classes="hint")
 
     def on_resize(self, event: events.Resize) -> None:
-        self.call_after_refresh(fit_body, self.query_one(VerticalScroll))
+        self.call_after_refresh(self._fit_body)
+
+    def _fit_body(self) -> None:
+        # Queued resize events may outlive the dialog's children during teardown.
+        for body in self.query(VerticalScroll):
+            fit_body(body)

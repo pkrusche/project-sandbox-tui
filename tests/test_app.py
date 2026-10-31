@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from rich.cells import cell_len
 from textual.widgets import DataTable, Input, Static, TextArea
+from textual.widgets.data_table import ColumnKey
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
@@ -68,14 +70,18 @@ def row_texts(app: SandboxTUI) -> list[list[str]]:
     return [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
 
 
-def test_refresh_preserves_horizontal_scroll(repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    detect(repo).create_branch("long/" + "bookmark" * 15, "main")
+@pytest.mark.parametrize("name", ["long/" + "bookmark" * 15, "分支/" + "界" * 45])
+def test_refresh_preserves_horizontal_scroll(
+    repo: Path, fake_cfg: Callable[..., Config], name: str
+) -> None:
+    detect(repo).create_branch(name, "main")
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         app._refresh_timer.pause()
         await pilot.press("G")
         selected = app.selected_branch_name()
         table = app.table
+        assert table.columns[ColumnKey("bookmark")].width >= cell_len(name) + 2
         assert table.max_scroll_x > 40
         for offset in (table.max_scroll_x, 20):
             table.scroll_to(x=offset, animate=False)
@@ -328,6 +334,37 @@ def test_undo_right_after_creating_undoes_the_creation(
         assert "topic/quick" not in {b.name for b in app.backend.list_branches()}
 
     run_app(repo, fake_cfg(), scenario)
+
+
+def test_partial_redo_preserves_commits_for_a_retry(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from project_sandbox_tui.vcs import VcsError
+
+    backend = detect(repo)
+    backend.create_branch("second", "main")
+    app = SandboxTUI(repo, backend, fake_cfg())
+    app._delete_idle(["feature/x", "second"])
+    app._undo_step(redo=False)
+    # New work on the first bookmark must survive a failure deleting the second.
+    jj(repo, "new", "feature/x")
+    (repo / "new-work.txt").write_text("keep this\n")
+    jj(repo, "bookmark", "set", "feature/x", "-r", "@")
+    updated = backend._bookmark_commit("feature/x")
+    delete = backend.delete_bookmark
+
+    def fail_second(name: str) -> str:
+        if name == "second":
+            raise VcsError("injected failure")
+        return delete(name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(backend, "delete_bookmark", fail_second)
+        with pytest.raises(VcsError, match="injected failure"):
+            app._undo_step(redo=True)
+    app._undo_step(redo=True)
+    app._undo_step(redo=False)
+    assert backend._bookmark_commit("feature/x") == updated
 
 
 def test_delete_undo_and_redo_bookmarks(repo: Path, fake_cfg: Callable[..., Config]) -> None:
@@ -636,7 +673,7 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
         row = next(r for r in row_texts(app) if r[1] == "feature/x")
         assert row[0] == "✓"
-        assert row[5].startswith("completed · ") and row[5].endswith(" ago")
+        assert row[6].startswith("completed · ") and row[6].endswith(" ago")
         # The history records the outcome once a listing after the run's end is seen.
         await wait_until(pilot, lambda: app.graph.state.history("feature/x")[0].status != "")
         await pilot.press("P")  # the agent moved from the list to the details
@@ -1923,6 +1960,10 @@ def test_diff_review_marks_files_seen(
         monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
         monkeypatch.setattr("subprocess.call", viewer)
         monkeypatch.setattr("builtins.input", lambda _: "")
+        assert str(app.table.get_cell("@", "reviewed")) == "0/2"
+        assert str(app.table.get_cell("feature/x", "reviewed")) == "0/1"
+        assert str(app.table.get_cell("main", "reviewed")) == ""
+        app._refresh_timer.pause()  # returning from review must refresh immediately
         screen = await open_review(app, pilot, "g", "g")  # @ against main
         assert review_rows(app) == [
             ["●", "M", "a.txt", "+1 −1", "8 B"],
@@ -1936,18 +1977,26 @@ def test_diff_review_marks_files_seen(
         assert viewed == [['root-file:"c.txt"'], ['root-file:"c.txt"']]  # file, then unseen
         await pilot.press("A")
         assert [r[0] for r in review_rows(app)] == ["✓", "✓"]
+        await app.refresh_data()
+        assert str(app.table.get_cell("@", "reviewed")) == "2/2"
         await pilot.press("equals_sign")  # all seen: every file
         assert viewed[-1] == ['root-file:"a.txt" | root-file:"c.txt"']
         await pilot.press("A", "k", "space", "q")
         assert app.screen is app.main
+        await wait_until(pilot, lambda: str(app.table.get_cell("@", "reviewed")) == "1/2")
         # Only c.txt changes: a.txt stays seen.
         (repo / "c.txt").write_text("c\n")
         await open_review(app, pilot, "g", "g")
         assert [r[:3] for r in review_rows(app)] == [["✓", "M", "a.txt"], ["●", "A", "c.txt"]]
         await pilot.press("q")
+        # Rewriting the reviewed file invalidates its mark in the main view too.
+        (repo / "a.txt").write_text("changed again\n")
+        await app.refresh_data()
+        assert str(app.table.get_cell("@", "reviewed")) == "0/2"
         # Another bookmark has its own marks.
         jj(repo, "bookmark", "create", "--quiet", "wip", "-r", "@")
         await app.refresh_data()
+        assert str(app.table.get_cell("wip", "reviewed")) == "0/2"
         app.marked = ["main", "wip"]
         await open_review(app, pilot)
         assert [r[0] for r in review_rows(app)] == ["●", "●"]
@@ -1957,6 +2006,44 @@ def test_diff_review_marks_files_seen(
         await wait_until(
             pilot, lambda: any("no differences" in str(n.message) for n in app._notifications)
         )
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_bookmark_review_counts_persist_and_follow_main(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from project_sandbox_tui.review import SeenFiles
+
+    backend = detect(repo)
+    changes = backend.changed_files("main", "feature/x")
+    seen = SeenFiles.for_repo(repo)
+    seen.mark("feature/x", [changes.files[0].key, "obsolete-diff"], True)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        assert str(app.table.get_cell("feature/x", "reviewed")) == "1/1"
+
+        # Changing marks in another instance refreshes counts without rereading diffs.
+        def unexpected_diff(*args: str) -> None:
+            raise AssertionError("unchanged commits should reuse file identities")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(app.backend, "changed_files", unexpected_diff)
+            seen.mark("feature/x", [changes.files[0].key], False)
+            await app.refresh_data()
+            assert str(app.table.get_cell("feature/x", "reviewed")) == "0/1"
+            seen.mark("feature/x", [changes.files[0].key], True)
+            await app.refresh_data()
+            assert str(app.table.get_cell("feature/x", "reviewed")) == "1/1"
+
+        # Once main includes the change, there is no diff to review.
+        jj(repo, "bookmark", "move", "main", "--to", "feature/x")
+        await app.refresh_data()
+        assert str(app.table.get_cell("feature/x", "reviewed")) == ""
+        assert str(app.table.get_cell("@", "reviewed")) == "0/1"
+        app.cfg.project.main_branch = "missing"
+        await app.refresh_data()
+        assert str(app.table.get_cell("@", "reviewed")) == ""
 
     run_app(repo, fake_cfg(), scenario)
 

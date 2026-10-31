@@ -145,13 +145,13 @@ def main(argv: list[str] | None = None) -> int:
         ):
             try:
                 written = config_mod.write_template(path, template)
-            except OSError as exc:
+                if written and path == config_mod.project_config_path(repo):
+                    # Trust only what we wrote, even if the file changes meanwhile.
+                    config_mod.ProjectTrust(path, template, None).trust(repo)
+            except (OSError, ConfigError) as exc:
                 print(f"sbx-tui: could not write {path}: {exc}", file=sys.stderr)
                 return 2
             print(f"{'wrote' if written else 'exists'}: {path}")
-            if written and path == config_mod.project_config_path(repo):
-                # sbx-tui wrote it just now: nothing to review
-                config_mod.ProjectTrust.check(repo).trust(repo)
         if models_mod.load_store() is None:
             # not fatal: the launch form works without it
             _update_models(models_mod.DEFAULT_SOURCE, required=False)

@@ -244,3 +244,39 @@ def test_adoption_uses_nearest_bookmarked_ancestors(repo: Path) -> None:
         "fix/y"
     ]
     assert state.infer_parents("new", "", branches, backend.bookmarked_ancestors, "main") == []
+
+
+@pytest.mark.parametrize("field", ["nodes", "undo"])
+@pytest.mark.parametrize("value", [1, True, "invalid", {"unexpected": "table"}])
+def test_bad_history_containers_do_not_prevent_loading(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    path = tmp_path / "opgraph.json"
+    path.write_text(json.dumps({field: value}))
+    graph = OpGraph(path)
+    assert graph.state == State()
+    with graph.transaction() as state:
+        state.add_lineage("topic", "create", [])
+    assert OpGraph(path).state.head("topic") is not None
+
+
+@pytest.mark.parametrize("at", [float("nan"), float("inf"), 1e100, 10**400])
+def test_unrenderable_history_times_are_ignored(at: float) -> None:
+    state = State()
+    state.add_lineage("topic", "create", [], at=at)
+    assert State.from_dict(state.to_dict()).nodes == {}
+
+
+@pytest.mark.parametrize(
+    "items", [[], [None], [{"bookmark": "topic"}], [{"bookmark": "", "commit": "c"}]]
+)
+def test_invalid_undo_items_are_ignored(items: list[object]) -> None:
+    state = State.from_dict({"undo": [{"op": "delete", "items": items}], "position": 1})
+    assert state.undo_entry() is None and state.redo_entry() is None
+
+
+def test_invalid_undo_entries_do_not_shift_the_undo_position() -> None:
+    entry = {"op": "create", "items": [{"bookmark": "topic", "commit": "c"}]}
+    state = State.from_dict({"undo": [None, entry], "position": 1})
+    assert state.undo_entry() is None
+    assert state.redo_entry() == UndoEntry("create", [UndoItem("topic", "", "c")])

@@ -676,6 +676,37 @@ def test_diff_files_command_shows_only_those_files(repo: Path) -> None:
     assert diff([]) == ""
 
 
+@pytest.mark.parametrize("start", ["fix-", "a+b", 'quote"name'])
+def test_create_branch_from_literal_bookmark(repo: Path, start: str) -> None:
+    backend = vcs.detect(repo)
+    backend.create_branch("fix", "feature/x")
+    backend.create_branch(start, "feature/x")
+    backend.create_branch("new-topic", start)
+    assert backend._bookmark_commit("new-topic") == backend._bookmark_commit(start)
+
+
+@pytest.mark.parametrize("name", ["line\nbreak.txt", "tab\tname.txt", 'quote".txt', "back\\slash"])
+def test_changed_files_handles_escaped_paths(repo: Path, name: str) -> None:
+    contents = b"first\nsecond\n"
+    (repo / name).write_bytes(contents)
+    [change] = vcs.detect(repo).changed_files("main", "@").files
+    assert change.path == name
+    assert (change.added, change.removed, change.size) == (2, 0, len(contents))
+
+
+def test_changed_files_does_not_treat_file_contents_as_diff_headers(repo: Path) -> None:
+    content = b"diff --git a/z.txt b/z.txt\n"
+    (repo / "a.txt").write_bytes(content)
+    (repo / "z.txt").write_text("z\n")
+    files = {f.path: f for f in vcs.detect(repo).changed_files("main", "@").files}
+    assert (files["a.txt"].added, files["a.txt"].removed, files["a.txt"].size) == (
+        1,
+        1,
+        len(content),
+    )
+    assert (files["z.txt"].added, files["z.txt"].size) == (1, 2)
+
+
 def test_stale_working_copy_is_detected_and_updated(repo: Path, tmp_path: Path) -> None:
     from tests.conftest import make_stale
 

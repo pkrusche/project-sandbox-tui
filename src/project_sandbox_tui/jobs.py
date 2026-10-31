@@ -140,13 +140,16 @@ class JobRecord:
     def from_dict(cls, raw: dict[str, Any]) -> JobRecord:
         if not isinstance(raw, dict) or not isinstance(raw.get("spec", {}), dict):
             raise ValueError("invalid job record")
-        if isinstance(raw.get("pid"), bool):
+        pid = raw.get("pid", 0)
+        # pid_t is a signed 32-bit integer on the supported platforms. Never
+        # coerce floats or strings: truncating one could signal another process.
+        if type(pid) is not int or not 0 <= pid < 2**31:
             raise ValueError("invalid process id")
         status = raw.get("status", "orphaned")
         return cls(
             branch=str(raw["branch"]),
             spec=LaunchSpec.from_dict(raw.get("spec") or {}),
-            pid=int(raw.get("pid") or 0),
+            pid=pid,
             started_at=str(raw.get("started_at") or ""),
             argv=[str(a) for a in raw.get("argv") or []],
             log_path=str(raw.get("log_path") or ""),
@@ -209,6 +212,8 @@ class JobManager:
         previous = self.jobs
         self.jobs = {}
         if not self.jobs_dir.is_dir():
+            self._stop_stage.clear()
+            self._stop_last.clear()
             return
         for path in sorted(self.jobs_dir.glob("*.json")):
             try:
@@ -221,6 +226,11 @@ class JobManager:
                 old.__dict__.update(job.__dict__)
                 job = old
             self.jobs[job.branch] = job
+        for branch in list(self._stop_stage):
+            old, new = previous.get(branch), self.jobs.get(branch)
+            if old is None or new is None or (old.pid, old.started_at) != (new.pid, new.started_at):
+                self._stop_stage.pop(branch, None)
+                self._stop_last.pop(branch, None)
 
     def clear(self, branch: str, force: bool = False) -> bool:
         """Forget a finished job. Returns False if it is still running.

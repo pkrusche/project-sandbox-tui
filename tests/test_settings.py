@@ -168,3 +168,38 @@ def test_set_commands_and_leader_mappings(repo: Path, capsys: pytest.CaptureFixt
     assert 'commands.test = "uv run pytest"' in listed and 'leader.t = "test"' in listed
     code, _, err = cli(capsys, "config", "unset", "--global", "commands.test")
     assert code == 2 and "unknown command :test" in err  # [leader] t still uses it
+
+
+def test_config_set_reports_unwritable_parent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args, **kwargs):
+        raise PermissionError("read-only configuration directory")
+
+    monkeypatch.setattr(Path, "mkdir", fail)
+    code, _, err = cli(
+        capsys,
+        "config",
+        "set",
+        "--global",
+        "--config",
+        str(tmp_path / "config.toml"),
+        "defaults.agent",
+        "codex",
+        "-R",
+        str(tmp_path),
+    )
+    assert code == 2 and "cannot write" in err
+
+
+def test_project_edit_reports_unreadable_global_config(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = config.global_config_path()
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff")
+    code, _, err = cli(
+        capsys, "config", "set", "--project", "defaults.agent", "bash", "-R", str(repo)
+    )
+    assert code == 2 and "other config file" in err
+    assert not config.project_config_path(repo).exists()

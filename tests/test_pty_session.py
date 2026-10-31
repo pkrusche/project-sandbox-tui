@@ -6,11 +6,14 @@ TUI must take keys again afterwards, however the agent left the terminal.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
 import select
+import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -32,11 +35,32 @@ class Tui:
         # xdist exports the runner's COLUMNS/LINES. Let the TUI use this PTY's
         # dimensions instead, or its small-window layout hides the startup marker.
         env = {key: value for key, value in env.items() if key not in ("COLUMNS", "LINES")}
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:  # child: run the real TUI on the pty
-            os.chdir(repo)
-            os.execve(sys.executable, [sys.executable, "-m", "project_sandbox_tui"], env)
+        self.fd, slave = pty.openpty()
         self.resize(110, 30)
+        try:
+            # pytest/xdist already has threads: never run Python between fork
+            # and exec in that process. A fresh interpreter safely acquires the
+            # controlling terminal before replacing itself with the real TUI.
+            self.proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, sys; os.login_tty(int(sys.argv[1])); "
+                    "os.execv(sys.executable, [sys.executable, '-m', 'project_sandbox_tui'])",
+                    str(slave),
+                ],
+                cwd=repo,
+                env=env,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                pass_fds=(slave,),
+            )
+        except BaseException:
+            os.close(self.fd)
+            raise
+        finally:
+            os.close(slave)
         self.buf = bytearray()
 
     def resize(self, columns: int, rows: int) -> None:
@@ -64,11 +88,10 @@ class Tui:
         os.write(self.fd, data)
 
     def close(self) -> None:
-        try:
-            os.kill(self.pid, 9)
-            os.waitpid(self.pid, 0)
-        except (ProcessLookupError, ChildProcessError):
-            pass
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(self.proc.pid, signal.SIGKILL)  # also stop an interrupted test's agent
+        self.proc.kill()  # also works if startup failed before login_tty created a session
+        self.proc.wait(timeout=5)
         os.close(self.fd)
 
 
@@ -187,13 +210,16 @@ def test_diff_uses_host_viewer_and_returns_to_tui(repo: Path, viewer: str) -> No
     try:
         tui.send(b"j=")
         assert tui.wait_for(b"0/1 seen"), tui.buf.decode(errors="replace")
-        tui.send(b"\r")  # the file's diff
-        assert tui.wait_for(b"HOST-DIFF-VIEWER-READY"), tui.buf.decode(errors="replace")
-        tui.send(b"\r")
-        assert tui.wait_for(b"press Enter to return to sbx-tui")
-        tui.buf.clear()
-        tui.send(b"\r")
-        assert tui.wait_for(b"0/1 seen"), "the file list did not come back"
+        for _ in range(2):  # each viewing starts on a clear screen
+            tui.buf.clear()
+            tui.send(b"\r")
+            assert tui.wait_for(b"HOST-DIFF-VIEWER-READY"), tui.buf.decode(errors="replace")
+            assert b"\x1b[2J\x1b[H" + "── sbx-tui: diff".encode() in tui.buf
+            tui.send(b"\r")
+            assert tui.wait_for(b"press Enter to return to sbx-tui")
+            tui.buf.clear()
+            tui.send(b"\r")
+            assert tui.wait_for(b"0/1 seen"), "the file list did not come back"
         tui.send(b" ")
         assert tui.wait_for(b"1/1 seen"), "the file list does not take keys"
         tui.send(b"q")  # back to the bookmark list

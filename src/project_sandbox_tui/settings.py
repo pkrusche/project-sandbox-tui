@@ -8,6 +8,7 @@ config keeps it trusted; an untrusted one stays untrusted (see config.py).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import tomllib
 import uuid
@@ -150,16 +151,16 @@ class Editor:
 
     def _other(self) -> dict[str, Any]:
         """What the other file contributes, for validating the merged result."""
-        if self.scope == "project":
-            path = self.global_path
-            text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        else:
-            trust = ProjectTrust.check(self.repo) if self.repo else None
-            text = (trust.trusted or "") if trust and trust.current is not None else ""
         try:
+            if self.scope == "project":
+                path = self.global_path
+                text = path.read_text(encoding="utf-8") if path.is_file() else ""
+            else:
+                trust = ProjectTrust.check(self.repo) if self.repo else None
+                text = (trust.trusted or "") if trust and trust.current is not None else ""
             return tomllib.loads(text)
-        except tomllib.TOMLDecodeError as exc:
-            raise ConfigError(f"the other config file does not parse: {exc}") from exc
+        except (OSError, ValueError) as exc:
+            raise ConfigError(f"cannot load the other config file: {exc}") from exc
 
     def write(self, doc: tomlkit.TOMLDocument) -> None:
         text = tomlkit.dumps(doc)
@@ -169,14 +170,16 @@ class Editor:
         from_dict(merged).validate()  # nothing is written when this raises
 
         trusted = self.repo is not None and not ProjectTrust.check(self.repo).needs_review
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(text, encoding="utf-8")
             tmp.replace(self.path)
         except OSError as exc:
-            tmp.unlink(missing_ok=True)
             raise ConfigError(f"cannot write {self.path}: {exc}") from exc
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
         if self.scope == "project" and trusted:
             # The user made this change, to a file they had trusted.
             assert self.repo is not None

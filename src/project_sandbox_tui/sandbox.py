@@ -52,6 +52,9 @@ class LaunchSpec:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LaunchSpec:
+        timeout = raw.get("timeout", 0)
+        if type(timeout) is not int or timeout < 0:
+            raise ValueError("invalid timeout")
         return cls(
             branch=str(raw.get("branch", "")),
             agent=str(raw.get("agent", "")),
@@ -59,7 +62,7 @@ class LaunchSpec:
             effort=str(raw.get("effort", "")),
             mode="background" if raw.get("mode") == "background" else "interactive",
             prompt_text=str(raw.get("prompt_text", "")),
-            timeout=int(raw.get("timeout") or 0),
+            timeout=timeout,
             operation=str(raw.get("operation") or ""),
             inputs=[str(i) for i in raw.get("inputs") or [] if isinstance(i, str)],
             base=str(raw.get("base") or ""),

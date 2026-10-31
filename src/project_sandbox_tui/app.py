@@ -125,6 +125,7 @@ class Row:
     job: JobRecord | None
     session: SessionRecord | None
     graph: tuple[str, int] | None = None  # history graph line and its node position
+    review: tuple[int, int] | None = None  # reviewed files, total files against main
 
     def name_cell(self, selected: bool = False) -> Text:
         b = self.branch
@@ -178,10 +179,17 @@ class Row:
             self.graph_cell(),
             self.name_cell(selected),
             self.comparison_cell(),
+            self.review_cell(),
             Text(b.head, style="dim"),
             Text(b.subject, overflow="ellipsis", no_wrap=True),
             Text(status, style=colour),
         )
+
+    def review_cell(self) -> Text:
+        if self.review is None:
+            return Text("")
+        reviewed, total = self.review
+        return Text(f"{reviewed}/{total}", style="green" if reviewed == total else "dim")
 
     def comparison_cell(self) -> Text:
         comparison = self.branch.comparison
@@ -285,7 +293,7 @@ FOOTER = "? full help · H keys · j/k move · i interactive · r run · q quit"
 SHORT_FOOTERS = ("? full help · i interactive · r run · q quit", "? full help · q quit")
 NARROW = 80  # columns; narrower terminals get shorter column headings
 SUBJECT_WIDTH = 32  # Ellipsize long messages to leave room for session status,
-MIN_SUBJECT = 12  # shrinking in narrow terminals rather than scrolling it away.
+MIN_SUBJECT = 6  # shrinking in narrow terminals rather than scrolling it away.
 
 
 def _footer(*variants: str) -> Fitted:
@@ -431,6 +439,8 @@ class SandboxTUI(App[None]):
         self.jobs = jobs or JobManager(repo, cfg)
         self.sessions_dir = sessions_dir
         self.branches: list[Branch] = []
+        self._reviews: dict[str, tuple[int, int]] = {}
+        self._review_keys: dict[tuple[str, str], set[str]] = {}
         self.sessions: dict[str, SessionRecord] = {}
         self.filter_text = ""
         self._prefix = PrefixKeys()  # gg and dd
@@ -484,6 +494,7 @@ class SandboxTUI(App[None]):
             ("", 1),
             ("bookmark", None),
             ("vs main", None),
+            ("reviewed", None),
             ("head", 8),
             ("subject", SUBJECT_WIDTH),
             ("status", None),
@@ -537,6 +548,7 @@ class SandboxTUI(App[None]):
         self.branches = sort_branches(branches)
         if listed:  # first: sessions and jobs are read back to back, then redrawn
             await self._sync_graph(listed_at)
+            self._reviews = await asyncio.to_thread(self._review_counts)
         records = await asyncio.to_thread(read_sessions, self.sessions_dir)
         self.sessions = running_by_branch(
             records, self.repo, [b.name for b in self.branches], self.worktree_dir
@@ -546,6 +558,35 @@ class SandboxTUI(App[None]):
         # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
         with contextlib.suppress(NoMatches):
             self._render_table()
+
+    def _review_counts(self) -> dict[str, tuple[int, int]]:
+        """Count current marks, caching file identities until either commit changes."""
+        seen = SeenFiles.for_repo(self.repo)
+        main = self.main_name()
+        base = next((b.commit for b in self.branches if b.name == main), "")
+        counts: dict[str, tuple[int, int]] = {}
+        keys: dict[tuple[str, str], set[str]] = {}
+        for branch in self.branches:
+            comparison = branch.comparison
+            if not base or comparison is None or not comparison.changed_files:
+                continue
+            marks = seen.seen(branch.name)
+            if not marks:
+                counts[branch.name] = (0, comparison.changed_files)
+                continue
+            pair = (base, branch.commit)
+            current = keys.get(pair, self._review_keys.get(pair))
+            if current is None:
+                try:
+                    changes = self.backend.changed_files(*pair)
+                except VcsError:
+                    continue  # retry on refresh; don't show a stale reviewed count
+                current = {f.key for f in changes.files}
+            keys[pair] = current
+            if current:
+                counts[branch.name] = (len(marks & current), len(current))
+        self._review_keys = keys
+        return counts
 
     def _prompt_stale(self) -> None:
         """Ask once, while it lasts, whether to update the stale working copy or exit."""
@@ -633,7 +674,14 @@ class SandboxTUI(App[None]):
         lines = draw(order, parents)
         names = [name for name, b in shown.items() if b.working_copy] + order
         return [
-            Row(shown[n], self.jobs.jobs.get(n), self.sessions.get(n), lines.get(n)) for n in names
+            Row(
+                shown[n],
+                self.jobs.jobs.get(n),
+                self.sessions.get(n),
+                lines.get(n),
+                self._reviews.get(n),
+            )
+            for n in names
         ]
 
     def _render_table(self) -> None:
@@ -650,13 +698,18 @@ class SandboxTUI(App[None]):
         comparison_col.content_width = max(
             [cell_len(comparison_col.label.plain), *(r.comparison_cell().cell_len for r in rows)]
         )
+        review_col = table.columns[ColumnKey("reviewed")]
+        review_col.label = Text("seen" if narrow else "reviewed")
+        review_col.content_width = max(
+            [review_col.label.cell_len, *(r.review_cell().cell_len for r in rows)]
+        )
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
         # place (update_cell) never has to widen the column.
         name_col = table.columns.get(ColumnKey("bookmark"))
         if name_col is not None:
             name_col.auto_width = False
-            name_col.width = max([len("bookmark"), *(len(r.branch.label) + 2 for r in rows)])
+            name_col.width = max([len("bookmark"), *(cell_len(r.branch.label) + 2 for r in rows)])
         graph_col = table.columns.get(ColumnKey("graph"))
         if graph_col is not None:  # shrinks again once wide parts of the graph are gone
             graph_col.auto_width = False
@@ -1050,12 +1103,15 @@ class SandboxTUI(App[None]):
                 self.backend.diff_files_command(changes.base, changes.target, paths),
             )
 
-        self.push_screen(DiffReviewScreen(title, target, changes, seen, view))
+        async def closed(_: None) -> None:
+            await self.refresh_data()
+
+        self.push_screen(DiffReviewScreen(title, target, changes, seen, view), closed)
 
     def _show_diff(self, title: str, argv: list[str]) -> None:
         try:
             with self._suspended():
-                print(f"\n── sbx-tui: diff {title} ──\n", flush=True)
+                print(f"\033[2J\033[H── sbx-tui: diff {title} ──\n", flush=True)
                 with terminal.preserved():
                     try:
                         code = subprocess.call(argv, cwd=self.backend.root)
@@ -1489,10 +1545,11 @@ class SandboxTUI(App[None]):
     def _undo_step(self, redo: bool) -> tuple[str, str | None]:
         """Undo or redo the latest bookmark creation or deletion.
 
-        Returns a message and a restored bookmark to select. Steps interrupted
-        by a jj failure are not recorded, and complete when retried.
+        Returns a message and a restored bookmark to select. Partial progress
+        is saved after a jj failure, so retrying retains the commits already deleted.
         """
         verb = "redo" if redo else "undo"
+        error: VcsError | None = None
         with self.graph.transaction() as state, self.jobs._locked():
             entry = state.redo_entry() if redo else state.undo_entry()
             if entry is None:
@@ -1517,7 +1574,11 @@ class SandboxTUI(App[None]):
                         raise BusyError(reason)
                 for item in entry.items:
                     if item.bookmark in existing:
-                        item.commit = self.backend.delete_bookmark(item.bookmark)
+                        try:
+                            item.commit = self.backend.delete_bookmark(item.bookmark)
+                        except VcsError as exc:
+                            error = exc
+                            break
                     if state.current.get(item.bookmark) == item.lineage:
                         del state.current[item.bookmark]
                 done, restored = "deleted", None
@@ -1531,11 +1592,18 @@ class SandboxTUI(App[None]):
                     raise VcsError(f"{', '.join(taken)} exists again; delete it first")
                 for item in entry.items:
                     if item.bookmark not in existing:
-                        self.backend.restore_bookmark(item.bookmark, item.commit)
+                        try:
+                            self.backend.restore_bookmark(item.bookmark, item.commit)
+                        except VcsError as exc:
+                            error = exc
+                            break
                     if item.lineage in state.nodes:
                         state.current[item.bookmark] = item.lineage
                 done, restored = "restored", names[0]
-            state.position += 1 if redo else -1
+            if error is None:
+                state.position += 1 if redo else -1
+        if error is not None:
+            raise error
         what = "creation" if entry.op == "create" else "deletion"
         return f"{verb} {what}: {done} {entry.names()}", restored
 

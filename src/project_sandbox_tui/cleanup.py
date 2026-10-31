@@ -126,7 +126,11 @@ def _dirty(repo: Path, path: Path) -> tuple[str, bool]:
     tracked = set(_run(["jj", "file", "list"], path).splitlines())
     # jj ignores some files when snapshotting; only removal of a merged workspace loses those.
     ignored = False
-    for directory, dirs, files in os.walk(path):
+
+    def fail(exc: OSError) -> None:
+        raise exc  # an unreadable subtree must never look like an empty one
+
+    for directory, dirs, files in os.walk(path, onerror=fail):
         if Path(directory) == path:
             # Colocated workspaces use either a .git directory or a pointer file.
             dirs[:] = [d for d in dirs if d not in {".jj", ".git"}]

@@ -281,7 +281,10 @@ def _coerce(section: str, key: str, value: Any, default: Any) -> Any:
     if isinstance(default, float):
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ConfigError(f"{where} must be a number")
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError as exc:
+            raise ConfigError(f"{where} is too large") from exc
     if isinstance(default, int):
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigError(f"{where} must be an integer")
@@ -418,14 +421,16 @@ class ProjectTrust:
         if self.current is None:
             raise ConfigError(f"{self.path}: nothing to trust")
         path = trusted_config_path(repo)
-        private_dir(path.parent)
         tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         try:
+            private_dir(path.parent)
             tmp.write_text(self.current, encoding="utf-8")
             tmp.replace(path)
         except OSError as exc:
-            tmp.unlink(missing_ok=True)
             raise ConfigError(f"cannot write {path}: {exc}") from exc
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
 
     def describe(self) -> str:
         """One line for the user: why the project config is not in effect."""
@@ -625,8 +630,10 @@ cheatsheet = true             # auto-collapses in small terminals (H toggles)
 
 def write_template(path: Path, template: str) -> bool:
     """Write ``template`` to ``path`` unless it exists. Returns True if written."""
-    if path.exists():
-        return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(template, encoding="utf-8")
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(template)
+    except FileExistsError:
+        return False
     return True

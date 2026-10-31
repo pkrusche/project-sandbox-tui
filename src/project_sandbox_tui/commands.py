@@ -52,8 +52,8 @@ def parse(line: str, commands: Mapping[str, str]) -> Command:
         if not script:
             raise CommandError(":! needs a shell command, e.g. :!make")
         return Command(line, script=script)
-    name, _, args = line.partition(" ")
-    args = args.strip()
+    name, *rest = line.split(maxsplit=1)
+    args = rest[0] if rest else ""
     builtin = ALIASES.get(name, name)
     if builtin in BUILTINS:
         if args:
@@ -148,23 +148,50 @@ def complete(
     """
     shell = line.startswith("!")
     body = line[1:] if shell else line
-    start = len(line) - len(re.split(r"\s", body)[-1])
-    word = line[start:]
-    if re.search(r"\s", body) or (shell and "/" in word):
+    word_start, word = _last_word(body)
+    start = word_start + int(shell)
+    if body[:word_start].strip() or (shell and "/" in word):
         return start, files(word, cwd)
     if shell:
-        return start, programs(word, path)
+        return start, [shlex.quote(name) for name in programs(word, path, cwd)]
     return start, sorted(n for n in set(names) if n.startswith(word))
 
 
-def programs(prefix: str, path: str | None = None) -> list[str]:
+def _last_word(line: str) -> tuple[int, str]:
+    """Find a shell word without splitting spaces inside quotes or escapes.
+
+    Close unfinished quotes only for decoding the completion prefix; candidates
+    replace the entire word with a complete, quoted argument.
+    """
+    start, quote, escaped = 0, "", False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char.isspace():
+            start = index + 1
+    raw = line[start:]
+    words = shlex.split(raw + ("\\" if escaped else "") + quote)
+    return start, words[0] if words else ""
+
+
+def programs(prefix: str, path: str | None = None, cwd: Path | None = None) -> list[str]:
     """Executables on ``path`` (default ``$PATH``) whose names start with ``prefix``."""
     if not prefix:
         return []
     found: set[str] = set()
     for directory in os.get_exec_path({"PATH": path} if path is not None else None):
+        root = Path(directory or ".")
+        if cwd is not None and not root.is_absolute():
+            root = cwd / root
         try:
-            entries = list(os.scandir(directory))
+            entries = list(os.scandir(root))
         except OSError:
             continue
         for entry in entries:

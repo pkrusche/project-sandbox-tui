@@ -312,6 +312,11 @@ def test_summary_does_not_finish_a_live_adopted_process(tmp_path: Path) -> None:
         '{"branch": "x", "spec": []}',
         '{"branch": "x", "spec": "bad"}',
         '{"branch": "x", "pid": true}',
+        '{"branch": "x", "pid": 1e100}',
+        '{"branch": "x", "pid": 1.5}',
+        '{"branch": "x", "pid": -1}',
+        '{"branch": "x", "pid": 2147483648}',
+        '{"branch": "x", "spec": {"timeout": Infinity}}',
     ],
 )
 def test_malformed_records_are_ignored(tmp_path: Path, raw: str) -> None:
@@ -455,3 +460,23 @@ def test_failed_record_replace_preserves_previous_record(
 def test_boolean_exit_code_is_not_adopted_as_success() -> None:
     job = JobRecord.from_dict({"branch": "topic", "exit_code": False})
     assert job.exit_code is None
+
+
+@pytest.mark.parametrize("same_pid", [False, True])
+def test_cancel_escalation_belongs_to_one_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_pid: bool
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    first = JobManager(tmp_path, Config())
+    second = JobManager(tmp_path, Config())
+    first.save(JobRecord("topic", bg("topic", "old"), 12345, "2026-01-01T00:00:00Z"))
+    assert "SIGINT" in first.cancel("topic", {})
+    pid = 12345 if same_pid else 12346
+    second.save(JobRecord("topic", bg("topic", "new"), pid, "2026-01-01T00:01:00Z"))
+    # A replacement run neither inherits the debounce nor skips its first signal.
+    assert "SIGINT" in first.cancel("topic", {})
+    assert signals == [(12345, signal.SIGINT), (pid, signal.SIGINT)]
+    second.clear("topic", force=True)
+    first.load()
+    assert not first.cancel_started("topic")

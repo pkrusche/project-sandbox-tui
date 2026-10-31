@@ -4,7 +4,10 @@ import asyncio
 import io
 import json
 import urllib.error
+import urllib.request
+import urllib.response
 from datetime import UTC, date, datetime, timedelta
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +145,15 @@ def test_catalog_age_boundary_and_standalone_dated_models() -> None:
     assert [model.id for model in agents["codex"]] == ["standalone-20260922", "at-cutoff"]
 
 
+def test_catalog_ignores_numeric_values_too_large_for_a_float() -> None:
+    agents = m.parse_catalog(
+        raw({"openai": {"models": {"model": entry(cost={"input": 10**400, "output": 2})}}}),
+        today=TODAY,
+    )
+    assert agents["codex"][0].input is None
+    assert agents["codex"][0].output == 2
+
+
 # ---------------------------------------------------------------- fetching
 
 
@@ -162,7 +174,7 @@ def test_fetch_size_limit(
     payload = b"x" * size
     path.write_bytes(payload)
     response = FakeResponse(payload)
-    monkeypatch.setattr(m.urllib.request, "urlopen", lambda *args, **kwargs: response)
+    monkeypatch.setattr(m.urllib.request.OpenerDirector, "open", lambda *args, **kwargs: response)
     monkeypatch.setattr(m, "MAX_DOWNLOAD_BYTES", 32)
     source = "https://example.test/api.json" if remote else str(path)
     if size > 32:
@@ -179,28 +191,73 @@ def test_fetch_missing_file(tmp_path: Path) -> None:
         m.fetch(str(tmp_path / "missing.json"))
 
 
+def test_fetch_reports_a_malformed_https_url() -> None:
+    with pytest.raises(m.ModelsError, match="download failed"):
+        m.fetch("https://[invalid")
+
+
 class FakeResponse(io.BytesIO):
     def __enter__(self) -> FakeResponse:
         return self
 
 
-def test_fetch_https_uses_urlopen_with_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_https_uses_timeout_and_reports_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
-    def fake_urlopen(request: Any, timeout: float) -> FakeResponse:
+    def fake_open(self, request: Any, timeout: float) -> FakeResponse:
         seen.update(url=request.full_url, timeout=timeout)
         return FakeResponse(b"{}")
 
-    monkeypatch.setattr(m.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(m.urllib.request.OpenerDirector, "open", fake_open)
     assert m.fetch("https://example.test/api.json") == b"{}"
     assert seen == {"url": "https://example.test/api.json", "timeout": m.TIMEOUT_SECONDS}
 
-    def failing(request: Any, timeout: float) -> FakeResponse:
+    def failing(self, request: Any, timeout: float) -> FakeResponse:
         raise urllib.error.URLError("Tunnel connection failed: 403 Forbidden")
 
-    monkeypatch.setattr(m.urllib.request, "urlopen", failing)
+    monkeypatch.setattr(m.urllib.request.OpenerDirector, "open", failing)
     with pytest.raises(m.ModelsError, match="download failed: .*403"):
         m.fetch("https://example.test/api.json")
+
+
+@pytest.mark.parametrize("scheme", ["https", "http"])
+def test_catalog_redirects_cannot_downgrade_https(
+    monkeypatch: pytest.MonkeyPatch, scheme: str
+) -> None:
+    requested: list[str] = []
+
+    class Response(urllib.response.addinfourl):
+        msg: str
+
+    class Transport(urllib.request.BaseHandler):
+        handler_order = 100  # intercept requests before either real network transport
+
+        def https_open(self, request):
+            requested.append(request.full_url)
+            headers = Message()
+            status = 200
+            if len(requested) == 1:
+                headers["Location"] = f"{scheme}://example.test/redirected.json"
+                status = 302
+            response = Response(io.BytesIO(b"{}"), headers, request.full_url, status)
+            response.msg = "Found" if status == 302 else "OK"
+            return response
+
+        http_open = https_open
+
+    build_opener = urllib.request.build_opener
+
+    def with_transport(*handlers):
+        return build_opener(*handlers, Transport())
+
+    monkeypatch.setattr(urllib.request, "build_opener", with_transport)
+    if scheme == "https":
+        assert m.fetch("https://example.test/api.json") == b"{}"
+        assert len(requested) == 2
+    else:
+        with pytest.raises(m.ModelsError, match="redirect"):
+            m.fetch("https://example.test/api.json")
+        assert requested == ["https://example.test/api.json"]
 
 
 # ---------------------------------------------------------------- store

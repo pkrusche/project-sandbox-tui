@@ -20,6 +20,7 @@ import math
 import os
 import re
 import tempfile
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -106,7 +107,11 @@ def _text(value: Any, limit: int = 100) -> str:
 def _price(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return float(value) if math.isfinite(value) and value >= 0 else None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 def _context(value: Any) -> int:
@@ -210,17 +215,25 @@ def parse_catalog(
     return result
 
 
+class _HTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme != "https":
+            raise ModelsError(f"refusing non-HTTPS redirect to {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch(source: str, *, timeout: float = TIMEOUT_SECONDS) -> bytes:
     """Read a catalog from an ``https://`` URL or a local file (size-capped).
 
     HTTPS proxies come from the usual environment variables (``HTTPS_PROXY``).
     """
     if source.startswith("https://"):
-        request = urllib.request.Request(source, headers={"User-Agent": "project-sandbox-tui"})
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            request = urllib.request.Request(source, headers={"User-Agent": "project-sandbox-tui"})
+            opener = urllib.request.build_opener(_HTTPSRedirectHandler())
+            with opener.open(request, timeout=timeout) as response:
                 data = response.read(MAX_DOWNLOAD_BYTES + 1)
-        except OSError as exc:  # URLError, HTTPError, timeouts
+        except (OSError, ValueError) as exc:  # URLError, HTTPError, timeouts, malformed URLs
             raise ModelsError(f"download failed: {exc}") from exc
     elif "://" in source:
         raise ModelsError(f"refusing {source.split('://')[0]}:// — use an https:// URL or a file")

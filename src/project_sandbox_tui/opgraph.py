@@ -66,7 +66,11 @@ class Node:
             elif f.name == "at":
                 if type(value) not in (int, float):
                     raise ValueError("invalid time")
-                value = float(value)
+                try:
+                    value = float(value)
+                    time.localtime(value)  # the history screen must be able to render it
+                except (ValueError, OverflowError, OSError) as exc:
+                    raise ValueError("invalid time") from exc
             elif value is None and f.name in ("id", "bookmark", "lineage", "kind"):
                 raise ValueError(f"missing {f.name}")
             else:
@@ -98,8 +102,14 @@ class UndoEntry:
         if op not in UNDO_OPS:
             raise ValueError("invalid undo entry")
         items = raw.get("items")
-        if not isinstance(items, list):
+        if not isinstance(items, list) or not items:
             raise ValueError("invalid undo items")
+        required = ("bookmark", "commit", "moved_to") if op == "move" else ("bookmark", "commit")
+        for item in items:
+            if not isinstance(item, dict) or any(
+                not isinstance(item.get(key), str) or not item[key] for key in required
+            ):
+                raise ValueError("invalid undo item")
         return cls(
             UNDO_OPS[op],
             [
@@ -110,7 +120,6 @@ class UndoEntry:
                     str(i.get("moved_to") or ""),
                 )
                 for i in items
-                if isinstance(i, dict)
             ],
         )
 
@@ -139,18 +148,21 @@ class State:
         state = cls()
         if not isinstance(raw, dict):
             return state
-        for item in raw.get("nodes") or []:
+        nodes = raw.get("nodes")
+        for item in nodes if isinstance(nodes, list) else ():
             with contextlib.suppress(ValueError, TypeError):
                 node = Node.from_dict(item)
                 state.nodes[node.id] = node
         current = raw.get("current")
         if isinstance(current, dict):
             state.current = {str(k): str(v) for k, v in current.items() if str(v) in state.nodes}
-        for item in raw.get("undo") or []:
+        undo = raw.get("undo")
+        position = raw.get("position")
+        position = max(position, 0) if type(position) is int else 0
+        for index, item in enumerate(undo if isinstance(undo, list) else ()):
             with contextlib.suppress(ValueError, TypeError, KeyError):
                 state.undo.append(UndoEntry.from_dict(item))
-        position = raw.get("position")
-        state.position = min(max(position, 0), len(state.undo)) if type(position) is int else 0
+                state.position += index < position
         return state
 
     def to_dict(self) -> dict[str, Any]:
