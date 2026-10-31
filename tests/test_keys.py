@@ -20,6 +20,7 @@ SPELLING = {
     "at": "@",
     "question_mark": "?",
     "escape": "esc",
+    "colon": ":",
 }
 PREFIXES = {"g": "gg", "d": "dd"}  # bound per key, typed twice
 

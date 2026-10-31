@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from project_sandbox_tui import commands
 from project_sandbox_tui.launchers import TERMINALS, fill_command
 
 AGENTS: tuple[str, ...] = ("claude", "codex", "opencode", "pi", "bash")
@@ -100,6 +101,7 @@ class UI:
     refresh_seconds: float = 3.0
     bell: bool = True
     cheatsheet: bool = True  # auto-collapses in small terminals; toggle with H
+    leader: str = "\\"  # starts [leader] key mappings ("" = none)
 
     def terminal_mode(self) -> str:
         """The effective ``terminal`` setting (see launchers.py)."""
@@ -129,6 +131,8 @@ class Config:
     ui: UI = field(default_factory=UI)
     prompts: Prompts = field(default_factory=Prompts)
     models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
+    commands: dict[str, str] = field(default_factory=dict)  # :name -> shell command (commands.py)
+    leader: dict[str, str] = field(default_factory=dict)  # keys after ui.leader -> command line
     sources: list[Path] = field(default_factory=list)  # files that were loaded
 
     # ---------------------------------------------------------- helpers
@@ -196,6 +200,10 @@ class Config:
                 raise ConfigError(f"[models] has unknown agent {agent!r}")
         if not math.isfinite(self.ui.refresh_seconds) or self.ui.refresh_seconds <= 0:
             raise ConfigError("ui.refresh_seconds must be finite and > 0")
+        try:
+            commands.validate(self.commands, self.ui.leader, self.leader)
+        except commands.CommandError as exc:
+            raise ConfigError(str(exc)) from exc
 
     def has_image_source(self) -> bool:
         p = self.project
@@ -205,6 +213,13 @@ class Config:
         path = Path(os.path.expanduser(value))
         return path if path.is_absolute() else (repo / path)
 
+
+# Free-form tables: what their entries are, for error messages.
+TABLES: dict[str, str] = {
+    "models": "must be a table of agent = [model, ...]",
+    "commands": 'must be a table of name = "shell command"',
+    "leader": 'must be a table of keys = "command line"',
+}
 
 _SECTIONS: dict[str, type[Any]] = {
     "defaults": Defaults,
@@ -296,7 +311,7 @@ def _build_section(name: str, cls: type[Any], data: Any) -> Any:
 
 
 def from_dict(data: dict[str, Any]) -> Config:
-    unknown = sorted(set(data) - set(_SECTIONS) - {"models"})
+    unknown = sorted(set(data) - set(_SECTIONS) - set(TABLES))
     if unknown:
         raise ConfigError(f"unknown section(s): {', '.join(unknown)}")
     cfg = Config()
@@ -305,9 +320,14 @@ def from_dict(data: dict[str, Any]) -> Config:
             setattr(cfg, name, _build_section(name, cls, data[name]))
     models = data.get("models", {})
     if not isinstance(models, dict):
-        raise ConfigError("[models] must be a table of agent = [model, ...]")
+        raise ConfigError(f"[models] {TABLES['models']}")
     for agent, values in models.items():
         cfg.models[agent] = _coerce("models", agent, values, [])
+    for name in ("commands", "leader"):
+        table = data.get(name, {})
+        if not isinstance(table, dict):
+            raise ConfigError(f"[{name}] {TABLES[name]}")
+        getattr(cfg, name).update({k: _coerce(name, k, v, "") for k, v in table.items()})
     return cfg
 
 
@@ -536,6 +556,12 @@ keep_workspace = true                  # -> --keep-workspace
 # agent = "claude"                     # claude | codex | opencode | pi | bash
 # model = ""
 # effort = "medium"                    # low | medium | high | xhigh | max
+
+# [commands]                           # :name runs the shell command in the repository
+# test = "uv run pytest"               # :test -k merge appends the arguments
+
+# [leader]                             # ui.leader (\\) then these keys run a command line
+# t = "test"
 """
 
 GLOBAL_TEMPLATE = """\
@@ -573,6 +599,7 @@ runtime = "auto"              # auto | apple-container | docker | podman
 refresh_seconds = 3
 bell = true
 cheatsheet = true             # auto-collapses in small terminals (H toggles)
+# leader = '\\'                # starts [leader] key mappings, like vim's <leader>
 
 # [models]                   # extra launch-form suggestions, listed first. Built in:
 #                             # Claude aliases, Codex's own list (~/.codex/models_cache.json)
@@ -585,6 +612,14 @@ cheatsheet = true             # auto-collapses in small terminals (H toggles)
 #                             # {first} {rest}
 # octopus_merge = '''...'''
 # octopus_rebase = '''...'''
+
+# [commands]                  # :name runs the shell command (sh -c) in the repository;
+#                             # arguments typed after the name are appended
+# lint = "uv run ruff check ."
+
+# [leader]                    # ui.leader, then these keys run a command line (as after :)
+# l = "lint"
+# s = "!jj status"
 """
 
 

@@ -91,6 +91,17 @@ def test_templates_parse_and_validate() -> None:
         cfg.validate()
 
 
+def test_template_command_examples_validate() -> None:
+    """The commented-out [commands] / [leader] examples work once uncommented."""
+    for template in (c.GLOBAL_TEMPLATE, c.PROJECT_TEMPLATE):
+        lines = template.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("# [commands]"))
+        example = "\n".join(line.removeprefix("# ") for line in lines[start:])
+        cfg = c.from_dict(tomllib.loads(example))
+        cfg.validate()
+        assert cfg.commands and cfg.leader
+
+
 def test_last_used_updates_defaults(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -153,12 +164,36 @@ def test_state_dir_is_private(tmp_path: Path) -> None:
         ('[ui]\nterminal = "custom"\n', "needs ui.terminal_command"),
         ('[ui]\nterminal = "tmux"\nterminal_command = "x {cmd}"\n', "only used with"),
         ('[ui]\neditor_command = " "\n', "ui.editor_command"),
+        ("commands = []\n", "must be a table of name"),
+        ("[commands]\ntest = 1\n", "commands.test must be a string"),
+        ('[commands]\nhelp = "x"\n', "built-in"),
+        ('[leader]\nt = "test"\n', "unknown command :test"),
+        ('[ui]\nleader = ""\n[leader]\nt = "q"\n', "need ui.leader"),
+        ('[ui]\nleader = ",,"\n', "ui.leader"),
     ],
 )
 def test_invalid_commands_and_numeric_settings(tmp_path: Path, text: str, message: str) -> None:
     write(tmp_path / c.PROJECT_CONFIG_NAME, text)
     with pytest.raises(c.ConfigError, match=message):
         candidate(tmp_path)
+
+
+def test_commands_and_leader_merge(tmp_path: Path) -> None:
+    write(
+        c.global_config_path(),
+        '[commands]\ntest = "pytest"\nlint = "ruff check"\n[leader]\nt = "test"\n',
+    )
+    repo = tmp_path / "repo"
+    write(
+        repo / c.PROJECT_CONFIG_NAME,
+        "[ui]\nleader = ','\n[commands]\ntest = \"uv run pytest\"\n[leader]\ns = '!jj st'\n",
+    )
+    c.ProjectTrust.check(repo).trust(repo)
+    cfg = c.load(repo)
+    assert cfg.ui.leader == ","
+    assert cfg.commands == {"test": "uv run pytest", "lint": "ruff check"}
+    assert cfg.leader == {"t": "test", "s": "!jj st"}
+    assert c.load(tmp_path).ui.leader == "\\"  # vim's default
 
 
 def test_terminal_mode_resolution(tmp_path: Path) -> None:

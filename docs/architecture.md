@@ -15,7 +15,8 @@ require a `.jj/` directory.
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
-| `models.py`, `history.py`, `notify.py` | Suggestions, prompt history and notifications |
+| `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
+| `commands.py` | `:` command parsing, completion and leader-key mappings |
 | `opgraph.py` | Bookmark history graph, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs and history |
 
@@ -47,7 +48,7 @@ after the run ended. See [sessions](sessions.md) for terminal behavior and
 
 ## Limitations
 
-- Inline sessions and diffs suspend the event loop;
+- Inline sessions, diffs and shell commands suspend the event loop;
   notifications arrive on return.
 - External launches, stale records and PID reuse after crashes may need
   [manual recovery](sessions.md#interactive-sessions).

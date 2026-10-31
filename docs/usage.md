@@ -46,6 +46,7 @@ existing bookmark main/master/trunk. Counts omit zeros:
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
 | `/` | Filter (`enter` keeps it, `esc` clears) |
+| `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
 | `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout |
 | `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark): repeat to cancel harder, a third time to forget it; clears a finished status at once; asks first before signalling several runs |
 | `l` / `enter` | [Logs](#log-viewer), or run details while a bookmark has no runs |
@@ -94,6 +95,39 @@ again since.
 `@` saves an unbookmarked working-copy change, including edits, as
 `saved/<change-id>` for later recovery, then runs `jj new` on the chosen bookmark
 and checks out its files. Running sessions in `@` block the move.
+
+## Command line
+
+`:` opens a command line at the bottom of the list, as in vim.
+
+| Command | Action |
+|---|---|
+| `:!cmd` | Run `cmd` with `sh -c` in the repository |
+| `:name args` | Run the configured [`[commands]`](configuration.md#commands-and-leader-key) entry `name`, appending `args` |
+| `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
+
+| Key | Action in the command line |
+|---|---|
+| `tab` / `shift+tab` | Complete: command names, programs after `!`, file names for arguments; repeat to cycle |
+| `↑` / `↓` · `ctrl+p` / `ctrl+n` | Older / newer command starting with the typed text |
+| `→` at end | Accept the newest matching command shown as ghost text |
+| `enter` · `esc` | Run · cancel (`backspace` on an empty line also cancels) |
+
+Shell commands take over the terminal like a diff: the TUI is suspended and
+returns after `enter`, and a non-zero exit status is reported. They run in the
+repository root and receive `SBX_REPO`, `SBX_BOOKMARK` (the highlighted
+bookmark, `@` for the working copy) and `SBX_WORKSPACE` (its workspace
+directory, empty if it has none yet), e.g.
+`cd "$SBX_WORKSPACE" && uv run pytest`. Each repository remembers the latest
+500 distinct command lines.
+
+### Leader key
+
+The leader key (`\` by default, `ui.leader`) followed by a key sequence from
+[`[leader]`](configuration.md#commands-and-leader-key) runs its command line, so
+`t = "test"` makes `\t` run `:test`. The header shows the keys typed so far;
+`esc`, an unmapped key or 1.5 seconds without a key cancels. `?` lists the
+configured commands and mappings.
 
 ## Bookmark history
 

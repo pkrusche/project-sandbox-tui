@@ -27,7 +27,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 from textual.widgets.data_table import ColumnKey
 
-from project_sandbox_tui import launchers, notify, octopus, terminal
+from project_sandbox_tui import commands, launchers, notify, octopus, terminal
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
@@ -57,6 +57,7 @@ from project_sandbox_tui.sandbox import (
     read_sessions,
     running_by_branch,
 )
+from project_sandbox_tui.screens.command import CommandScreen
 from project_sandbox_tui.screens.dialogs import (
     CleanupScreen,
     ConfirmScreen,
@@ -236,6 +237,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("ctrl+l", "app.reload_config", show=False),
     Binding("question_mark", "app.help", show=False),
     Binding("H", "app.toggle_cheatsheet", show=False),
+    Binding("colon", "app.command_line", show=False),
     Binding("q", "app.quit", show=False),
 ]
 
@@ -248,6 +250,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("gg G", "top / bottom"),
             ("^d ^u", "half page"),
             ("/", "filter"),
+            (":", "command · :! shell"),
             ("?", "full help"),
             ("H", "hide sheet"),
             ("q", "quit"),
@@ -356,6 +359,10 @@ class MainScreen(Screen[None]):
             if app._prefix.pending:
                 app._prefix.other_key(event.key)
                 app._show_pending()
+            if not isinstance(app.focused, Input) and app.leader_key(event):
+                event.stop()  # keys after the leader trigger no bindings
+                event.prevent_default()
+                return
         if modifier:
             hints = {
                 "ctrl": "ctrl+d/u half page down/up · ctrl+r redo · ctrl+l reload configuration",
@@ -417,6 +424,8 @@ class SandboxTUI(App[None]):
         self.main = MainScreen()
         self.cheatsheet_visible = cfg.ui.cheatsheet
         self.prompt_history = PromptHistory.for_repo(repo)
+        self.command_history = PromptHistory.for_repo(repo, "command_history.json")
+        self._leader = commands.LeaderKeys()
         self.graph = OpGraph(self.jobs.state_dir / "opgraph.json")
         self._graph_error = ""
         # Creating, deleting and undoing run in order: u right after n undoes n.
@@ -637,6 +646,8 @@ class SandboxTUI(App[None]):
         header.append(f"   {stats}", style="dim")
         if pending := self._prefix.pending:  # like vim's showcmd
             header.append(f"   {pending}…", style="bold yellow")
+        if (typed := self._leader.pending) is not None:
+            header.append(f"   {self.cfg.ui.leader}{typed}…", style="bold yellow")
         self.main.query_one("#header", Static).update(header)
 
     def branch(self, name: str) -> Branch | None:
@@ -757,6 +768,8 @@ class SandboxTUI(App[None]):
             self._render_header(set(self.selection()))
         if self._prefix.pending:
             self.set_timer(PrefixKeys.TIMEOUT + 0.05, self._show_pending)
+        elif self._leader.pending is not None:
+            self.set_timer(commands.LeaderKeys.TIMEOUT + 0.05, self._show_pending)
 
     def action_filter(self) -> None:
         box = self.main.query_one("#filter", Input)
@@ -1535,13 +1548,15 @@ class SandboxTUI(App[None]):
         body = "\n".join(chosen) + "\n\nEach one opens in its own editor."
         self.push_screen(ConfirmScreen(f"open {len(chosen)} workspaces?", body, "open"), decided)
 
-    def _open_editor(self, name: str) -> None:
+    def _workspace_dir(self, name: str) -> Path:
+        """The repository for the working copy, else the bookmark's sandbox workspace."""
         branch = self.branch(name)
-        path = (
-            self.repo
-            if branch is not None and branch.working_copy
-            else workspace_path(self.repo, name, self.worktree_dir)
-        )
+        if branch is not None and branch.working_copy:
+            return self.repo
+        return workspace_path(self.repo, name, self.worktree_dir)
+
+    def _open_editor(self, name: str) -> None:
+        path = self._workspace_dir(name)
         if not path.exists():
             self.notify(
                 f"{name}: no workspace yet (run a session with keep_workspace)",
@@ -1761,7 +1776,7 @@ class SandboxTUI(App[None]):
 
         body = (
             "This file comes with the repository. It can set commands that run on this "
-            "machine (sandbox.command, ui.*_command) and loosen the sandbox (network, "
+            "machine (sandbox.command, ui.*_command, [commands]) and loosen the sandbox (network, "
             f"credentials, extra_args). Trusting it copies it to {trusted_config_path(self.repo)}; "
             "later changes are shown here again before they take effect.\n\n" + trust.diff()
         )
@@ -1800,7 +1815,108 @@ class SandboxTUI(App[None]):
         self.main.update_help_layout()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen())
+        extra = []
+        if self.cfg.commands:
+            extra.append(
+                ("configured commands", tuple((f":{n}", c) for n, c in self.cfg.commands.items()))
+            )
+        if self.cfg.leader:
+            mapped = tuple(
+                (self.cfg.ui.leader + k, f":{line.removeprefix(':')}")
+                for k, line in self.cfg.leader.items()
+            )
+            extra.append(("leader mappings", mapped))
+        self.push_screen(HelpScreen(tuple(extra)))
+
+    # ------------------------------------------------------------ commands
+
+    def action_command_line(self) -> None:
+        names = [*commands.BUILTINS, *self.cfg.commands]
+        screen = CommandScreen(names, self.command_history, self.repo)
+
+        def entered(line: str | None) -> None:
+            if line:
+                self.command_history.add(line)
+                # After the screen is gone: a shell command suspends the TUI.
+                self.call_after_refresh(self.run_command, line)
+
+        self.push_screen(screen, entered)
+
+    def leader_key(self, event: events.Key) -> bool:
+        """The leader, then keys spelling a [leader] mapping, run its command line.
+
+        Returns whether the key was taken: every key while a mapping is half
+        typed, so an unmapped one cannot trigger a binding by accident.
+        """
+        char = event.character if event.is_printable else None
+        if self._leader.pending is None:
+            if not char or char != self.cfg.ui.leader:
+                return False
+            self._leader.start()
+        elif char is None:  # esc, arrows, …: give up on the mapping
+            self._leader.cancel()
+        else:
+            typed = self._leader.pending + char
+            line = self._leader.feed(char, self.cfg.leader)
+            if line is not None:
+                self.call_after_refresh(self.run_command, line)
+            elif self._leader.pending is None:
+                self.notify(f"no leader mapping {self.cfg.ui.leader}{typed}", severity="warning")
+        self._show_pending()
+        return True
+
+    async def run_command(self, line: str) -> None:
+        """Run a command line as typed after ``:``."""
+        try:
+            command = commands.parse(line, self.cfg.commands)
+        except commands.CommandError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if command.builtin == "quit":
+            await self.action_quit()
+        elif command.builtin == "help":
+            self.action_help()
+        elif command.builtin == "refresh":
+            await self.refresh_data()
+        elif command.builtin == "reload":
+            await self.action_reload_config()
+        else:
+            self._run_shell(command)
+
+    def _run_shell(self, command: commands.Command) -> None:
+        """Run a shell command in this terminal, like vim's ``:!``, then wait for Enter."""
+        name = self.selected_branch_name() or ""
+        workspace = self._workspace_dir(name) if name else None
+        env = {
+            **os.environ,
+            "SBX_REPO": str(self.repo),
+            "SBX_BOOKMARK": name,
+            "SBX_WORKSPACE": str(workspace) if workspace and workspace.is_dir() else "",
+        }
+        try:
+            with self._suspended():
+                shown = (
+                    command.line
+                    if command.line.startswith("!")
+                    else f"{command.line} → {command.script}"
+                )
+                print(f"\n── sbx-tui: :{shown} ──\n", flush=True)
+                with terminal.preserved():
+                    proc = subprocess.Popen(["sh", "-c", command.script], cwd=self.repo, env=env)
+                    while True:
+                        try:
+                            code = proc.wait()
+                            break
+                        except KeyboardInterrupt:
+                            continue  # the command got the SIGINT too; let it wind down
+                with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
+                    input(f"\n── exited with {code}; press Enter to return to sbx-tui ──")
+        except OSError as exc:
+            self.notify(f"could not run :{command.line}: {exc}", severity="error")
+            return
+        if code:
+            self.notify(f":{command.line} exited with {code}", severity="warning")
+        self.call_later(self.refresh_data)  # the command may have changed bookmarks
 
     async def action_quit(self) -> None:
         """Quit, asking first while runs or sessions are still going (q and ctrl+q)."""

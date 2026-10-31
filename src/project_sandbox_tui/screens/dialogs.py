@@ -383,10 +383,10 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 ("gg / G", "top / bottom"),
                 ("ctrl+d / u", "half page down / up"),
                 ("/", "filter (esc clears)"),
-                ("R", "refresh"),
-                ("ctrl+l", "reload configuration"),
-                ("H", "show / hide cheat-sheet"),
-                ("?", "this help"),
+                (":", "command line, :! shell"),
+                ("\\ keys", "[leader] key mappings"),
+                ("R / ctrl+l", "refresh / reload config"),
+                ("H / ?", "cheat-sheet / this help"),
                 ("q", "quit (runs continue)"),
             ),
         ),
@@ -437,8 +437,11 @@ class HelpBody:
     GAP = 4
     MIN_DESCRIPTION = 10  # half the narrowest description column before the columns stack
 
+    def __init__(self, extra: tuple[HelpSection, ...] = ()) -> None:
+        self.extra = extra  # appended to the right column, e.g. configured commands
+
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        left, right = HELP
+        left, right = HELP[0], HELP[1] + self.extra
         side_by_side = (
             self._width(left) + self.GAP + self._width(right) + 4 * self.MIN_DESCRIPTION
         ) <= options.max_width
@@ -469,7 +472,7 @@ class HelpBody:
             table.add_column(width=cls._width(sections) - 2, no_wrap=True, style="bold")
             table.add_column(style="dim")
             for key, what in keys:
-                table.add_row(key, what)
+                table.add_row(Text(key), Text(what))  # not markup: [commands], shell code
             parts.append(table)
         return Group(*parts)
 
@@ -483,14 +486,15 @@ class HelpScreen(MessageScreen):
     """
     CLOSE_KEYS = MessageScreen.CLOSE_KEYS | {"question_mark"}
 
-    def __init__(self) -> None:
+    def __init__(self, extra: tuple[HelpSection, ...] = ()) -> None:
         super().__init__("sbx-tui keys", "")
+        self.extra = extra
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self.title_text, classes="title")
             with VerticalScroll():
-                yield Static(HelpBody())
+                yield Static(HelpBody(self.extra))
             yield Static(KeyHints(f"{SCROLL_HINT} · q/esc/? close"), classes="hint")
 
     def on_resize(self, event: events.Resize) -> None:

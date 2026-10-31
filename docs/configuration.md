@@ -27,7 +27,7 @@ project files remain trusted; unreviewed changes remain untrusted.
 
 ## Trusting the project config
 
-Project config can run host commands (`sandbox.command`, `ui.*_command`) and
+Project config can run host commands (`sandbox.command`, `ui.*_command`, `[commands]`) and
 loosen network, credential or sandbox restrictions (`extra_args`). Only reviewed
 settings take effect:
 
@@ -89,6 +89,13 @@ editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this t
 refresh_seconds = 3
 bell = true
 cheatsheet = true
+leader = '\'           # starts [leader] mappings; "" = none
+
+[commands]              # :name runs the shell command; see below
+test = "uv run pytest"
+
+[leader]                # ui.leader, then these keys, runs a command line
+t = "test"
 
 [models]                # extra launch-form suggestions, listed first
 claude = ["opus", "sonnet"]
@@ -109,6 +116,28 @@ as `eval` can execute them even when passed safely.
 `{cmd}` is a command line, so pass it to a shell:
 `'wezterm start -- sh -c {cmd}'`. `alacritty -e {cmd}` treats it as one word.
 
+## Commands and leader key
+
+`[commands]` names shell commands for the [command line](usage.md#command-line):
+`:name args` runs the command with `sh -c` in the repository, with `args`
+appended (`:test -k merge` runs `uv run pytest -k merge`). Names start with a
+letter and use letters, digits, `_` and `-`; built-in commands (`help`, `quit`,
+`q`, `refresh`, `reload`) cannot be redefined. Unlike `ui.*_command`, these are
+shell code: use `SBX_REPO`, `SBX_BOOKMARK` and `SBX_WORKSPACE` rather than
+placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
+
+`[leader]` maps key sequences typed after `ui.leader` (one character, `\` by
+default) to command lines as typed after `:`, e.g. `t = "test"`,
+`s = "!jj st"` or `r = "reload"`. Sequences may be longer than one key
+(`tf = "test -x"`), but none may be a prefix of another, so a mapping runs as
+soon as it is complete. Unknown command names are configuration errors. A
+leader that is also a list key (e.g. `" "`) replaces that key's action.
+
+```sh
+sbx-tui config set --project commands.test 'uv run pytest'
+sbx-tui config set --global leader.s '!jj st'
+```
+
 ## State directory
 
 `$XDG_STATE_HOME/project-sandbox-tui/` (default `~/.local/state/…`) holds:
@@ -118,6 +147,7 @@ as `eval` can execute them even when passed safely.
 | `models.json` | Downloaded model catalog |
 | `<repo>-<hash>/last_used.json` | Launch defaults |
 | `<repo>-<hash>/prompt_history.json` | Prompt history |
+| `<repo>-<hash>/command_history.json` | Command-line history |
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
