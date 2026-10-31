@@ -119,6 +119,7 @@ as `eval` can execute them even when passed safely.
 | `<repo>-<hash>/last_used.json` | Launch defaults |
 | `<repo>-<hash>/prompt_history.json` | Prompt history |
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
+| `<repo>-<hash>/diff_review.json` | Files marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
 | `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output |

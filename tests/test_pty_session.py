@@ -186,10 +186,17 @@ def test_diff_uses_host_viewer_and_returns_to_tui(repo: Path, viewer: str) -> No
     tui = start_tui(repo, "true")
     try:
         tui.send(b"j=")
+        assert tui.wait_for(b"0/1 seen"), tui.buf.decode(errors="replace")
+        tui.send(b"\r")  # the file's diff
         assert tui.wait_for(b"HOST-DIFF-VIEWER-READY"), tui.buf.decode(errors="replace")
         tui.send(b"\r")
         assert tui.wait_for(b"press Enter to return to sbx-tui")
+        tui.buf.clear()
         tui.send(b"\r")
+        assert tui.wait_for(b"0/1 seen"), "the file list did not come back"
+        tui.send(b" ")
+        assert tui.wait_for(b"1/1 seen"), "the file list does not take keys"
+        tui.send(b"q")  # back to the bookmark list
         assert_responsive(tui)
     finally:
         tui.close()

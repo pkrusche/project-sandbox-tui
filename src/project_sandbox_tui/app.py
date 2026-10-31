@@ -9,7 +9,7 @@ import os
 import shlex
 import subprocess
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast
@@ -49,6 +49,7 @@ from project_sandbox_tui.config import (
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
+from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
     Mode,
@@ -68,9 +69,11 @@ from project_sandbox_tui.screens.dialogs import (
 )
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
+from project_sandbox_tui.screens.review import DiffReviewScreen
 from project_sandbox_tui.vcs import (
     WORKING_COPY,
     Branch,
+    FileChange,
     JjBackend,
     VcsError,
     main_branch,
@@ -270,7 +273,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("dd", "delete bookmark"),
             ("u ^r", "undo / redo"),
             ("v V ␣", "select bookmarks"),
-            ("=", "diff revisions"),
+            ("=", "review diff"),
             ("f", "fast-forward main"),
             ("@", "working copy to bookmark"),
             ("o", "open in editor"),
@@ -919,17 +922,39 @@ class SandboxTUI(App[None]):
             target = chosen[0]
         else:
             base, target = chosen
-        self._show_diff(base, target)
+        self._review_diff(base, target)
 
-    def _show_diff(self, base: str, target: str) -> None:
+    @work(exclusive=True, group="diff")
+    async def _review_diff(self, base: str, target: str) -> None:
+        """The changed files, to view and mark as seen one by one."""
+        try:
+            changes = await asyncio.to_thread(self.backend.changed_files, base, target)
+        except VcsError as exc:
+            self.notify(f"could not diff {base} and {target}: {exc}", severity="error")
+            return
+        if not changes.files:
+            self.notify(f"no differences between {base} and {target}")
+            return
+        seen = await asyncio.to_thread(SeenFiles.for_repo, self.repo)
+        title = f"{base} → {target}"
+
+        def view(files: Sequence[FileChange]) -> None:
+            shown = files[0].display if len(files) == 1 else f"{len(files)} files"
+            paths = [path for change in files for path in change.paths]
+            self._show_diff(
+                f"{title}: {shown}",
+                self.backend.diff_files_command(changes.base, changes.target, paths),
+            )
+
+        self.push_screen(DiffReviewScreen(title, target, changes, seen, view))
+
+    def _show_diff(self, title: str, argv: list[str]) -> None:
         try:
             with self._suspended():
-                print(f"\n── sbx-tui: diff {base} → {target} ──\n", flush=True)
+                print(f"\n── sbx-tui: diff {title} ──\n", flush=True)
                 with terminal.preserved():
                     try:
-                        code = subprocess.call(
-                            self.backend.diff_command(base, target), cwd=self.backend.root
-                        )
+                        code = subprocess.call(argv, cwd=self.backend.root)
                     except KeyboardInterrupt:
                         code = 130
                 # Pagers can exit immediately for short diffs. Keep the output
@@ -1053,8 +1078,30 @@ class SandboxTUI(App[None]):
             self.clear_branch_selection()
             self.call_after_refresh(self._integrate, spec, draft_key)
             return
-        self.call_after_refresh(
-            self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
+
+        def start() -> None:
+            self.call_after_refresh(
+                self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
+            )
+
+        if spec.mode != "background" or spec.branch != self.main_name():
+            start()
+            return
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                start()
+            elif draft_key in self._drafts:
+                self.notify("prompt kept as a draft: r brings it back")
+
+        body = (
+            f"{spec.branch} is the main bookmark. The agent's changes land on it "
+            "unsupervised, with no separate bookmark to review first.\n\n"
+            "Run it on a new bookmark instead to review the diff (=) and "
+            "fast-forward main (f) later."
+        )
+        self.push_screen(
+            ConfirmScreen(f"start an unsupervised run on {spec.branch}?", body, "start"), decided
         )
 
     @work(exclusive=True, group="octopus")
@@ -1543,11 +1590,16 @@ class SandboxTUI(App[None]):
             else workspace_path(self.repo, name, self.worktree_dir)
         )
         if not path.exists():
-            self.notify(
-                f"{name}: no workspace yet (run a session with keep_workspace)",
-                severity="warning",
-            )
-            return
+            if self.jobs.busy_reason(name, self.sessions):
+                # Its session is about to create the workspace: never race it.
+                self.notify(f"{name}: workspace not created yet; try again", severity="warning")
+                return
+            try:
+                self.backend.add_workspace(name, path)
+            except (VcsError, OSError) as exc:
+                self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
+                return
+            self.notify(f"{name}: created workspace {path}")
         if self.cfg.ui.editor_command:
             try:
                 tokens = launchers.fill_command(self.cfg.ui.editor_command, {"path": str(path)})

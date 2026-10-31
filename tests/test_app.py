@@ -6,10 +6,10 @@ import asyncio
 import shutil
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from textual.widgets import Input, Static, TextArea
+from textual.widgets import DataTable, Input, Static, TextArea
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
@@ -23,9 +23,10 @@ from project_sandbox_tui.screens.dialogs import (
 )
 from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
+from project_sandbox_tui.screens.review import DiffReviewScreen
 from project_sandbox_tui.vcs import detect
 from project_sandbox_tui.widgets import CycleField
-from tests.conftest import add_bookmark
+from tests.conftest import add_bookmark, jj
 
 
 def run_app(
@@ -739,6 +740,32 @@ def test_enter_does_not_launch_unsupervised_run(
     run_app(repo, fake_cfg(), scenario)
 
 
+def test_unsupervised_run_on_main_asks_first(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.marked = ["main"]
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        form.query_one("#prompt", TextArea).text = "exit:0"
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, ConfirmScreen)
+        assert "main is the main bookmark" in app.screen.body
+        await pilot.press("n")  # declined: nothing starts, the prompt is kept
+        await pilot.pause()
+        assert app.screen is app.main and "main" not in app.jobs.jobs
+        assert app._drafts == {("main",): "exit:0"}
+
+        await pilot.press("r")
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        assert form.query_one("#prompt", TextArea).text == "exit:0"
+        await pilot.press("ctrl+s", "y")
+        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
+        assert app._drafts == {}
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_unsupervised_run_launches_with_ctrl_s_or_button(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
@@ -835,7 +862,7 @@ def test_jj_working_copy_alongside_bookmarks(
         form = app.screen
         assert isinstance(form, LaunchScreen) and not form.current_spec().main_checkout
         form.query_one("#prompt", TextArea).text = "sleep:0.1"
-        await pilot.press("ctrl+enter")
+        await pilot.press("ctrl+enter", "y")  # y: confirm main
         await wait_until(pilot, lambda: "main" in app.jobs.jobs)
         argv = app.jobs.jobs["main"].argv
         assert "--branch=main" in argv
@@ -1304,9 +1331,12 @@ def test_open_selected_workspaces(
 ) -> None:
     import contextlib
 
+    from project_sandbox_tui.sandbox import LaunchSpec
     from project_sandbox_tui.vcs import workspace_path
 
     add_bookmark(repo, "missing", "missing.txt", "missing\n")
+    add_bookmark(repo, "spare", "spare.txt", "spare\n")
+    missing_path = workspace_path(repo, "missing", None)
     feature_path = workspace_path(repo, "feature/x", None)
     feature_path.mkdir(parents=True)
     main_path = workspace_path(repo, "main", None)
@@ -1326,17 +1356,32 @@ def test_open_selected_workspaces(
         app.marked = ["missing", "feature/x", "main"]
         await pilot.press("o")
         assert opened == [
+            (["test-editor", str(missing_path)], missing_path),
             (["test-editor", str(feature_path)], feature_path),
             (["test-editor", str(main_path)], main_path),
         ]
-        assert any("missing: no workspace yet" in str(n.message) for n in app._notifications)
+        # The missing workspace is created on the bookmark, named like project-sandbox's.
+        assert (missing_path / "missing.txt").read_text() == "missing\n"
+        assert "missing" in jj(repo, "workspace", "list", "-T", 'stringify(name) ++ "\\n"').split()
+        assert any("missing: created workspace" in str(n.message) for n in app._notifications)
+
+        # A registered workspace whose directory is gone is reported, not opened.
+        shutil.rmtree(missing_path)
+        app.marked = ["missing"]
+        await pilot.press("o")
+        assert len(opened) == 3
+        assert any(
+            "missing: could not create a workspace" in str(n.message) for n in app._notifications
+        )
+
+        # A session that is starting creates its own workspace: never race it.
+        app.jobs.record_external(LaunchSpec(branch="spare", agent="bash"), ["true"])
+        app.marked = ["spare"]
+        await pilot.press("o")
+        assert len(opened) == 3 and not workspace_path(repo, "spare", None).exists()
+        assert any("spare: workspace not created yet" in str(n.message) for n in app._notifications)
 
         # A bookmark on @'s parent still uses its own workspace; only @ opens the repo.
-        main_path.rmdir()
-        app.marked = ["main"]
-        await pilot.press("o")
-        assert len(opened) == 2
-        assert any("main: no workspace yet" in str(n.message) for n in app._notifications)
         await pilot.press("escape", "g", "g", "o")
         assert opened[-1] == (["test-editor", str(repo)], repo)
 
@@ -1405,6 +1450,9 @@ def test_launch_branch_field(repo: Path, fake_cfg: Callable[..., Config], target
         assert form.current_spec().branch == target
         assert form.current_spec().main_checkout == (target == "@")
         await pilot.press("ctrl+enter")
+        if target == "main":  # an unsupervised run on main asks first
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("y")
         await wait_until(pilot, lambda: target in app.jobs.jobs)
         assert app.jobs.jobs[target].spec.branch == target
         if target.startswith("topic/"):
@@ -1676,7 +1724,7 @@ def test_diff_selection(
     shown: list[tuple[str, str]] = []
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        monkeypatch.setattr(app, "_show_diff", lambda base, target: shown.append((base, target)))
+        monkeypatch.setattr(app, "_review_diff", lambda base, target: shown.append((base, target)))
         await pilot.press("j", "equals_sign")
         assert shown[-1] == ("main", "feature/x")
         app.marked = ["feature/x"]
@@ -1703,8 +1751,13 @@ def test_diff_viewer_failure_recovers(
 ) -> None:
     import contextlib
 
+    commits = [
+        jj(repo, "log", "--no-graph", "-r", r, "-T", "commit_id") for r in ("main", "feature/x")
+    ]
+
     def viewer(argv: list[str], *, cwd: Path) -> int:
-        assert argv == ["jj", "diff", "--from", '"main"', "--to", '"feature/x"']
+        base, target = (f'"{c}"' for c in commits)
+        assert argv == ["jj", "diff", "--from", base, "--to", target, 'root-file:"b.txt"']
         assert cwd == repo
         if isinstance(failure, BaseException):
             raise failure
@@ -1715,10 +1768,85 @@ def test_diff_viewer_failure_recovers(
         monkeypatch.setattr("subprocess.call", viewer)
         monkeypatch.setattr("builtins.input", lambda _: "")
         await pilot.press("j", "equals_sign")
+        await wait_until(pilot, lambda: isinstance(app.screen, DiffReviewScreen))
+        await pilot.press("enter")
         if not isinstance(failure, KeyboardInterrupt):
-            assert any("jj diff" in str(n.message) for n in app._notifications)
-        await pilot.press("?")
+            await wait_until(
+                pilot, lambda: any("jj diff" in str(n.message) for n in app._notifications)
+            )
+        await pilot.press("q", "question_mark")
         assert isinstance(app.screen, HelpScreen)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_diff_review_marks_files_seen(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+
+    (repo / "c.txt").write_text("c\n" * 3)
+    (repo / "a.txt").write_text("changed\n")
+    viewed: list[list[str]] = []
+
+    def viewer(argv: list[str], *, cwd: Path) -> int:
+        viewed.append(argv[6:])
+        return 0
+
+    def review_rows(app: SandboxTUI) -> list[list[str]]:
+        table = app.screen.query_one(DataTable)
+        return [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+
+    async def open_review(app: SandboxTUI, pilot: Any, *keys: str) -> DiffReviewScreen:
+        await pilot.press(*keys, "equals_sign")
+        await wait_until(
+            pilot,
+            lambda: (
+                isinstance(app.screen, DiffReviewScreen)
+                and bool(app.screen.query(DataTable))
+                and app.screen.query_one(DataTable).row_count > 0
+            ),
+        )
+        return cast(DiffReviewScreen, app.screen)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
+        monkeypatch.setattr("subprocess.call", viewer)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        screen = await open_review(app, pilot, "g", "g")  # @ against main
+        assert review_rows(app) == [
+            ["●", "M", "a.txt", "+1 −1", "8 B"],
+            ["●", "A", "c.txt", "+3", "6 B"],
+        ]
+        title = str(screen.query_one("#review-title", Static).render())
+        assert "@ → main" not in title and "main → @" in title and "0/2 seen" in title
+        await pilot.press("space")  # a.txt seen, cursor moves to c.txt
+        assert [r[0] for r in review_rows(app)] == ["✓", "●"]
+        await pilot.press("l", "equals_sign")
+        assert viewed == [['root-file:"c.txt"'], ['root-file:"c.txt"']]  # file, then unseen
+        await pilot.press("A")
+        assert [r[0] for r in review_rows(app)] == ["✓", "✓"]
+        await pilot.press("equals_sign")  # all seen: every file
+        assert viewed[-1] == ['root-file:"a.txt" | root-file:"c.txt"']
+        await pilot.press("A", "k", "space", "q")
+        assert app.screen is app.main
+        # Only c.txt changes: a.txt stays seen.
+        (repo / "c.txt").write_text("c\n")
+        await open_review(app, pilot, "g", "g")
+        assert [r[:3] for r in review_rows(app)] == [["✓", "M", "a.txt"], ["●", "A", "c.txt"]]
+        await pilot.press("q")
+        # Another bookmark has its own marks.
+        jj(repo, "bookmark", "create", "--quiet", "wip", "-r", "@")
+        await app.refresh_data()
+        app.marked = ["main", "wip"]
+        await open_review(app, pilot)
+        assert [r[0] for r in review_rows(app)] == ["●", "●"]
+        await pilot.press("q")
+        app.marked = ["main", "main"]
+        await pilot.press("equals_sign")
+        await wait_until(
+            pilot, lambda: any("no differences" in str(n.message) for n in app._notifications)
+        )
 
     run_app(repo, fake_cfg(), scenario)
 

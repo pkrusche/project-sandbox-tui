@@ -10,12 +10,13 @@ require a `.jj/` directory.
 |---|---|
 | `cli.py`, `settings.py`, `doctor.py` | Entry point, config commands, dependency checks |
 | `config.py` | Typed TOML loading, validation, trust, state paths and launch defaults |
-| `vcs.py` | Bookmark discovery, creation, working-copy moves and fast-forwarding |
+| `vcs.py` | Bookmark discovery, creation, changed files, working-copy moves and fast-forwarding |
 | `sandbox.py` | `LaunchSpec`, argv construction and session matching |
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt history and notifications |
+| `review.py` | Diff review: files marked seen per bookmark |
 | `opgraph.py` | Bookmark history graph, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs and history |
 
