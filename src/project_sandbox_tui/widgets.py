@@ -269,3 +269,20 @@ class KeyHints:
 
     def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
         return Measurement(max(map(cell_len, self.items)), cell_len(self.text))
+
+
+class Fitted:
+    """The first of several one-line variants, longest first, that fits the width.
+
+    The last is drawn when none fits. ``str()`` is the full (first) variant.
+    """
+
+    def __init__(self, *variants: Text | KeyHints) -> None:
+        self.variants = variants
+
+    def __str__(self) -> str:
+        return str(self.variants[0])
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        fits = (v for v in self.variants if cell_len(str(v)) <= options.max_width)
+        yield next(fits, self.variants[-1])

@@ -28,10 +28,13 @@ See [configuration](configuration.md), [models](models.md) and
 ## Bookmark list
 
 `@ working copy` appears first, then bookmarks in [history](#bookmark-history)
-order. The cheat-sheet collapses to one line in small terminals.
+order. The cheat-sheet collapses to one line in small terminals. In narrow ones
+the header shows the repository's name instead of its path, then abbreviated
+counts, and the subject column narrows to keep the status in view.
 
 The `vs main` heading names the baseline: `project.main_branch`, or the first
-existing bookmark main/master/trunk. Counts omit zeros:
+existing bookmark main/master/trunk; below 80 columns it is just `main`. Counts
+omit zeros:
 
 | Symbol | Meaning |
 |---|---|

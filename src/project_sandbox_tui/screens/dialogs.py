@@ -15,6 +15,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static, TextArea
 
 from project_sandbox_tui.cleanup import Workspace
@@ -33,6 +34,21 @@ _MODAL_CSS = """
 {name} Input, {name} Input:focus {{ border: none; height: 1; padding: 0 1; }}
 {name} Input:focus {{ background: $boost; }}
 """
+
+
+def fit_body(body: Widget) -> None:
+    """Cap a dialog's scrolling ``body`` so the rows around it stay on screen.
+
+    Call after layout: titles and hints wrap onto more lines in narrow terminals.
+    """
+    box = body.parent
+    assert isinstance(box, Widget)
+    others = sum(
+        child.outer_size.height + child.styles.margin.height
+        for child in box.children
+        if child is not body and child.display
+    )
+    body.styles.max_height = max(3, body.screen.size.height - box.styles.gutter.height - others)
 
 
 class NewBranchScreen(ModalScreen[tuple[str, str] | None]):
@@ -79,7 +95,7 @@ class DescriptionScreen(ModalScreen[bool]):
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="DescriptionScreen")
         + """
-    DescriptionScreen TextArea { height: 12; max-height: 60vh; border: none; }
+    DescriptionScreen TextArea { height: 12; max-height: 60vh; }
     DescriptionScreen TextArea:focus { background: $boost; }
     """
     )
@@ -100,7 +116,8 @@ class DescriptionScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(Text(f"edit description · {self.name_text}"), classes="title")
-            yield TextArea(self.description, id="description")
+            # Compact: no border, which TextArea:focus would add over "border: none".
+            yield TextArea(self.description, compact=True, id="description")
             yield Static("", id="error")
             yield Static(KeyHints("ctrl+s save · enter newline · esc cancel"), classes="hint")
 
@@ -241,7 +258,10 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
         _MODAL_CSS.format(name="CleanupScreen")
         + """
     CleanupScreen > Vertical { width: 110; }
-    CleanupScreen OptionList { border: none; height: auto; padding: 0; }
+    CleanupScreen OptionList, CleanupScreen OptionList:focus {
+        border: none; height: auto; padding: 0;
+        scrollbar-gutter: stable; scrollbar-size-vertical: 1;  /* see LaunchScreen */
+    }
     """
     )
     BINDINGS = [
@@ -295,8 +315,7 @@ class CleanupScreen(ModalScreen[list[Workspace] | ForceRemove | None]):
 
     def on_resize(self, event: events.Resize) -> None:
         # Long lists scroll inside the dialog; title, summary and hint stay visible.
-        chrome = 7  # padding, title + margin, summary, hint + margin
-        self.query_one(OptionList).styles.max_height = max(3, event.size.height - chrome)
+        self.call_after_refresh(fit_body, self.query_one(OptionList))
 
     def action_move(self, step: int) -> None:
         options = self.query_one(OptionList)
@@ -494,5 +513,4 @@ class HelpScreen(MessageScreen):
             yield Static(KeyHints(f"{SCROLL_HINT} · q/esc/? close"), classes="hint")
 
     def on_resize(self, event: events.Resize) -> None:
-        chrome = 6  # padding, title + margin, hint + margin
-        self.query_one(VerticalScroll).styles.max_height = max(3, event.size.height - chrome)
+        self.call_after_refresh(fit_body, self.query_one(VerticalScroll))

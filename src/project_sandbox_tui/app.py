@@ -77,7 +77,7 @@ from project_sandbox_tui.vcs import (
     sort_branches,
     workspace_path,
 )
-from project_sandbox_tui.widgets import KeyHints, PrefixKeys, modifier_key
+from project_sandbox_tui.widgets import Fitted, KeyHints, PrefixKeys, modifier_key
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
 
@@ -281,6 +281,15 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 )
 
 FOOTER = "? full help · H keys · j/k move · i interactive · r run · q quit"
+# The footer is one line: narrower terminals get fewer keys rather than lose q.
+SHORT_FOOTERS = ("? full help · i interactive · r run · q quit", "? full help · q quit")
+NARROW = 80  # columns; narrower terminals get shorter column headings
+SUBJECT_WIDTH = 32  # Ellipsize long messages to leave room for session status,
+MIN_SUBJECT = 12  # shrinking in narrow terminals rather than scrolling it away.
+
+
+def _footer(*variants: str) -> Fitted:
+    return Fitted(*map(KeyHints, variants))
 
 
 def _cheatsheet_section(title: str, keys: tuple[tuple[str, str], ...]) -> Text:
@@ -303,19 +312,27 @@ class Cheatsheet:
     GAP = 3
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        sections = [_cheatsheet_section(title, keys) for title, keys in CHEATSHEET]
-        widths = [max(cell_len(line) for line in s.plain.splitlines()) for s in sections]
-        per_row = len(sections)
-        while per_row > 1 and sum(widths[:per_row]) + self.GAP * (per_row - 1) > options.max_width:
-            per_row -= 1
-        grid = Table.grid(padding=(0, self.GAP))
-        for _ in range(per_row):
-            grid.add_column(no_wrap=True)
-        for start in range(0, len(sections), per_row):
-            if start:
-                grid.add_row()  # blank line between rows of sections
-            grid.add_row(*sections[start : start + per_row])
-        yield grid
+        # Each row is its own grid: a column shared between rows would be as wide
+        # as its widest section, and cut off the sections beside it.
+        rows: list[list[Text]] = []
+        used = 0
+        for title, keys in CHEATSHEET:
+            section = _cheatsheet_section(title, keys)
+            width = max(cell_len(line) for line in section.plain.splitlines())
+            if rows and used + self.GAP + width <= options.max_width:
+                rows[-1].append(section)
+                used += self.GAP + width
+            else:
+                rows.append([section])
+                used = width
+        for index, row in enumerate(rows):
+            if index:
+                yield Text()  # blank line between rows of sections
+            grid = Table.grid(padding=(0, self.GAP))
+            for _ in row:
+                grid.add_column(no_wrap=True)
+            grid.add_row(*row)
+            yield grid
 
 
 class MainScreen(Screen[None]):
@@ -329,10 +346,13 @@ class MainScreen(Screen[None]):
         yield table
         yield Static(Cheatsheet(), id="cheatsheet")
         yield Input(placeholder="filter", id="filter")
-        yield Static(KeyHints(FOOTER), id="footer")
+        yield Static(_footer(FOOTER, *SHORT_FOOTERS), id="footer")
 
     def on_resize(self, event: events.Resize) -> None:
         self.update_help_layout()
+        app = cast("SandboxTUI", self.app)
+        if app.table.columns:  # column headings and widths depend on the width
+            app._render_table()
 
     def update_help_layout(self) -> None:
         """Collapse the sheet before it crowds out the working copy and a bookmark."""
@@ -363,11 +383,11 @@ class MainScreen(Screen[None]):
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
-            self.query_one("#footer", Static).update(KeyHints(f"? full help · {hint}"))
+            self.query_one("#footer", Static).update(_footer(f"? full help · {hint}", hint))
             event.stop()
         else:
             self.query_one("#cheatsheet", Static).update(Cheatsheet())
-            self.query_one("#footer", Static).update(KeyHints(FOOTER))
+            self.query_one("#footer", Static).update(_footer(FOOTER, *SHORT_FOOTERS))
 
 
 class SandboxTUI(App[None]):
@@ -457,7 +477,7 @@ class SandboxTUI(App[None]):
             ("bookmark", None),
             ("vs main", None),
             ("head", 8),
-            ("subject", 32),  # Ellipsize long messages to leave room for session status.
+            ("subject", SUBJECT_WIDTH),
             ("status", None),
         ):
             table.add_column(label, width=width, key=label or "graph")
@@ -584,9 +604,14 @@ class SandboxTUI(App[None]):
         selected = self._pending_select or self.selected_branch_name()
         rows = self.visible_rows()
         baseline = self.main_name()
+        baseline = baseline or self.cfg.project.main_branch or "main"
+        narrow = self.main.size.width < NARROW
         comparison_col = table.columns[ColumnKey("vs main")]
-        comparison_col.label = Text(f"vs {baseline or self.cfg.project.main_branch or 'main'}")
-        comparison_col.content_width = cell_len(comparison_col.label.plain)
+        comparison_col.label = Text(baseline if narrow else f"vs {baseline}")
+        # Measured here, not as rows arrive: rows already drawn keep the old width.
+        comparison_col.content_width = max(
+            [cell_len(comparison_col.label.plain), *(r.comparison_cell().cell_len for r in rows)]
+        )
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
         # place (update_cell) never has to widen the column.
@@ -598,6 +623,9 @@ class SandboxTUI(App[None]):
         if graph_col is not None:  # shrinks again once wide parts of the graph are gone
             graph_col.auto_width = False
             graph_col.width = max([1, *(row.graph_cell().cell_len for row in rows)])
+        subject_col = table.columns.get(ColumnKey("subject"))
+        if subject_col is not None:
+            subject_col.width = self._subject_width(rows)
         table.clear()
         for row in rows:
             table.add_row(*row.cells(row.branch.name in chosen), key=row.branch.name)
@@ -610,34 +638,70 @@ class SandboxTUI(App[None]):
         # clear() resets scrolling. Restore now so consecutive redraws retain the
         # offset, then clamp it after layout/cursor scrolling settles.
         table.scroll_to(x=scroll_x, animate=False)
-        table.call_after_refresh(table.scroll_to, x=scroll_x, animate=False)
+        table.call_after_refresh(
+            # Clamped: a table that now fits keeps no stale target to jump back to.
+            lambda: table.scroll_to(x=min(scroll_x, table.max_scroll_x), animate=False, force=True)
+        )
         self._render_header(chosen)
+
+    def _subject_width(self, rows: list[Row]) -> int:
+        """Up to SUBJECT_WIDTH, but narrow enough to leave room for the status."""
+        table = self.table
+        status = max([len("status"), *(cell_len(row.status()[2]) for row in rows)])
+        others = sum(
+            column.get_render_width(table)
+            for key, column in table.columns.items()
+            if key.value not in ("subject", "status")
+        )
+        padding = 2 * table.cell_padding
+        room = self.main.size.width - 1 - others - status - 2 * padding  # 1: the scrollbar
+        return max(MIN_SUBJECT, min(SUBJECT_WIDTH, room))
 
     def _render_header(self, chosen: set[str]) -> None:
         running = self.jobs.running_count()
         busy_other = sum(
             1 for n in self.sessions if not (n in self.jobs.jobs and self.jobs.jobs[n].running)
         )
-        header = Text()
-        header.append(" sbx-tui ", style="bold reverse")
-        header.append(f"  {self.repo}", style="bold")
         count = sum(1 for b in self.branches if not b.working_copy)
-        stats = f"{count_label(count)} · {running} running"
+        stats = [f"{count_label(count)} · {running} running"]
+        short = [f"{count} bm · {running} run"]
         if busy_other:
-            stats += f" · {busy_other} external"
+            stats.append(f"{busy_other} external")
+            short.append(f"{busy_other} ext")
         if self.filter_text:
-            stats += f" · filter: {self.filter_text}"
+            stats.append(f"filter: {self.filter_text}")
+            short.append(f"/{self.filter_text}")
         if self._visual_anchor is not None:
-            stats += " · VISUAL"
+            stats.append("VISUAL")
+            short.append("VISUAL")
         if chosen:
-            stats += f" · {len(chosen)} selected"
+            stats.append(f"{len(chosen)} selected")
+            short.append(f"{len(chosen)} sel")
             needle = self.filter_text.lower()
             if hidden := sum(needle not in name.lower() for name in chosen):
-                stats += f" ({hidden} outside the filter)"
-        header.append(f"   {stats}", style="dim")
-        if pending := self._prefix.pending:  # like vim's showcmd
-            header.append(f"   {pending}…", style="bold yellow")
-        self.main.query_one("#header", Static).update(header)
+                stats[-1] += f" ({hidden} outside the filter)"
+                short[-1] += f" ({hidden} hidden)"
+        pending = self._prefix.pending  # like vim's showcmd
+
+        def header(repo: str, stats: list[str]) -> Text:
+            text = Text(" sbx-tui ", style="bold reverse", no_wrap=True, overflow="ellipsis")
+            if repo:
+                text.append(f"  {repo}", style="bold")
+            text.append(f"   {' · '.join(stats)}", style="dim")
+            if pending:
+                text.append(f"   {pending}…", style="bold yellow")
+            return text
+
+        # Narrower terminals drop the repository's parent directories, then
+        # abbreviate the counts, then drop the repository.
+        name = self.repo.name
+        variants = (
+            header(str(self.repo), stats),
+            header(name, stats),
+            header(name, short),
+            header("", short),
+        )
+        self.main.query_one("#header", Static).update(Fitted(*variants))
 
     def branch(self, name: str) -> Branch | None:
         return next((b for b in self.branches if b.name == name), None)

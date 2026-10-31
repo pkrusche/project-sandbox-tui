@@ -6,7 +6,19 @@ from textual.widgets import Input, OptionList
 
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.screens.history import HistorySearchScreen
-from project_sandbox_tui.widgets import PromptArea
+from project_sandbox_tui.widgets import Fitted, KeyHints, PromptArea
+
+
+def test_fitted_draws_the_longest_variant_that_fits() -> None:
+    from rich.console import Console
+    from rich.text import Text
+
+    fitted = Fitted(Text("a long variant"), KeyHints("short · s"), Text("tiny"))
+    assert str(fitted) == "a long variant"
+    for width, expected in ((20, "a long variant"), (10, "short · s"), (5, "tiny"), (3, "tin")):
+        console = Console(width=width, color_system=None, record=True)
+        console.print(fitted, no_wrap=True, crop=True, end="")
+        assert console.export_text().rstrip("\n") == expected
 
 
 def test_prompt_history_boundaries_and_editing_end_browse(tmp_path: Path) -> None:
