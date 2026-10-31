@@ -146,6 +146,8 @@ def _inspect(
     busy: set[Path],
     jobs: JobManager,
     ws: _Found,
+    merged_bookmarks: set[str],
+    workspace_roots: set[Path],
 ) -> Workspace:
     name, path = ws.name, ws.path
 
@@ -153,7 +155,10 @@ def _inspect(
         return Workspace(name, path, why, forceable=forceable)
 
     def remove(status: str, merged: bool) -> Workspace:
-        branch = ws.branch if merged and ws.branch != main else ""
+        # A workspace's working-copy revision and its namesake bookmark can
+        # move independently. Never infer that the bookmark is merged from
+        # the workspace's ancestry alone.
+        branch = ws.branch if merged and ws.branch in merged_bookmarks else ""
         if merged:
             status = ", ".join(filter(None, (status, f"merged into {main}")))
         if branch:
@@ -166,8 +171,13 @@ def _inspect(
         path.is_symlink() or path.resolve() == repo or path.resolve() in repo.parents
     ):
         return keep("protected path", forceable=False)
+    resolved = path.resolve()
+    if any(root != resolved and root.is_relative_to(resolved) for root in workspace_roots):
+        return keep("contains another workspace", forceable=False)
     job = jobs.jobs.get(name)
-    if (job is not None and job.running) or path.resolve() in busy:
+    if (job is not None and job.running) or any(
+        active.is_relative_to(resolved) or resolved.is_relative_to(active) for active in busy
+    ):
         return keep("running session", forceable=False)
     if ws.missing:
         if _merged(repo, main, ws):
@@ -192,15 +202,14 @@ def _merged_bookmarks(
     busy: set[Path],
     jobs: JobManager,
     wd: Path | None,
-    taken: set[str],
 ) -> list[Workspace]:
-    """Bookmarks fully merged into ``main`` that no workspace row covers."""
+    """Idle bookmarks fully merged into ``main``, including those with workspaces."""
     template = 'if(remote || conflict, "", stringify(name) ++ "\\n")'
     out = _jj(repo, "bookmark", "list", "-r", f"::{_revset_str(main)}", "-T", template)
     found: list[Workspace] = []
     for name in filter(None, out.splitlines()):
         job = jobs.jobs.get(name)
-        if name == main or name in taken or (job is not None and job.running):
+        if name == main or (job is not None and job.running):
             continue
         if workspace_path(repo, name, wd).resolve() in busy:
             continue
@@ -221,11 +230,18 @@ def _scan(
         for r in read_sessions(sessions_dir)
         if r.running and r.workspace_path
     }
-    busy |= {workspace_path(repo, j.branch, wd).resolve() for j in jobs.jobs.values() if j.running}
-    rows = [_inspect(repo, main, busy, jobs, ws) for ws in found]
+    busy |= {
+        repo if j.spec.main_checkout else workspace_path(repo, j.branch, wd).resolve()
+        for j in jobs.jobs.values()
+        if j.running
+    }
+    merged_rows = _merged_bookmarks(repo, main, busy, jobs, wd) if main else []
+    merged_names = {ws.branch for ws in merged_rows}
+    workspace_roots = {ws.path.resolve() for ws in found}
+    rows = [_inspect(repo, main, busy, jobs, ws, merged_names, workspace_roots) for ws in found]
     if main:
         taken = {ws.name for ws in found} | {ws.branch for ws in found}
-        rows += _merged_bookmarks(repo, main, busy, jobs, wd, taken)
+        rows += [ws for ws in merged_rows if ws.name not in taken]
     return sorted(rows, key=lambda ws: (not ws.removable, ws.path is None, ws.name))
 
 

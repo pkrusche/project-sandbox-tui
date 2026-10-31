@@ -26,8 +26,8 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 - Linux or macOS (WSL on Windows)
 - Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/)
-- [jj](https://github.com/jj-vcs/jj) on `PATH`; for an existing Git repository, run `jj git init --colocate`
-- [project-sandbox](https://github.com/pkrusche/project-sandbox) and Apple Containers, Docker or Podman
+- [jj](https://github.com/jj-vcs/jj) ≥ 0.46 on `PATH`; for an existing Git repository, run `jj git init --colocate`
+- [project-sandbox](https://github.com/pkrusche/project-sandbox) ≥ 0.2.2 and Apple Containers, Docker or Podman
 
 ## Getting started
 

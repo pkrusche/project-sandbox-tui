@@ -410,3 +410,67 @@ def test_cleanup_rechecks_moved_bookmark(repo: Path) -> None:
     run("jj", "bookmark", "move", "old", "--to", "feature/x", cwd=repo)
     assert remove_workspaces(backend, cfg, [chosen]) == ["skipped bookmark old: no longer found"]
     assert backend._bookmark_commit("old") == backend._bookmark_commit("feature/x")
+
+
+def test_cleanup_keeps_unmerged_bookmark_of_merged_workspace(repo: Path) -> None:
+    path = _add_workspace(repo, "feature/x")
+    run("jj", "new", "main", cwd=path)
+    backend, cfg = detect(repo), Config()
+    commit = backend._bookmark_commit("feature/x")
+    [chosen] = find_workspaces(backend, cfg)
+    assert chosen.removable and not chosen.branch
+    assert remove_workspaces(backend, cfg, [chosen]) == [f"removed feature/x: {path}"]
+    assert backend._bookmark_commit("feature/x") == commit
+
+
+def test_cleanup_rechecks_bookmark_of_selected_workspace(repo: Path) -> None:
+    run("jj", "bookmark", "create", "old", "-r", "main", cwd=repo)
+    path = _add_workspace(repo, "old")
+    backend, cfg = detect(repo), Config()
+    [chosen] = find_workspaces(backend, cfg)
+    assert chosen.branch == "old"
+    run("jj", "bookmark", "move", "old", "--to", "feature/x", cwd=repo)
+    assert remove_workspaces(backend, cfg, [chosen]) == [f"removed old: {path}"]
+    assert backend._bookmark_commit("old") == backend._bookmark_commit("feature/x")
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_cleanup_rechecks_nested_workspaces(jj_repo: Path, force: bool) -> None:
+    (jj_repo / ".gitignore").write_text("nested/\n")
+    run("jj", "commit", "-m", "ignore nested workspace", cwd=jj_repo)
+    run("jj", "bookmark", "set", "main", "-r", "@-", cwd=jj_repo)
+    outer = _add_workspace(jj_repo, "main")
+    backend, cfg = detect(jj_repo), Config()
+    [chosen] = find_workspaces(backend, cfg)
+    assert chosen.removable
+    nested = outer / "nested"
+    run("jj", "workspace", "add", str(nested), "--name", "nested", "-r", "main", cwd=jj_repo)
+    (nested / "precious.txt").write_text("uncommitted work")
+    if force:
+        result = force_remove_workspace(backend, cfg, chosen)
+    else:
+        [result] = remove_workspaces(backend, cfg, [chosen])
+    assert result.startswith("skipped") and "contains another workspace" in result
+    assert (nested / "precious.txt").read_text() == "uncommitted work"
+    assert "nested" in run("jj", "workspace", "list", cwd=jj_repo)
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_cleanup_protects_nested_running_session(repo: Path, monkeypatch, force: bool) -> None:
+    import os
+
+    from project_sandbox_tui.sandbox import SessionRecord
+
+    outer = _add_workspace(repo, "feature/x")
+    backend, cfg = detect(repo), Config()
+    [chosen] = find_workspaces(backend, cfg)
+    record = SessionRecord(
+        "nested", "container", str(outer), str(outer / "nested"), "bash", "running", os.getpid(), ""
+    )
+    monkeypatch.setattr("project_sandbox_tui.cleanup.read_sessions", lambda *_: [record])
+    if force:
+        result = force_remove_workspace(backend, cfg, chosen)
+    else:
+        [result] = remove_workspaces(backend, cfg, [chosen])
+    assert result.startswith("skipped") and "running session" in result
+    assert outer.exists()

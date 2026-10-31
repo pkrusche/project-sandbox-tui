@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      container_smoke:
+        description: Run the real Docker bash-agent smoke test (downloads and builds an image)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -75,4 +80,38 @@ jobs:
       - name: Install (locked)
         run: uv sync --locked
       - name: pytest
-        run: uv run pytest -q
+        run: scripts/test.sh -q
+      - name: Install project-sandbox for container smoke
+        if: github.event_name == 'workflow_dispatch' && inputs.container_smoke && matrix.python == '3.12'
+        run: uv tool install project-sandbox==0.2.2
+      - name: Real Docker bash-agent smoke
+        if: github.event_name == 'workflow_dispatch' && inputs.container_smoke && matrix.python == '3.12'
+        timeout-minutes: 30
+        run: |
+          scripts/test.sh -n 0 -v -s tests/test_container_smoke.py \
+            --container-smoke --container-runtime docker \
+            --basetemp "$RUNNER_TEMP/sbx-container-smoke"
+
+  package:
+    name: Build and install release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+          enable-cache: true
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Install wheel in a clean environment
+        run: |
+          release_env="$RUNNER_TEMP/sbx-release"
+          uv venv "$release_env"
+          uv pip install --python "$release_env/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$release_env/bin/sbx-tui" --version
+          "$release_env/bin/sbx-tui" --help
+          "$release_env/bin/python" -I -c 'import project_sandbox_tui.app'

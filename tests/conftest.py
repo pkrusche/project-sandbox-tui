@@ -16,6 +16,33 @@ from project_sandbox_tui.config import Config, Project, Sandbox
 FAKE = Path(__file__).with_name("fake_project_sandbox.py")
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("container smoke")
+    group.addoption(
+        "--container-smoke", action="store_true", help="Run real bash-agent container smoke tests"
+    )
+    group.addoption(
+        "--container-runtime",
+        choices=("auto", "docker", "podman", "apple-container"),
+        default="auto",
+        help="Runtime for --container-smoke (default: auto)",
+    )
+    group.addoption(
+        "--container-command", default="project-sandbox", help="Real project-sandbox command"
+    )
+    group.addoption(
+        "--container-base-image", default="python:3.12-slim", help="Base image for the smoke build"
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if not config.getoption("--container-smoke"):
+        skip = pytest.mark.skip(reason="real containers require --container-smoke")
+        for item in items:
+            if "container_smoke" in item.keywords:
+                item.add_marker(skip)
+
+
 def run(*args: str, cwd: Path, env_extra: dict[str, str] | None = None) -> str:
     env = {**os.environ, "JJ_USER": "Test", "JJ_EMAIL": "test@example.com", **(env_extra or {})}
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout
