@@ -942,7 +942,9 @@ def test_interactive_session_in_tmux_window(
     name = "host:main"
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("j", "i")  # main
+        await pilot.press("G")  # main is below its descendants in history order
+        assert app.selected_branch_name() == "main"
+        await pilot.press("i")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         assert "opens in tmux" in str(form.query_one(".title").render())
@@ -1742,7 +1744,8 @@ def test_marked_rows_stay_visible_under_a_filter(
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         app.marked = ["fix/y"]
         await pilot.press("slash", *"feature", "enter")
-        assert names(app) == ["fix/y", "feature/x"]  # the mark stays on screen
+        # The mark stays on screen regardless of commit recency (which can tie).
+        assert sorted(names(app)) == ["feature/x", "fix/y"]
         header = str(app.main.query_one("#header").render())
         assert "1 selected (1 outside the filter)" in header
         await pilot.press("escape")  # clears the filter, keeps the mark
