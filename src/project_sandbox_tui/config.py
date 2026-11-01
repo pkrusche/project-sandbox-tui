@@ -123,6 +123,38 @@ class Prompts:
 
 
 @dataclass
+class Action:
+    """``[actions.NAME]``: a prompt that ``:NAME`` starts as a background sandbox
+    run on each target bookmark. Unset launch options use the launch defaults.
+
+    Placeholders ``{bookmark}`` and ``{main}`` are replaced; other braces stay.
+    """
+
+    prompt: str = ""
+    agent: str = ""  # "" = launch default
+    model: str = ""  # "" = launch default for the agent
+    effort: str = ""  # "" = launch default
+    timeout: int | None = None  # None = launch default
+
+    def render(self, bookmark: str, main: str, extra: str = "") -> str:
+        text = self.prompt.replace("{bookmark}", bookmark).replace("{main}", main).rstrip()
+        if extra.strip():
+            text += f"\n\n{extra.strip()}"
+        return text + "\n"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The keys a config file sets, for ``sbx-tui config list``."""
+        out: dict[str, Any] = {"prompt": self.prompt}
+        out.update({k: v for k in ("agent", "model", "effort") if (v := getattr(self, k))})
+        if self.timeout is not None:
+            out["timeout"] = self.timeout
+        return out
+
+
+ACTION_KEYS: dict[str, Any] = {"prompt": "", "agent": "", "model": "", "effort": "", "timeout": 0}
+
+
+@dataclass
 class Config:
     defaults: Defaults = field(default_factory=Defaults)
     network: Network = field(default_factory=Network)
@@ -133,6 +165,7 @@ class Config:
     models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
     commands: dict[str, str] = field(default_factory=dict)  # :name -> shell command (commands.py)
     leader: dict[str, str] = field(default_factory=dict)  # keys after ui.leader -> command line
+    actions: dict[str, Action] = field(default_factory=dict)  # :name -> sandbox run per target
     sources: list[Path] = field(default_factory=list)  # files that were loaded
 
     # ---------------------------------------------------------- helpers
@@ -200,8 +233,19 @@ class Config:
                 raise ConfigError(f"[models] has unknown agent {agent!r}")
         if not math.isfinite(self.ui.refresh_seconds) or self.ui.refresh_seconds <= 0:
             raise ConfigError("ui.refresh_seconds must be finite and > 0")
+        for name, action in self.actions.items():
+            if not action.prompt.strip():
+                raise ConfigError(f"[actions.{name}] needs a prompt")
+            if action.agent and action.agent not in AGENTS:
+                raise ConfigError(f"actions.{name}.agent must be one of {', '.join(AGENTS)}")
+            if action.effort and action.effort not in EFFORTS:
+                raise ConfigError(
+                    f"actions.{name}.effort must be empty or one of {', '.join(EFFORTS)}"
+                )
+            if action.timeout is not None and action.timeout < 0:
+                raise ConfigError(f"actions.{name}.timeout must be >= 0")
         try:
-            commands.validate(self.commands, self.ui.leader, self.leader)
+            commands.validate(self.commands, self.ui.leader, self.leader, self.actions)
         except commands.CommandError as exc:
             raise ConfigError(str(exc)) from exc
 
@@ -219,6 +263,7 @@ TABLES: dict[str, str] = {
     "models": "must be a table of agent = [model, ...]",
     "commands": 'must be a table of name = "shell command"',
     "leader": 'must be a table of keys = "command line"',
+    "actions": "must be a table of [actions.NAME] tables with a prompt",
 }
 
 _SECTIONS: dict[str, type[Any]] = {
@@ -331,7 +376,23 @@ def from_dict(data: dict[str, Any]) -> Config:
         if not isinstance(table, dict):
             raise ConfigError(f"[{name}] {TABLES[name]}")
         getattr(cfg, name).update({k: _coerce(name, k, v, "") for k, v in table.items()})
+    actions = data.get("actions", {})
+    if not isinstance(actions, dict):
+        raise ConfigError(f"[actions] {TABLES['actions']}")
+    for name, table in actions.items():
+        cfg.actions[name] = _build_action(name, table)
     return cfg
+
+
+def _build_action(name: str, data: Any) -> Action:
+    where = f"actions.{name}"
+    if not isinstance(data, dict):
+        raise ConfigError(f'[{where}] must be a table, e.g. [{where}] prompt = "…"')
+    unknown = sorted(set(data) - set(ACTION_KEYS))
+    if unknown:
+        raise ConfigError(f"[{where}] has unknown key(s): {', '.join(unknown)}")
+    values = {k: _coerce(where, k, v, ACTION_KEYS[k]) for k, v in data.items()}
+    return Action(**values)
 
 
 def load(repo: Path, global_path: Path | None = None) -> Config:
@@ -565,8 +626,13 @@ keep_workspace = true                  # -> --keep-workspace
 # [commands]                           # :name runs the shell command in the repository
 # test = "uv run pytest"               # :test -k merge appends the arguments
 
+# [actions.review]                     # :review starts this prompt as a background run on
+# prompt = "Review {bookmark} against {main}; fix what you find."  # each selected bookmark
+# effort = "high"                      # agent / model / effort / timeout: launch defaults
+
 # [leader]                             # ui.leader (\\) then these keys run a command line
-# t = "test"
+# t = "test"                           # "*test" runs it in each selected workspace
+# rv = "review"
 """
 
 GLOBAL_TEMPLATE = """\
@@ -622,9 +688,16 @@ cheatsheet = true             # auto-collapses in small terminals (H toggles)
 #                             # arguments typed after the name are appended
 # lint = "uv run ruff check ."
 
+# [actions.chores]            # :chores starts this prompt as a background sandbox run on
+#                             # each selected bookmark; {bookmark} and {main} are filled in
+# prompt = "Tidy up {bookmark}: update docs and tests for its changes against {main}."
+# agent = "claude"            # agent / model / effort / timeout default to the launch defaults
+
 # [leader]                    # ui.leader, then these keys run a command line (as after :)
 # l = "lint"
+# L = "*lint"                 # * runs it in each selected workspace
 # s = "!jj status"
+# rc = "chores"
 """
 
 

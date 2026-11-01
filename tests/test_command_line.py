@@ -192,3 +192,255 @@ def test_leader_mappings(
         ) in app.screen.extra
 
     run_app(repo, cfg, scenario)
+
+
+def mark(app: SandboxTUI, *names: str) -> None:
+    app.marked = list(names)
+    app._refresh_marks()
+
+
+def test_each_runs_in_every_selected_workspace(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui.screens.dialogs import MessageScreen
+    from project_sandbox_tui.screens.log import LogScreen
+    from tests.test_app import row_texts, wait_until
+
+    script = (
+        'printf "%s\\n" "$SBX_BOOKMARK" "$SBX_WORKSPACE" "$PWD"; exit $((${#SBX_BOOKMARK} - 1))'
+    )
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        mark(app, "@", "feature/x")
+        await type_line(pilot, f"*!{script}")
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: len(app.tasks.tasks) == 2)
+        await wait_until(pilot, lambda: not app.tasks.running_count())
+        await app.refresh_data()
+        wc, feature = app.tasks.latest("@"), app.tasks.latest("feature/x")
+        assert wc is not None and feature is not None
+        assert Path(wc.out_path).read_text().splitlines() == ["@", str(repo), str(repo)]
+        workspace = app._workspace_dir("feature/x")
+        assert workspace.is_dir() and workspace != repo  # created on demand, like o
+        lines = Path(feature.out_path).read_text().splitlines()
+        assert lines == ["feature/x", str(workspace), str(workspace)]
+        assert (wc.status, feature.status, feature.exit_code) == ("completed", "failed", 8)
+        names = [r.branch.name for r in app.visible_rows()]
+        rows = dict(zip(names, (r[-1] for r in row_texts(app)), strict=True))
+        assert rows["@"].endswith(":printf ✓") and rows["feature/x"].endswith(":printf ✗8")
+        assert any("feature/x: :*!" in m and "failed (8)" in m for m in messages(app))
+
+        await pilot.press("escape")  # clear the marks; l and P act on the row
+        app.table.move_cursor(row=[r.branch.name for r in app.visible_rows()].index("feature/x"))
+        await pilot.press("l")
+        assert isinstance(app.screen, LogScreen) and app.screen.current == Path(feature.out_path)
+        await pilot.press("q", "P")
+        assert isinstance(app.screen, MessageScreen)
+        assert "tasks (:*)" in app.screen.body and "failed (8)" in app.screen.body
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_each_cancel_and_leader(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from tests.test_app import wait_until
+
+    cfg = fake_cfg()
+    cfg.commands = {"wait": "sleep 30"}
+    cfg.leader = {"W": "*wait"}
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # feature/x
+        await pilot.press("backslash", "W")
+        await wait_until(pilot, lambda: app.tasks.running_count() == 1)
+        assert "1 task" in str(app.main.query_one("#header", Static).content)
+        await pilot.pause(0.2)
+        await pilot.press("x")
+        await wait_until(pilot, lambda: not app.tasks.running_count())
+        task = app.tasks.latest("feature/x")
+        assert task is not None and task.status == "interrupted"
+        assert any("sent SIGINT to :*wait" in m for m in messages(app))
+
+    run_app(repo, cfg, scenario)
+
+
+def test_each_rejects_builtins(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await type_line(pilot, "*refresh")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert any("cannot run per workspace" in m for m in messages(app))
+        assert not app.tasks.tasks
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui.config import Action, LastUsed
+    from project_sandbox_tui.screens.dialogs import ConfirmScreen
+    from tests.test_app import wait_until
+
+    cfg = fake_cfg()
+    cfg.defaults.agent = "bash"
+    cfg.actions = {"chores": Action(prompt="chores on {bookmark} vs {main}", effort="low")}
+    cfg.leader = {"rc": "chores sleep:1"}
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        mark(app, "@", "feature/x")
+        await type_line(pilot, "chores sleep:0.2")
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert (
+            isinstance(screen, ConfirmScreen)
+            and "start :chores on 2 bookmarks?" in screen.title_text
+        )
+        await pilot.press("y")
+        await wait_until(pilot, lambda: {"@", "feature/x"} <= set(app.jobs.jobs))
+        job = app.jobs.jobs["feature/x"]
+        assert job.mode == "background" and (job.spec.agent, job.spec.effort) == ("bash", "low")
+        assert job.spec.prompt_text == "chores on feature/x vs main\n\nsleep:0.2\n"
+        assert app.jobs.jobs["@"].spec.prompt_text.startswith("chores on @ vs main")
+        assert app.selection() == []  # cleared, as after a merge
+        assert app.prompt_history.newest_first() == []  # actions are not typed prompts
+        assert LastUsed.load(repo).agent == ""  # nor launch-form choices
+        await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
+
+        # One target that is not main: no question. Busy targets are skipped.
+        names = [r.branch.name for r in app.visible_rows()]
+        app.table.move_cursor(row=names.index("feature/x"))
+        await pilot.press("backslash", "r", "c")
+        await wait_until(
+            pilot, lambda: app.jobs.jobs["feature/x"].spec.prompt_text.endswith("sleep:1\n")
+        )
+        assert app.jobs.jobs["feature/x"].running
+        await pilot.press("backslash", "r", "c")
+        await pilot.pause()
+        assert any("skipped: feature/x already has" in m for m in messages(app))
+
+        # The main bookmark always asks.
+        await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
+        app.table.move_cursor(row=names.index("main"))
+        await pilot.press("backslash", "r", "c")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen) and "main bookmark" in app.screen.body
+        await pilot.press("n")
+        assert "main" not in app.jobs.jobs
+
+    run_app(repo, cfg, scenario)
+
+
+def test_open_editor_on_each_selected_workspace(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from tests.conftest import wait_for
+
+    cfg = fake_cfg()
+    cfg.ui.editor_command = "sh -c 'touch \"$1/opened\"' sh {path}"
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        mark(app, "@", "feature/x")
+        await pilot.press("o")
+        targets = [repo, app._workspace_dir("feature/x")]
+        wait_for(lambda: all((p / "opened").exists() for p in targets))
+
+    run_app(repo, cfg, scenario)
+
+
+def test_delete_and_move_ask_while_tasks_run(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui.screens.dialogs import ConfirmScreen
+    from project_sandbox_tui.vcs import detect
+    from tests.test_app import wait_until
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        names = [r.branch.name for r in app.visible_rows()]
+        mark(app, "@", "feature/x")
+        await type_line(pilot, "*!sleep 30")
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: app.tasks.running_count() == 2)
+
+        app.table.move_cursor(row=names.index("feature/x"))
+        await pilot.press("escape", "d", "d")
+        screen = app.screen
+        assert isinstance(screen, ConfirmScreen) and screen.title_text == "delete feature/x?"
+        assert "feature/x  :*!sleep 30" in screen.body
+        await pilot.press("n")  # anything but y keeps it
+        assert "feature/x" in {b.name for b in detect(repo).list_branches()}
+
+        await pilot.press("at")  # @'s task runs in the repository
+        screen = app.screen
+        assert isinstance(screen, ConfirmScreen) and "@  :*!sleep 30" in screen.body
+        await pilot.press("n")
+
+        await pilot.press("d", "d")
+        await pilot.press("y")
+        await wait_until(
+            pilot, lambda: "feature/x" not in {b.name for b in detect(repo).list_branches()}
+        )
+        assert app.tasks.running("feature/x")  # the task is left alone
+        for name in ("@", "feature/x"):
+            app.tasks.cancel(name)
+        await wait_until(pilot, lambda: not app.tasks.running_count())  # refreshed on a timer
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_tasks_view(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui.screens.dialogs import MessageScreen
+    from project_sandbox_tui.screens.log import LogScreen
+    from project_sandbox_tui.screens.tasks import TasksScreen
+    from tests.test_app import wait_until
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("T")  # nothing yet
+        screen = app.screen
+        assert isinstance(screen, TasksScreen)
+        assert screen.query_one("#tasks-empty", Static).display
+        await pilot.press("q")
+
+        mark(app, "@")
+        await type_line(pilot, "*!echo done")
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: bool(app.tasks.tasks) and not app.tasks.running_count())
+        mark(app, "feature/x")
+        await type_line(pilot, "*!sleep 30")
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: app.tasks.running_count() == 1)
+        await pilot.press("escape")
+        names = [r.branch.name for r in app.visible_rows()]
+        app.table.move_cursor(row=names.index("@"))
+
+        await pilot.press("T")
+        screen = app.screen
+        assert isinstance(screen, TasksScreen)
+        table = screen.table
+        rows = [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+        assert [r[2:] for r in rows] == [
+            ["feature/x", "running", ":*!sleep 30"],  # running first
+            ["@", "completed", ":*!echo done"],
+        ]
+        assert "1 running in 1 workspace · 1 finished" in str(
+            screen.query_one("#tasks-title", Static).content
+        )
+        assert screen.selected_task() is app.tasks.latest("@")  # the highlighted row's
+
+        await pilot.press("l")
+        log = app.screen
+        assert isinstance(log, LogScreen) and log.current is not None
+        await wait_until(pilot, lambda: "done" in log.current.read_text())
+        await pilot.press("q", "P")
+        assert isinstance(app.screen, MessageScreen)
+        assert f"directory   {repo}" in app.screen.body
+        await pilot.press("q")
+
+        await pilot.press("k", "x")  # the running task: SIGINT
+        await wait_until(pilot, lambda: not app.tasks.running_count())
+        assert app.tasks.latest("feature/x").status == "interrupted"
+        done = app.tasks.latest("@")
+        assert done is not None
+        app.screen.table.move_cursor(
+            row=[str(k.value) for k in app.screen.table.rows].index(done.id)
+        )
+        await pilot.press("x")  # a finished task: forgotten, with its output
+        assert app.tasks.latest("@") is None and not Path(done.out_path).exists()
+        await pilot.press("T")
+        assert app.screen is app.main
+
+    run_app(repo, fake_cfg(), scenario)

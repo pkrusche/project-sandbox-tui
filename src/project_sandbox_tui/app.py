@@ -9,7 +9,7 @@ import os
 import shlex
 import subprocess
 import time
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast
@@ -73,6 +73,8 @@ from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
 from project_sandbox_tui.screens.review import DiffReviewScreen
+from project_sandbox_tui.screens.tasks import TasksScreen
+from project_sandbox_tui.tasks import TaskManager, TaskRecord
 from project_sandbox_tui.vcs import (
     WORKING_COPY,
     Branch,
@@ -122,6 +124,7 @@ class Row:
     session: SessionRecord | None
     graph: tuple[str, int] | None = None  # history graph line and its node position
     review: tuple[int, int] | None = None  # reviewed files, total files against main
+    tasks: list[TaskRecord] = dataclasses.field(default_factory=list)  # :* tasks, newest first
 
     def name_cell(self, selected: bool = False) -> Text:
         b = self.branch
@@ -155,7 +158,27 @@ class Row:
         if sess is not None and (job is None or not job.running):
             glyph, colour = GLYPHS["external"]
             status = "busy (other)"
+        if tag := self.task_tag():
+            status = f"{status} · {tag}" if status else tag
         return glyph, colour, status
+
+    def task_tag(self) -> str:
+        """The latest ``:*`` task, while it runs or until a newer sandbox run."""
+        if not self.tasks:
+            return ""
+        task, job = self.tasks[0], self.job
+        running = [t for t in self.tasks if t.running]
+        if not running and job is not None and job.started_at > task.started_at:
+            return ""
+        if running:
+            task = running[0]
+            more = f" +{len(running) - 1}" if len(running) > 1 else ""
+            return f":{task.name} ▶{more}"
+        if task.status == "completed":
+            return f":{task.name} ✓"
+        if task.status == "failed":
+            return f":{task.name} ✗{task.exit_code if task.exit_code is not None else ''}"
+        return f":{task.name} {task.status}"
 
     def graph_cell(self) -> Text:
         """The history graph line, its node showing the run status."""
@@ -231,6 +254,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("at", "app.move_working_copy", show=False),
     Binding("P", "app.preview", show=False),
     Binding("L", "app.op_log", show=False),
+    Binding("T", "app.tasks", show=False),
     Binding("W", "app.cleanup_workspaces", show=False),
     Binding("x", "app.cancel", show=False),
     Binding("R", "app.refresh", show=False),
@@ -250,7 +274,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("gg G", "top / bottom"),
             ("^d ^u", "half page"),
             ("/", "filter"),
-            (":", "command · :! shell"),
+            (":", "command · :! :* shell"),
             ("?", "full help"),
             ("H", "hide sheet"),
             ("q", "quit"),
@@ -265,6 +289,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("l ⏎", "log / transcript"),
             ("P", "details / command"),
             ("L", "op history graph"),
+            ("T", ":* tasks"),
         ),
     ),
     (
@@ -387,8 +412,8 @@ class MainScreen(Screen[None]):
         if modifier:
             hints = {
                 "ctrl": "ctrl+d/u half page down/up · ctrl+r redo · ctrl+l reload configuration",
-                "shift": "G bottom · V select · P details · L op history · R refresh · W clean up"
-                " · H sheet",
+                "shift": "G bottom · V select · P details · L op history · T tasks · R refresh"
+                " · W clean up · H sheet",
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
@@ -433,6 +458,7 @@ class SandboxTUI(App[None]):
         self.config_path = config_path
         self.dry_run = dry_run
         self.jobs = jobs or JobManager(repo, cfg)
+        self.tasks = TaskManager(self.jobs.state_dir)  # :* commands in workspaces
         self.sessions_dir = sessions_dir
         self.branches: list[Branch] = []
         self._reviews: dict[str, tuple[int, int]] = {}
@@ -551,6 +577,8 @@ class SandboxTUI(App[None]):
         )
         for job in self.jobs.refresh(self.sessions):
             self._announce(job)
+        for task in await asyncio.to_thread(self.tasks.refresh):
+            self._announce_task(task)
         # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
         with contextlib.suppress(NoMatches):
             self._render_table()
@@ -646,6 +674,22 @@ class SandboxTUI(App[None]):
         if self.cfg.ui.bell:
             self.bell()
 
+    def _announce_task(self, task: TaskRecord) -> None:
+        if not self.tasks.mark_notified(task):
+            return
+        status = task.status
+        if task.exit_code is not None and status != "completed":
+            status += f" ({task.exit_code})"
+        self.notify(
+            f"{task.bookmark}: :{task.line} {status}",
+            severity="information" if task.status == "completed" else "warning",
+            timeout=10,
+        )
+        title = f"sbx-tui: {task.bookmark} :{task.name} {status}"
+        notify.send(title, task.line, self.cfg.ui.notify_command)
+        if self.cfg.ui.bell:
+            self.bell()
+
     def main_name(self) -> str | None:
         return main_branch(
             {b.name for b in self.branches if not b.working_copy}, self.cfg.project.main_branch
@@ -676,6 +720,7 @@ class SandboxTUI(App[None]):
                 self.sessions.get(n),
                 lines.get(n),
                 self._reviews.get(n),
+                self.tasks.for_bookmark(n),
             )
             for n in names
         ]
@@ -752,6 +797,9 @@ class SandboxTUI(App[None]):
         count = sum(1 for b in self.branches if not b.working_copy)
         stats = [f"{count_label(count)} · {running} running"]
         short = [f"{count} bm · {running} run"]
+        if tasks := self.tasks.running_count():
+            stats.append(f"{tasks} task{'s' * (tasks != 1)}")
+            short.append(f"{tasks} task{'s' * (tasks != 1)}")
         if busy_other:
             stats.append(f"{busy_other} external")
             short.append(f"{busy_other} ext")
@@ -809,18 +857,17 @@ class SandboxTUI(App[None]):
     # ------------------------------------------------------------ selection
 
     def selection(self) -> list[str]:
-        """Selected branches in merge / stacking order: marks in the order they
-        were made, then the visual range in list order. The jj working-copy row
-        cannot take part."""
+        """Selected rows in merge / stacking order: marks in the order they were
+        made, then the visual range in list order. May include the working copy;
+        merges and rebases leave it out (:meth:`_launch_octopus`)."""
         names = [r.branch.name for r in self.visible_rows()]
         chosen = [n for n in self.marked]
         cursor = self.selected_branch_name()
         if self._visual_anchor in names and cursor in names:
             i, j = sorted((names.index(self._visual_anchor), names.index(cursor)))
             chosen += [n for n in names[i : j + 1] if n not in chosen]
-        excluded = {b.name for b in self.branches if b.working_copy}
         known = {b.name for b in self.branches}
-        return [n for n in chosen if n not in excluded and n in known]
+        return [n for n in chosen if n in known]
 
     def _refresh_marks(self) -> None:
         """Redraw the name cells and header after the selection changed."""
@@ -847,10 +894,6 @@ class SandboxTUI(App[None]):
     def action_toggle_mark(self) -> None:
         name = self.selected_branch_name()
         if name is None:
-            return
-        branch = self.branch(name)
-        if branch is not None and branch.working_copy:
-            self.notify("the working copy cannot be merged; select bookmarks", severity="warning")
             return
         if name in self.marked:
             self.marked.remove(name)
@@ -1002,7 +1045,13 @@ class SandboxTUI(App[None]):
         if branch is None or branch.working_copy:
             self.notify("select a bookmark for the working copy", severity="warning")
             return
-        self._move_working_copy(target)
+        self._confirm_running_tasks(
+            [WORKING_COPY],
+            f"move the working copy onto {target}?",
+            "Checking out the bookmark changes the repository's files under these tasks.",
+            "move",
+            lambda: self._move_working_copy(target),
+        )
 
     @work(exclusive=True, group="vcs")
     async def _move_working_copy(self, target: str) -> None:
@@ -1126,6 +1175,10 @@ class SandboxTUI(App[None]):
     def action_launch(self, mode: Mode) -> None:
         self._end_visual()
         selected = self.selection()
+        if len(selected) > 1 and WORKING_COPY in selected:
+            selected = [n for n in selected if n != WORKING_COPY]
+            if len(selected) > 1:
+                self.notify("the working copy is left out of the merge or rebase")
         if len(selected) > 1:
             self._launch_octopus(mode, selected)
             return
@@ -1313,7 +1366,10 @@ class SandboxTUI(App[None]):
         history_text: str | None = None,
         banner: str = "",
         draft_key: tuple[str, ...] = (),
+        remember_defaults: bool = True,
     ) -> None:
+        """Start a launch. ``remember_defaults`` False (agent actions) keeps the
+        prompt history and the launch form's defaults as they are."""
         try:
             # Bookmarks and external sessions may have changed while the
             # launch form was open. Recheck immediately before starting.
@@ -1349,6 +1405,9 @@ class SandboxTUI(App[None]):
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
         else:
             self._drafts.pop(draft_key, None)
+            if not remember_defaults:
+                self.call_later(self.refresh_data)
+                return
             if spec.mode == "background":
                 self.prompt_history.add(spec.prompt_text if history_text is None else history_text)
             # Only a launch that actually started becomes the new default.
@@ -1481,7 +1540,32 @@ class SandboxTUI(App[None]):
             else:
                 names.append(name)
         if names:
-            self._delete_bookmarks(names)
+            self._confirm_running_tasks(
+                names,
+                f"delete {', '.join(names)}?",
+                "The tasks keep running in the workspaces, which stay; "
+                "the bookmarks are deleted under them.",
+                "delete",
+                lambda: self._delete_bookmarks(names),
+            )
+
+    def _confirm_running_tasks(
+        self, names: list[str], title: str, body: str, verb: str, go: Callable[[], object]
+    ) -> None:
+        """Run ``go`` at once unless ``names`` have running ``:*`` tasks; then ask first."""
+        running = [f"{n}  :{t.line}" for n in names for t in self.tasks.running(n)]
+        if not running:
+            go()
+            return
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                go()
+
+        listed = "\n".join(running)
+        self.push_screen(
+            ConfirmScreen(title, f"Running :* tasks:\n{listed}\n\n{body}", verb), decided
+        )
 
     @work(group="history")  # not exclusive: cancelling would drop what jj already did
     async def _delete_bookmarks(self, names: list[str]) -> None:
@@ -1717,10 +1801,23 @@ class SandboxTUI(App[None]):
             return
         name = chosen[0]
         job = self.jobs.jobs.get(name)
-        if job is None:  # no log yet: the history and command are the next best thing
+        task = self.tasks.latest(name)
+        if job is None and task is None:  # no log yet: history and command are next best
             self.action_preview()
             return
-        self.push_screen(LogScreen(job))
+        if job is None or task is None:
+            self.push_screen(LogScreen(*(r for r in (job, task) if r is not None)))
+            return
+        # Open on whichever ran last; tab switches to the other's files.
+        self.push_screen(LogScreen(job, task, start=int(task.started_at > job.started_at)))
+
+    def _task_line(self, task: TaskRecord) -> str:
+        status = task.status
+        if task.exit_code is not None and status != "completed":
+            status += f" ({task.exit_code})"
+        started = _ts(task.started_at)
+        when = f"{_clock(started)}  " if started else ""
+        return f"{when}{status:<16} :{task.line}"
 
     def action_open_editor(self) -> None:
         chosen = self._action_branches()
@@ -1744,19 +1841,29 @@ class SandboxTUI(App[None]):
             return self.repo
         return workspace_path(self.repo, name, self.worktree_dir)
 
-    def _open_editor(self, name: str) -> None:
+    def _ensure_workspace(self, name: str) -> Path | None:
+        """The row's workspace directory, created (``jj workspace add``) if missing.
+
+        None, after a notice, when it cannot be created now."""
         path = self._workspace_dir(name)
-        if not path.exists():
-            if self.jobs.busy_reason(name, self.sessions):
-                # Its session is about to create the workspace: never race it.
-                self.notify(f"{name}: workspace not created yet; try again", severity="warning")
-                return
-            try:
-                self.backend.add_workspace(name, path)
-            except (VcsError, OSError) as exc:
-                self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
-                return
-            self.notify(f"{name}: created workspace {path}")
+        if path.exists():
+            return path
+        if self.jobs.busy_reason(name, self.sessions):
+            # Its session is about to create the workspace: never race it.
+            self.notify(f"{name}: workspace not created yet; try again", severity="warning")
+            return None
+        try:
+            self.backend.add_workspace(name, path)
+        except (VcsError, OSError) as exc:
+            self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
+            return None
+        self.notify(f"{name}: created workspace {path}")
+        return path
+
+    def _open_editor(self, name: str) -> None:
+        path = self._ensure_workspace(name)
+        if path is None:
+            return
         if self.cfg.ui.editor_command:
             try:
                 tokens = launchers.fill_command(self.cfg.ui.editor_command, {"path": str(path)})
@@ -1801,6 +1908,8 @@ class SandboxTUI(App[None]):
                 )
             if history := self._history_lines(name):
                 parts.append("history\n" + "\n".join(history))
+            if tasks := self.tasks.for_bookmark(name):
+                parts.append("tasks (:*)\n" + "\n".join(map(self._task_line, tasks)))
             try:
                 spec = LaunchSpec(branch=name, agent=d.agent, model=d.model, effort=d.effort)
                 command = self._spec_preview(spec)
@@ -1822,6 +1931,10 @@ class SandboxTUI(App[None]):
         name = self.selected_branch_name()
         head = self.graph.state.head(name) if name else None
         self.push_screen(OpLogScreen(self.graph, self.jobs, head.id if head else None))
+
+    def action_tasks(self) -> None:
+        """T: every :* task across the workspaces, starting on the highlighted row's."""
+        self.push_screen(TasksScreen(self.tasks, self.selected_branch_name()))
 
     def action_cleanup_workspaces(self) -> None:
         self._cleanup_workspaces()
@@ -1921,11 +2034,17 @@ class SandboxTUI(App[None]):
         Asks first before the first signal reaches several runs at once."""
         chosen = self._action_branches()
         fresh = [
-            name
+            f"{name}  {job.spec.label()}"
             for name in chosen
             if (job := self.jobs.jobs.get(name)) is not None
             and job.running
             and not self.jobs.cancel_started(name)
+        ]
+        fresh += [
+            f"{name}  :{task.line}"
+            for name in chosen
+            if not self.tasks.cancel_started(name)
+            for task in self.tasks.running(name)
         ]
         if len(fresh) < 2:
             self._cancel(chosen)
@@ -1936,15 +2055,21 @@ class SandboxTUI(App[None]):
                 self._cancel(chosen)
 
         body = (
-            "\n".join(f"{name}  {self.jobs.jobs[name].spec.label()}" for name in fresh)
-            + "\n\nEach run gets SIGINT, so project-sandbox can commit its work and close "
+            "\n".join(fresh)
+            + "\n\nEach gets SIGINT, so project-sandbox can commit its work and close "
             "the session. Pressing x again escalates without asking."
         )
         self.push_screen(ConfirmScreen(f"cancel {len(fresh)} runs?", body, "cancel"), decided)
 
     def _cancel(self, names: list[str]) -> None:
         for name in names:
-            self.notify(self.jobs.cancel(name, self.sessions))
+            # Running tasks first: a finished run's status should not hide them.
+            messages = self.tasks.cancel(name)
+            job = self.jobs.jobs.get(name)
+            if not messages or (job is not None and job.running):
+                messages.append(self.jobs.cancel(name, self.sessions))
+            for message in messages:
+                self.notify(message)
         self._render_table()
 
     async def action_refresh(self) -> None:
@@ -2020,6 +2145,16 @@ class SandboxTUI(App[None]):
             extra.append(
                 ("configured commands", tuple((f":{n}", c) for n, c in self.cfg.commands.items()))
             )
+        if self.cfg.actions:
+            extra.append(
+                (
+                    "agent actions (each target)",
+                    tuple(
+                        (f":{n}", a.prompt.strip().splitlines()[0])
+                        for n, a in self.cfg.actions.items()
+                    ),
+                )
+            )
         if self.cfg.leader:
             mapped = tuple(
                 (self.cfg.ui.leader + k, f":{line.removeprefix(':')}")
@@ -2031,7 +2166,7 @@ class SandboxTUI(App[None]):
     # ------------------------------------------------------------ commands
 
     def action_command_line(self) -> None:
-        names = [*commands.BUILTINS, *self.cfg.commands]
+        names = [*commands.BUILTINS, *self.cfg.commands, *self.cfg.actions]
         screen = CommandScreen(names, self.command_history, self.repo)
 
         def entered(line: str | None) -> None:
@@ -2068,11 +2203,15 @@ class SandboxTUI(App[None]):
     async def run_command(self, line: str) -> None:
         """Run a command line as typed after ``:``."""
         try:
-            command = commands.parse(line, self.cfg.commands)
+            command = commands.parse(line, self.cfg.commands, self.cfg.actions)
         except commands.CommandError as exc:
             self.notify(str(exc), severity="error")
             return
-        if command.builtin == "quit":
+        if command.action:
+            self._run_action(command)
+        elif command.each:
+            self._run_each(command)
+        elif command.builtin == "quit":
             await self.action_quit()
         elif command.builtin == "help":
             self.action_help()
@@ -2117,6 +2256,114 @@ class SandboxTUI(App[None]):
         if code:
             self.notify(f":{command.line} exited with {code}", severity="warning")
         self.call_later(self.refresh_data)  # the command may have changed bookmarks
+
+    def _confirm_targets(
+        self, targets: list[str], title: str, body: str, verb: str, go: Callable[[], None]
+    ) -> None:
+        """Run ``go`` at once for a few targets, else after asking with their list."""
+        if len(targets) <= EDITOR_BATCH and not body:
+            go()
+            return
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                go()
+
+        listed = "\n".join(b.label if (b := self.branch(n)) else n for n in targets)
+        self.push_screen(ConfirmScreen(title, f"{listed}\n\n{body}".rstrip(), verb), decided)
+
+    def _run_each(self, command: commands.Command) -> None:
+        """``:*``: start the shell command in each target's workspace, in parallel."""
+        targets = self._action_branches()
+        if not targets:
+            return
+
+        def go() -> None:
+            started, busy = [], []
+            for name in targets:
+                path = self._ensure_workspace(name)
+                if path is None:
+                    continue
+                env = {
+                    **os.environ,
+                    "SBX_REPO": str(self.repo),
+                    "SBX_BOOKMARK": name,
+                    "SBX_WORKSPACE": str(path),
+                }
+                try:
+                    self.tasks.start(name, command.line, command.script, path, env)
+                except OSError as exc:
+                    self.notify(f"{name}: could not run :{command.line}: {exc}", severity="error")
+                    continue
+                started.append(name)
+                if self.jobs.busy_reason(name, self.sessions):
+                    busy.append(name)
+            if started:
+                where = started[0] if len(started) == 1 else f"{len(started)} workspaces"
+                self.notify(f":{command.line} started in {where} (l shows output, x cancels)")
+            if busy:
+                self.notify(
+                    f"{', '.join(busy)}: a sandbox session is still changing these files",
+                    severity="warning",
+                )
+            self._render_table()
+
+        self._confirm_targets(
+            targets,
+            f"run :{command.line} in {len(targets)} workspaces?",
+            "",
+            "run",
+            go,
+        )
+
+    def _run_action(self, command: commands.Command) -> None:
+        """``:NAME`` for an [actions] entry: a background sandbox run on each target."""
+        action = self.cfg.actions[command.action]
+        targets = self._action_branches()
+        if not targets:
+            return
+        idle, busy = [], []
+        for name in targets:
+            reason = self.jobs.busy_reason(name, self.sessions)
+            (busy if reason else idle).append(reason or name)
+        for reason in busy:
+            self.notify(f"skipped: {reason}", severity="warning")
+        if not idle:
+            return
+        d = resolve_launch_defaults(self.cfg, LastUsed.load(self.repo))
+        agent = action.agent or d.agent
+        model = action.model or (d.model if agent == d.agent else "")
+        main = self.main_name() or ""
+        specs = [
+            LaunchSpec(
+                branch=name,
+                agent=agent,
+                model=model,
+                effort=action.effort or d.effort,
+                mode="background",
+                prompt_text=action.render(name, main, command.args),
+                timeout=action.timeout if action.timeout is not None else d.timeout,
+            )
+            for name in idle
+        ]
+
+        def go() -> None:
+            self.clear_branch_selection()
+            for spec in specs:
+                # Each start re-lists bookmarks and rechecks sessions, as r does.
+                self.call_after_refresh(self._start_launch, spec, remember_defaults=False)
+
+        body = f"Each starts :{command.action} as an unsupervised {specs[0].label()} run."
+        if main in idle:
+            body += (
+                f"\n\n{main} is the main bookmark: the agent's changes land on it "
+                "with no separate bookmark to review first."
+            )
+        if len(idle) == 1 and main not in idle:
+            go()
+            return
+        title = f"start :{command.action} on {len(idle)} bookmark{'s' * (len(idle) != 1)}?"
+        self._confirm_targets(idle, title, body, "start", go)
 
     async def action_quit(self) -> None:
         """Quit, asking first while runs or sessions are still going (q and ctrl+q)."""

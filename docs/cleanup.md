@@ -12,7 +12,9 @@ reasons for keeping others.
 
 Candidates come from `jj workspace list`, regardless of name or location. The
 current workspace is excluded. Normal cleanup keeps `default` and workspaces
-with running sessions, uncommitted changes or files too large to snapshot.
+with running sessions or [`:*` tasks](usage.md#running-in-each-workspace),
+uncommitted changes or files too large to snapshot; workspaces in use cannot
+be force-removed either.
 Directories containing another registered workspace are protected from both
 normal and force removal; remove the nested workspace first and scan again.
 Running sessions also protect enclosing and nested workspace directories.

@@ -13,10 +13,11 @@ require a `.jj/` directory.
 | `vcs.py` | Bookmark discovery, creation, changed files, working-copy moves and fast-forwarding |
 | `sandbox.py` | `LaunchSpec`, argv construction and session matching |
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
+| `tasks.py` | `:*` host commands in bookmark workspaces: detached, output and exit status captured |
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
-| `commands.py` | `:` command parsing, completion and leader-key mappings |
+| `commands.py` | `:` command parsing (`:!`, `:*`, `[actions]`), completion and leader-key mappings |
 | `review.py` | Diff review: files marked seen per bookmark |
 | `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |

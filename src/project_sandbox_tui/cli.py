@@ -228,10 +228,12 @@ def _config(args: Namespace, repo: Path | None) -> int:
     if args.action == "get":
         key = settings.parse_key(args.key)
         _warn_untrusted(repo)
-        table = settings.effective_values(repo, args.config).get(key.section, {})
-        if key.name not in table:
+        table = settings.effective_values(repo, args.config)
+        for part in key.path[:-1]:
+            table = table.get(part, {})
+        if key.path[-1] not in table:
             return 1  # like git config: unset
-        value = table[key.name]
+        value = table[key.path[-1]]
         print(value if isinstance(value, str) else settings.format_value(value))
         return 0
 

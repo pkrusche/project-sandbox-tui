@@ -1372,9 +1372,9 @@ def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config], visual_key:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         names = [r[1] for r in row_texts(app)]
         assert len(names) == 4
-        await pilot.press("space")  # the working copy cannot be marked
-        assert app.selection() == []
-        await pilot.press("j", "space")  # mark the first bookmark and move down
+        await pilot.press("space")  # the working copy can be marked, for :* and actions
+        assert app.selection() == ["@"]
+        await pilot.press("escape", "space")  # space moved down: mark the first bookmark
         assert app.selection() == [app.visible_rows()[1].branch.name]
         assert row_texts(app)[1][1].startswith("+ ")
         await pilot.press("space")
@@ -1384,11 +1384,11 @@ def test_selection_keys(repo: Path, fake_cfg: Callable[..., Config], visual_key:
         assert app.selection() == []
         # visual range: v at the top, G extends to the bottom
         await pilot.press("g", "g", visual_key, "G")
-        assert len(app.selection()) == 3
+        assert len(app.selection()) == 4
         assert "VISUAL" in str(app.main.query_one("#header", Static).content)
         await pilot.press(visual_key)  # end visual, keep the range as marks
         await pilot.press("g", "g")
-        assert len(app.selection()) == 3 and app._visual_anchor is None
+        assert len(app.selection()) == 4 and app._visual_anchor is None
         await pilot.press("escape")
         assert app.selection() == []
         # one mark launches on it, as f and @ act on it, instead of a merge
@@ -1806,16 +1806,16 @@ def test_octopus_rebase_background_jj(jj_repo: Path, fake_cfg: Callable[..., Con
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         rows = [b.name for b in app.branches]
-        # the working copy row cannot be selected
-        await pilot.press("space")
-        assert app.selection() == []
+        await pilot.press("space")  # the working copy: marked, but left out of the rebase
         for name in ("a", "b"):
             app.table.move_cursor(row=rows.index(name), animate=False)
             await pilot.press("space")
-        assert app.selection() == ["a", "b"]  # marking order
+        assert app.selection() == ["@", "a", "b"]  # marking order
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.octopus is not None
+        assert form.octopus.inputs == ["a", "b"]
+        assert any("working copy is left out" in str(n.message) for n in app._notifications)
         form.query_one("#operation").focus()
         await pilot.press("l")  # rebase
         await pilot.pause()

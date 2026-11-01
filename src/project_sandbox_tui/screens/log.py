@@ -1,9 +1,11 @@
-"""Tail view of a job's transcript, agent log and captured output."""
+"""Tail view of a job's transcript, agent log and captured output, and of the
+output of ``:*`` tasks run in the bookmark's workspace."""
 
 from __future__ import annotations
 
 import codecs
 from pathlib import Path
+from typing import Protocol
 
 from rich.text import Text
 from textual import events
@@ -12,10 +14,24 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Log, Static
 
-from project_sandbox_tui.jobs import JobRecord
 from project_sandbox_tui.widgets import KeyHints, PrefixKeys
 
 INITIAL_TAIL_BYTES = 256 * 1024
+
+
+class LogSource(Protocol):
+    """A sandbox run (``JobRecord``) or a ``:*`` task (``TaskRecord``)."""
+
+    @property
+    def branch(self) -> str: ...
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def exit_code(self) -> int | None: ...
+
+    def output_files(self) -> list[Path]: ...
 
 
 class LogScreen(Screen[None]):
@@ -40,12 +56,15 @@ class LogScreen(Screen[None]):
         Binding("f", "toggle_follow", show=False),
     ]
 
-    def __init__(self, job: JobRecord) -> None:
+    def __init__(self, *sources: LogSource, start: int = 0) -> None:
+        """Show the files of each source in turn, starting with source ``start``."""
         super().__init__()
-        self.job = job
-        self._files = job.output_files()
+        self._owners = [(source, path) for source in sources for path in source.output_files()]
+        self._files = [path for _source, path in self._owners]
+        self.job = sources[start] if sources else None
         # Start on the first file that exists (transcript appears only at the end).
-        self._idx = next((i for i, p in enumerate(self._files) if p.exists()), 0)
+        first = next((i for i, (s, _p) in enumerate(self._owners) if s is self.job), 0)
+        self._idx = next((i for i, p in enumerate(self._files) if i >= first and p.exists()), first)
         self._pos = 0
         self._follow = True
         self._prefix = PrefixKeys()
@@ -86,12 +105,15 @@ class LogScreen(Screen[None]):
     def _title(self) -> None:
         path = self.current
         name = path.name if path else "(no output files)"
-        state = self.job.status + (
-            f" · exit {self.job.exit_code}" if self.job.exit_code is not None else ""
-        )
+        source = self._owners[self._idx][0] if self._owners else self.job
+        state = ""
+        if source is not None:
+            state = source.status + (
+                f" · exit {source.exit_code}" if source.exit_code is not None else ""
+            )
         follow = "follow" if self._follow else "paused"
         title = Text()
-        title.append(f"{self.job.branch}  ", style="bold")
+        title.append(f"{source.branch if source else ''}  ", style="bold")
         title.append(f"[{self._idx + 1}/{len(self._files)}] {name}  ", style="")
         title.append(f"{state} · {follow}", style="dim")
         self.query_one("#log-title", Static).update(title)

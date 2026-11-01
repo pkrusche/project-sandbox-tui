@@ -21,6 +21,7 @@ import tomlkit.items
 
 from project_sandbox_tui.config import (
     _SECTIONS,
+    ACTION_KEYS,
     AGENTS,
     Config,
     ConfigError,
@@ -45,14 +46,29 @@ class Key:
     def __str__(self) -> str:
         return f"{self.section}.{self.name}"
 
+    @property
+    def path(self) -> list[str]:
+        """Table names from the document root to the value: ``actions.NAME.prompt``
+        is nested one level deeper than other keys."""
+        if self.section == "actions":
+            action, _, name = self.name.rpartition(".")
+            return [self.section, action, name]
+        return [self.section, self.name]
+
 
 def parse_key(text: str) -> Key:
-    """``section.key``, ``models.<agent>``, ``commands.<name>`` or ``leader.<keys>``."""
+    """``section.key``, ``models.<agent>``, ``commands.<name>``, ``leader.<keys>``
+    or ``actions.<name>.<key>``."""
     section, _, name = text.partition(".")
     if section == "models" and name in AGENTS:
         return Key(section, name, [])
     if section in ("commands", "leader") and name:
         return Key(section, name, "")
+    if section == "actions":
+        action, _, field = name.rpartition(".")
+        if action and field in ACTION_KEYS:
+            return Key(section, name, ACTION_KEYS[field])
+        raise ConfigError(f"unknown key {text!r}: use actions.<name>.<{'|'.join(ACTION_KEYS)}>")
     cls = _SECTIONS.get(section)
     if cls is None or name not in {f.name for f in dataclasses.fields(cls)}:
         raise ConfigError(f"unknown key {text!r} (see `sbx-tui config list`)")
@@ -89,12 +105,16 @@ def format_value(value: Any) -> str:
 
 
 def flatten(data: dict[str, Any]) -> list[tuple[str, Any]]:
-    return [
-        (f"{section}.{name}", value)
-        for section, table in data.items()
-        if isinstance(table, dict)
-        for name, value in table.items()
-    ]
+    out = []
+    for section, table in data.items():
+        if not isinstance(table, dict):
+            continue
+        for name, value in table.items():
+            if section == "actions" and isinstance(value, dict):
+                out += [(f"{section}.{name}.{k}", v) for k, v in value.items()]
+            else:
+                out.append((f"{section}.{name}", value))
+    return out
 
 
 def effective(cfg: Config) -> dict[str, Any]:
@@ -103,6 +123,7 @@ def effective(cfg: Config) -> dict[str, Any]:
     data["models"] = dict(cfg.models)
     data["commands"] = dict(cfg.commands)
     data["leader"] = dict(cfg.leader)
+    data["actions"] = {name: action.to_dict() for name, action in cfg.actions.items()}
     return data
 
 
@@ -130,22 +151,34 @@ class Editor:
 
     def set(self, key: Key, value: Any) -> None:
         doc = self.read()
-        table = doc.get(key.section)
-        if not isinstance(table, dict):
-            table = tomlkit.table()
-            doc[key.section] = table
-        table[key.name] = value
+        table: Any = doc
+        for part in key.path[:-1]:
+            inner = table.get(part)
+            if not isinstance(inner, dict):
+                inner = tomlkit.table(is_super_table=part == "actions")
+                table[part] = inner
+            table = inner
+        table[key.path[-1]] = value
         self.write(doc)
 
     def unset(self, key: Key) -> bool:
         """Remove ``key``; returns False if the file did not set it."""
         doc = self.read()
-        table = doc.get(key.section)
-        if not isinstance(table, dict) or key.name not in table:
+        tables: list[Any] = [doc]
+        for part in key.path[:-1]:
+            inner = tables[-1].get(part)
+            if not isinstance(inner, dict):
+                return False
+            tables.append(inner)
+        if key.path[-1] not in tables[-1]:
             return False
-        del table[key.name]
-        if isinstance(table, tomlkit.items.Table) and not table.as_string().strip():
-            del doc[key.section]  # nothing left, not even a comment
+        del tables[-1][key.path[-1]]
+        # Drop tables left with nothing, not even a comment, innermost first.
+        for parent, part, table in reversed(list(zip(tables, key.path, tables[1:], strict=False))):
+            if isinstance(table, tomlkit.items.Table) and not table.as_string().strip():
+                del parent[part]
+            else:
+                break
         self.write(doc)
         return True
 

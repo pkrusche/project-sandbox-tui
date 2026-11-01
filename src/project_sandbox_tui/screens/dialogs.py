@@ -464,7 +464,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 ("r", "unsupervised run"),
                 ("x", "cancel · 3×: forget"),
                 ("l / enter", "log, else details"),
-                ("P / L", "run details / op history"),
+                ("P / L / T", "details / op log / tasks"),
             ),
         ),
         (

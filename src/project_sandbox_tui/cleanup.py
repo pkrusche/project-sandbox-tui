@@ -12,6 +12,7 @@ from pathlib import Path
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.jobs import JobManager
 from project_sandbox_tui.sandbox import read_sessions
+from project_sandbox_tui.tasks import TaskManager
 from project_sandbox_tui.vcs import (
     JjBackend,
     VcsError,
@@ -152,6 +153,7 @@ def _inspect(
     ws: _Found,
     merged_bookmarks: set[str],
     workspace_roots: set[Path],
+    tasks: set[Path],
 ) -> Workspace:
     name, path = ws.name, ws.path
 
@@ -183,6 +185,8 @@ def _inspect(
         active.is_relative_to(resolved) or resolved.is_relative_to(active) for active in busy
     ):
         return keep("running session", forceable=False)
+    if any(active.is_relative_to(resolved) for active in tasks):
+        return keep("running :* task", forceable=False)
     if ws.missing:
         if _merged(repo, main, ws):
             return remove("directory not found", merged=True)
@@ -239,10 +243,16 @@ def _scan(
         for j in jobs.jobs.values()
         if j.running
     }
-    merged_rows = _merged_bookmarks(repo, main, busy, jobs, wd) if main else []
+    # :* tasks only use a workspace's files, so they keep it but don't make it busy.
+    task_manager = TaskManager(jobs.state_dir)
+    task_manager.refresh()  # records of tasks that ended since a TUI last looked
+    tasks = {Path(t.cwd).resolve() for t in task_manager.tasks.values() if t.running}
+    merged_rows = _merged_bookmarks(repo, main, busy | tasks, jobs, wd) if main else []
     merged_names = {ws.branch for ws in merged_rows}
     workspace_roots = {ws.path.resolve() for ws in found}
-    rows = [_inspect(repo, main, busy, jobs, ws, merged_names, workspace_roots) for ws in found]
+    rows = [
+        _inspect(repo, main, busy, jobs, ws, merged_names, workspace_roots, tasks) for ws in found
+    ]
     if main:
         taken = {ws.name for ws in found} | {ws.branch for ws in found}
         rows += [ws for ws in merged_rows if ws.name not in taken]

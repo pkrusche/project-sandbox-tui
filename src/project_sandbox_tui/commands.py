@@ -4,7 +4,12 @@
 - ``:NAME [ARGS]`` runs the ``[commands]`` entry ``NAME`` with ``ARGS``
   appended, e.g. ``test = "uv run pytest"`` makes ``:test -k merge`` run
   ``uv run pytest -k merge``.
+- ``:NAME [ARGS]`` for an ``[actions]`` entry starts its prompt as a background
+  sandbox run on each target bookmark, with ``ARGS`` appended to the prompt.
 - Built-in commands control the TUI itself (:data:`BUILTINS`).
+- A leading ``*`` runs a shell command once in each target workspace instead
+  of once in the repository: ``:*!pytest -x``, ``:*test``. Actions run per
+  target anyway, so ``*`` changes nothing for them.
 
 ``[leader]`` maps keys typed after ``ui.leader`` to command lines, e.g.
 ``t = "test"`` runs ``:test`` on ``\\t``. No mapping may be a prefix of another,
@@ -17,7 +22,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,42 +45,65 @@ class Command:
     line: str  # as typed, without the colon
     builtin: str = ""  # a BUILTINS name, or "" for a shell command
     script: str = ""  # run with sh -c
+    each: bool = False  # once in each target workspace (``:*``), not in the repository
+    action: str = ""  # an [actions] name: a sandbox run on each target
+    args: str = ""  # an action's extra words, appended to its prompt
 
 
-def parse(line: str, commands: Mapping[str, str]) -> Command:
+def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ()) -> Command:
     """Interpret a command line typed after ``:`` (a leading ``:`` is ignored)."""
     line = line.strip().removeprefix(":").strip()
-    if not line:
-        raise CommandError("empty command")
-    if line.startswith("!"):
-        script = line[1:].strip()
+    each = line.startswith("*")
+    body = line[1:].strip() if each else line
+    if not body:
+        raise CommandError(":* needs a command, e.g. :*!make" if each else "empty command")
+    if body.startswith("!"):
+        script = body[1:].strip()
         if not script:
-            raise CommandError(":! needs a shell command, e.g. :!make")
-        return Command(line, script=script)
-    name, *rest = line.split(maxsplit=1)
+            raise CommandError(f":{'*' if each else ''}! needs a shell command, e.g. :!make")
+        return Command(line, script=script, each=each)
+    name, *rest = body.split(maxsplit=1)
     args = rest[0] if rest else ""
     builtin = ALIASES.get(name, name)
     if builtin in BUILTINS:
+        if each:
+            raise CommandError(f":{name} cannot run per workspace")
         if args:
             raise CommandError(f":{name} takes no arguments")
         return Command(line, builtin=builtin)
     if name in commands:
-        return Command(line, script=f"{commands[name]} {args}".strip())
+        return Command(line, script=f"{commands[name]} {args}".strip(), each=each)
+    if name in actions:
+        return Command(line, action=name, args=args, each=True)
     raise CommandError(f"unknown command :{name} (tab lists commands)")
 
 
-def validate(commands: Mapping[str, str], leader: str, mappings: Mapping[str, str]) -> None:
+def check_name(table: str, name: str) -> None:
+    """Raise :class:`CommandError` unless ``name`` can be typed after ``:``."""
+    if not NAME.fullmatch(name):
+        raise CommandError(
+            f"[{table}] name {name!r} must start with a letter and contain only "
+            "letters, digits, _ and -"
+        )
+    if name in BUILTINS or name in ALIASES:
+        raise CommandError(f"[{table}] {name} is a built-in command")
+
+
+def validate(
+    commands: Mapping[str, str],
+    leader: str,
+    mappings: Mapping[str, str],
+    actions: Collection[str] = (),
+) -> None:
     """Raise :class:`CommandError` for names, leader keys or mappings that cannot work."""
     for name, script in commands.items():
-        if not NAME.fullmatch(name):
-            raise CommandError(
-                f"[commands] name {name!r} must start with a letter and contain only "
-                "letters, digits, _ and -"
-            )
-        if name in BUILTINS or name in ALIASES:
-            raise CommandError(f"[commands] {name} is a built-in command")
+        check_name("commands", name)
         if not script.strip():
             raise CommandError(f"[commands] {name} must not be empty")
+    for name in actions:
+        check_name("actions", name)
+        if name in commands:
+            raise CommandError(f"[actions] {name} is also in [commands]; rename one")
     if leader and (len(leader) != 1 or not leader.isprintable() or leader == ":"):
         raise CommandError('ui.leader must be one printable character other than ":", or ""')
     if mappings and not leader:
@@ -89,7 +117,7 @@ def validate(commands: Mapping[str, str], leader: str, mappings: Mapping[str, st
                 f"[leader] {keys!r} is a prefix of {longer!r}; it could never wait for the rest"
             )
         try:
-            parse(line, commands)
+            parse(line, commands, actions)
         except CommandError as exc:
             raise CommandError(f"[leader] {keys!r}: {exc}") from exc
 
@@ -143,13 +171,15 @@ def complete(
     """Completions for the word at the end of ``line``.
 
     Returns where that word starts and its replacements: command names for the
-    first word, programs on ``path`` (default ``$PATH``) after ``!``, and file
+    first word (also after ``*``), programs on ``path`` (default ``$PATH``) after ``!``, and file
     names relative to ``cwd`` for arguments.
     """
+    each = len(line) - len(line[1:].lstrip()) if line.startswith("*") else 0
+    line = line[each:]
     shell = line.startswith("!")
     body = line[1:] if shell else line
     word_start, word = _last_word(body)
-    start = word_start + int(shell)
+    start = each + word_start + int(shell)
     if body[:word_start].strip() or (shell and "/" in word):
         return start, files(word, cwd)
     if shell:

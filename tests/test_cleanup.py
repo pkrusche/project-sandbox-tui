@@ -498,3 +498,23 @@ def test_cleanup_protects_nested_running_session(repo: Path, monkeypatch, force:
         [result] = remove_workspaces(backend, cfg, [chosen])
     assert result.startswith("skipped") and "running session" in result
     assert outer.exists()
+
+
+def test_cleanup_keeps_workspace_with_running_task(repo: Path, capsys) -> None:
+    from project_sandbox_tui.config import repo_state_dir
+    from project_sandbox_tui.tasks import TaskManager
+
+    path = _add_workspace(repo, "feature/x")
+    tasks = TaskManager(repo_state_dir(repo))
+    task = tasks.start("feature/x", "*!sleep 30", "sleep 30", path, dict(os.environ))
+    try:
+        [ws] = find_workspaces(detect(repo), Config())
+        assert ws.status == "running :* task" and not ws.removable and not ws.forceable
+        assert main([str(repo), "--cleanup-workspaces"]) == 0
+        assert "running :* task" in capsys.readouterr().out
+        assert path.exists()
+    finally:
+        os.killpg(task.pid, 9)
+        tasks._procs[task.id].wait()
+    [ws] = find_workspaces(detect(repo), Config())  # removable again once it ends
+    assert ws.removable

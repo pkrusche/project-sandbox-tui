@@ -203,3 +203,27 @@ def test_project_edit_reports_unreadable_global_config(
     )
     assert code == 2 and "other config file" in err
     assert not config.project_config_path(repo).exists()
+
+
+def test_set_actions(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, err = cli(capsys, "config", "set", "--global", "actions.review.agent", "codex")
+    assert code == 2 and "needs a prompt" in err  # validated before writing
+    code, _, err = cli(capsys, "config", "set", "--global", "actions.review.mode", "x")
+    assert code == 2 and "actions.<name>.<prompt|agent|model|effort|timeout>" in err
+    prompt = "Review {bookmark}"
+    assert cli(capsys, "config", "set", "--global", "actions.review.prompt", prompt)[0] == 0
+    assert cli(capsys, "config", "set", "--global", "actions.review.timeout", "60")[0] == 0
+    assert cli(capsys, "config", "set", "--global", "leader.rv", "review")[0] == 0
+    text = config.global_config_path().read_text()
+    assert "[actions.review]" in text and "[actions]\n" not in text
+    assert cli(capsys, "config", "get", "actions.review.timeout")[1] == "60\n"
+    assert cli(capsys, "config", "get", "actions.other.prompt")[0] == 1
+    listed = cli(capsys, "config", "list")[1]
+    assert 'actions.review.prompt = "Review {bookmark}"' in listed
+    assert "actions.review.timeout = 60" in listed
+    code, _, err = cli(capsys, "config", "unset", "--global", "actions.review.prompt")
+    assert code == 2 and "needs a prompt" in err
+    assert cli(capsys, "config", "unset", "--global", "leader.rv")[0] == 0
+    assert cli(capsys, "config", "unset", "--global", "actions.review.timeout")[0] == 0
+    assert cli(capsys, "config", "unset", "--global", "actions.review.prompt")[0] == 0
+    assert "actions" not in config.global_config_path().read_text()

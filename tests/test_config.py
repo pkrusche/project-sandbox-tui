@@ -94,6 +94,16 @@ def test_project_overrides_global(tmp_path: Path) -> None:
         ('[ui]\nleader = ""\n[leader]\nt = "q"\n', "need ui.leader"),
         ('[ui]\nleader = ",,"\n', "ui.leader"),
         (f"[ui]\nrefresh_seconds = {10**400}\n", "ui.refresh_seconds"),
+        ("actions = 1\n", r"must be a table of \[actions.NAME\]"),
+        ("[actions]\nreview = 'x'\n", "must be a table, e.g."),
+        ("[actions.review]\nagent = 'claude'\n", "needs a prompt"),
+        ("[actions.review]\nprompt = 'x'\nagent = 'gpt'\n", "actions.review.agent"),
+        ("[actions.review]\nprompt = 'x'\neffort = 'huge'\n", "actions.review.effort"),
+        ("[actions.review]\nprompt = 'x'\ntimeout = -1\n", "actions.review.timeout"),
+        ("[actions.review]\nprompt = 'x'\ntimeout = '1'\n", "must be an integer"),
+        ("[actions.review]\nprompt = 'x'\nmode = 'x'\n", "unknown key"),
+        ("[actions.help]\nprompt = 'x'\n", "built-in"),
+        ("[commands]\nreview = 'x'\n[actions.review]\nprompt = 'x'\n", "also in"),
     ],
 )
 def test_invalid_config(tmp_path: Path, text: str, message: str) -> None:
@@ -116,7 +126,23 @@ def test_template_command_examples_validate() -> None:
         example = "\n".join(line.removeprefix("# ") for line in lines[start:])
         cfg = c.from_dict(tomllib.loads(example))
         cfg.validate()
-        assert cfg.commands and cfg.leader
+        assert cfg.commands and cfg.leader and cfg.actions
+
+
+def test_actions(tmp_path: Path) -> None:
+    write(
+        tmp_path / c.PROJECT_CONFIG_NAME,
+        "[actions.review]\n"
+        'prompt = """Review {bookmark} against {main}.\nKeep {braces}.\n"""\n'
+        "effort = 'high'\ntimeout = 0\n"
+        "[leader]\nrv = 'review'\n",
+    )
+    cfg = candidate(tmp_path)
+    action = cfg.actions["review"]
+    assert (action.agent, action.effort, action.timeout) == ("", "high", 0)
+    assert action.render("feature/x", "main") == "Review feature/x against main.\nKeep {braces}.\n"
+    assert action.render("b", "m", " look at x ").endswith("Keep {braces}.\n\nlook at x\n")
+    assert action.to_dict() == {"prompt": action.prompt, "effort": "high", "timeout": 0}
 
 
 def test_last_used_updates_defaults(tmp_path: Path) -> None:

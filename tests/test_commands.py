@@ -154,3 +154,58 @@ def test_complete_programs_uses_repository_for_relative_path_entries(tmp_path: P
     program.chmod(0o755)
     for path in (".", ""):
         assert cmd.complete("!loc", [], tmp_path, path=path) == (1, ["'local tool'"])
+
+
+@pytest.mark.parametrize(
+    ("line", "each", "script", "action", "args"),
+    [
+        ("*!make lint", True, "make lint", "", ""),
+        ("* !make", True, "make", "", ""),
+        (":*test -k x", True, "uv run pytest -k x", "", ""),
+        ("review", True, "", "review", ""),
+        ("review focus on  errors", True, "", "review", "focus on  errors"),
+        ("*review", True, "", "review", ""),
+        ("!make", False, "make", "", ""),
+    ],
+)
+def test_parse_each_and_actions(line: str, each: bool, script: str, action: str, args: str) -> None:
+    command = cmd.parse(line, CONFIGURED, {"review"})
+    assert (command.each, command.script, command.action, command.args) == (
+        each,
+        script,
+        action,
+        args,
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("*", ":\\* needs a command"),
+        ("*!", "needs a shell command"),
+        ("*quit", "cannot run per workspace"),
+        ("review", "unknown command :review"),  # not configured here
+    ],
+)
+def test_parse_each_errors(line: str, message: str) -> None:
+    with pytest.raises(cmd.CommandError, match=message):
+        cmd.parse(line, CONFIGURED)
+
+
+def test_validate_actions() -> None:
+    cmd.validate(CONFIGURED, "\\", {"T": "*test", "rv": "review x"}, {"review"})
+    with pytest.raises(cmd.CommandError, match=r"\[actions\] test is also in \[commands\]"):
+        cmd.validate(CONFIGURED, "\\", {}, {"test"})
+    with pytest.raises(cmd.CommandError, match="built-in"):
+        cmd.validate({}, "\\", {}, {"help"})
+    with pytest.raises(cmd.CommandError, match="must start with a letter"):
+        cmd.validate({}, "\\", {}, {"re view"})
+
+
+def test_complete_after_each(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("")
+    assert cmd.complete("*te", ["test", "help"], tmp_path) == (1, ["test"])
+    assert cmd.complete("* te", ["test"], tmp_path) == (2, ["test"])
+    assert cmd.complete("*test no", ["test"], tmp_path) == (6, ["notes.txt"])
+    start, words = cmd.complete("*!ech", [], tmp_path, path=str(tmp_path))
+    assert start == 2 and words == []

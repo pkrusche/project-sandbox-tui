@@ -27,7 +27,8 @@ project files remain trusted; unreviewed changes remain untrusted.
 
 ## Trusting the project config
 
-Project config can run host commands (`sandbox.command`, `ui.*_command`, `[commands]`) and
+Project config can run host commands (`sandbox.command`, `ui.*_command`, `[commands]`),
+start agents with its own prompts (`[actions]`) and
 loosen network, credential or sandbox restrictions (`extra_args`). Only reviewed
 settings take effect:
 
@@ -96,6 +97,11 @@ test = "uv run pytest"
 
 [leader]                # ui.leader, then these keys, runs a command line
 t = "test"
+T = "*test"             # in each selected workspace
+
+[actions.review]        # :review starts the prompt on each selected bookmark
+prompt = "Review {bookmark} against {main} and fix what you find."
+effort = "high"         # agent, model, effort, timeout: launch defaults if unset
 
 [models]                # extra launch-form suggestions, listed first
 claude = ["opus", "sonnet"]
@@ -126,9 +132,13 @@ letter and use letters, digits, `_` and `-`; built-in commands (`help`, `quit`,
 shell code: use `SBX_REPO`, `SBX_BOOKMARK` and `SBX_WORKSPACE` rather than
 placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 
+`:*name` runs it in each selected workspace instead, with `cwd`,
+`SBX_BOOKMARK` and `SBX_WORKSPACE` set for each; see
+[running in each workspace](usage.md#running-in-each-workspace).
+
 `[leader]` maps key sequences typed after `ui.leader` (one character, `\` by
-default) to command lines as typed after `:`, e.g. `t = "test"`,
-`s = "!jj st"` or `r = "reload"`. Sequences may be longer than one key
+default) to command lines as typed after `:`, e.g. `t = "test"`, `T = "*test"`,
+`s = "!jj st"`, `rc = "chores"` or `r = "reload"`. Sequences may be longer than one key
 (`tf = "test -x"`), but none may be a prefix of another, so a mapping runs as
 soon as it is complete. Unknown command names are configuration errors. A
 leader that is also a list key (e.g. `" "`) replaces that key's action.
@@ -136,6 +146,35 @@ leader that is also a list key (e.g. `" "`) replaces that key's action.
 ```sh
 sbx-tui config set --project commands.test 'uv run pytest'
 sbx-tui config set --global leader.s '!jj st'
+```
+
+## Agent actions
+
+`[actions.NAME]` names a prompt that `:NAME` starts as an unsupervised sandbox
+run on each selected bookmark (or the highlighted one); see
+[agent actions](usage.md#agent-actions). Map them to leader keys like any
+command line:
+
+```toml
+[actions.chores]
+prompt = '''
+Tidy up {bookmark}: update the docs and tests for its changes against {main}.
+'''
+agent = "claude"        # optional: agent, model, effort, timeout
+timeout = 1800
+
+[leader]
+rc = "chores"
+```
+
+`prompt` is required. `{bookmark}` and `{main}` are replaced; other braces stay
+as written. Unset `agent`, `model`, `effort` and `timeout` take the launch
+defaults; a `model` is only taken from the defaults for the same agent. Names
+follow the `[commands]` rules and must not repeat a `[commands]` name.
+
+```sh
+sbx-tui config set --project actions.chores.prompt 'Tidy up {bookmark}.'
+sbx-tui config set --project actions.chores.effort low
 ```
 
 ## State directory
@@ -152,7 +191,8 @@ sbx-tui config set --global leader.s '!jj st'
 | `<repo>-<hash>/diff_review.json` | Files marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
-| `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output |
+| `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output, including `:*` tasks |
+| `<repo>-<hash>/tasks/`, `<repo>-<hash>/tasks.lock` | [`:*` task](usage.md#running-in-each-workspace) records |
 
 Job records include full argv and prompts. Repository state, job and log
 directories use mode `0700` (user-only access), including older directories.

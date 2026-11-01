@@ -56,14 +56,15 @@ diffs or the comparison is unavailable. Counts follow the saved marks from
 | `/` | Filter (`enter` keeps it, `esc` clears) |
 | `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
 | `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout; asks first on the main bookmark |
-| `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark): repeat to cancel harder, a third time to forget it; clears a finished status at once; asks first before signalling several runs |
-| `l` / `enter` | [Logs](#log-viewer), or run details while a bookmark has no runs |
-| `P` | Last run details (agent, times, IDs, log, command line), history and the interactive command |
+| `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark) or running [`:*` tasks](#running-in-each-workspace): repeat to cancel harder, a third time to forget a run; clears a finished status at once; asks first before signalling several |
+| `l` / `enter` | [Logs](#log-viewer) and the latest `:*` output, or run details while a bookmark has neither |
+| `P` | Last run details (agent, times, IDs, log, command line), history, recent `:*` tasks and the interactive command |
 | `L` | [Op history](#op-history): every prompt, session, merge and rebase as a graph |
+| `T` | [Tasks](#tasks): every `:*` task in all workspaces |
 | `n` | New bookmark: name and start revision |
 | `e` | Edit the full description of one bookmark or the working copy (`ctrl+s` saves, `esc` cancels) |
 | `dd` · `u` · `ctrl+r` | Delete bookmark, keeping its history · [undo · redo](#bookmark-history) |
-| `v` / `V` · `space` | Select a range / mark individual bookmarks; `esc` clears |
+| `v` / `V` · `space` | Select a range / mark individual rows, including `@`; `esc` clears |
 | `=` | [Review the diff](#diff-review) against main, or between two selected revisions |
 | `f` | Fast-forward main to highlighted bookmark or `@` (`u` undoes) |
 | `@` | Start a working-copy change on highlighted bookmark |
@@ -72,9 +73,12 @@ diffs or the comparison is unavailable. Counts follow the saved marks from
 | `R` · `ctrl+l` | Refresh list · reload configuration |
 | `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue; asks first while any are running) |
 
-Selections apply to `x`, `dd`, `o` and `P`; `l` and `e` require one bookmark.
+Selections apply to `x`, `dd`, `o`, `P`, [`:*`](#running-in-each-workspace) and
+[agent actions](#agent-actions); `l` and `e` require one bookmark.
 One marked bookmark overrides the highlighted row for `f`, `@`, `r` and `i`.
 With at least two selected, `r` / `i` opens [merge or rebase](merging.md).
+The working copy `@` can be marked too: merges and rebases leave it out, and
+`dd` skips it.
 Selected rows stay visible while a filter hides others, so an action never hits
 a row you cannot see; the header counts them as outside the filter. An action
 ends visual mode as in vim; its range stays marked until `esc`.
@@ -86,6 +90,9 @@ The status column shows the last run's outcome and, when inactive, how long ago
 it ended (or started if the end time is unavailable), such as `completed · 5m ago`.
 Its node in the graph shows the outcome as a symbol
 (`▶` running, `✓` completed, `✗` failed, `⚠` other).
+The latest [`:*` task](#running-in-each-workspace) follows while it runs or until
+a newer run starts: `:pytest ▶` (`+N` more running), `:pytest ✓`, `:pytest ✗1`
+with its exit status.
 
 
 `e` edits the tip commit's description with `jj describe`. The editor loads the
@@ -111,6 +118,8 @@ and checks out its files. Running sessions in `@` block the move.
 |---|---|
 | `:!cmd` | Run `cmd` with `sh -c` in the repository |
 | `:name args` | Run the configured [`[commands]`](configuration.md#commands-and-leader-key) entry `name`, appending `args` |
+| `:*!cmd` · `:*name args` | The same, in [each target workspace](#running-in-each-workspace) at once |
+| `:action args` | Start the [`[actions]`](configuration.md#agent-actions) prompt on each target, with `args` appended |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
 
 | Key | Action in the command line |
@@ -128,11 +137,43 @@ directory, empty if it has none yet), e.g.
 `cd "$SBX_WORKSPACE" && uv run pytest`. Each repository remembers the latest
 500 distinct command lines.
 
+### Running in each workspace
+
+`:*` runs a shell command once per target: the marked rows, or the highlighted
+one, as for `x` and `o`. Use it to run tests in several bookmarks at once:
+`:*!uv run pytest -x`, or `:*test` for a `[commands]` entry. Each runs in the
+background in its bookmark's workspace (the repository for `@`); a missing
+workspace is created first, as `o` does. `SBX_BOOKMARK` and `SBX_WORKSPACE`
+name that target. More than three targets ask first. A sandbox session on a
+target does not block the command; a warning says it may still be changing
+the files. Tasks don't block sandbox runs either. `W` keeps a workspace while a
+task runs in it, and `dd` and `@` list the running tasks and ask first.
+
+Tasks keep running after sbx-tui exits. The status column, header and a
+notification show how each ended. `l` shows the output (`tab` switches to the
+run's logs), `P` lists recent tasks and [`T`](#tasks) shows those of every
+workspace. `x` sends SIGINT to the target's
+running tasks, then SIGTERM and SIGKILL on further presses. Output is kept in
+the [state directory](configuration.md#state-directory), the last ten tasks per
+bookmark.
+
+### Agent actions
+
+An [`[actions]`](configuration.md#agent-actions) entry names a prompt: `:review`
+starts it as an unsupervised sandbox run on each target, like `r` with the
+prompt filled in. Words after the name are appended to the prompt, e.g.
+`:review focus on error handling`. Targets already running a session are
+skipped. sbx-tui asks first for several targets or the main bookmark. Action
+runs use the launch defaults unless the action sets its own agent, model,
+effort or timeout. They don't change the remembered defaults or the prompt
+history.
+
 ### Leader key
 
 The leader key (`\` by default, `ui.leader`) followed by a key sequence from
 [`[leader]`](configuration.md#commands-and-leader-key) runs its command line, so
-`t = "test"` makes `\t` run `:test`. The header shows the keys typed so far;
+`t = "test"` makes `\t` run `:test`, `T = "*test"` runs it in each selected
+workspace and `rc = "chores"` starts the `chores` action. The header shows the keys typed so far;
 `esc`, an unmapped key or 1.5 seconds without a key cancels. `?` lists the
 configured commands and mappings.
 
@@ -206,6 +247,23 @@ New runs retain the full prompt and command line. Older entries may have only
 the prompt's first line and no recorded command. Logs of earlier runs stay in the
 [state directory](configuration.md#state-directory); interactive sessions have
 none.
+
+## Tasks
+
+`T` lists the [`:*` tasks](#running-in-each-workspace) of every workspace:
+running ones first, then finished ones, newest first. Each row shows the
+outcome, its age (since it ended, or started while running), the bookmark,
+the status with any exit code and the command line. The title counts running
+tasks and the workspaces they run in. The view opens on the highlighted
+bookmark's latest task.
+
+| Key | Action |
+|---|---|
+| `j` `k` · `ctrl+d` `ctrl+u` · `gg` `G` | Move · half page · top/bottom |
+| `l` / `enter` | The task's output in the [log viewer](#log-viewer) |
+| `P` | Details: command, shell script, directory, times, PID and output file |
+| `x` | Cancel a running task, harder on each press; forget a finished one and its output |
+| `q` / `esc` / `h` / `T` | Back to the list |
 
 ## Diff review
 
