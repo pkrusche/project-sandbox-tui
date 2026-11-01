@@ -623,6 +623,62 @@ def test_move_working_copy_refuses_running_session(
     run_app(repo, cfg, scenario)
 
 
+@pytest.mark.parametrize("answer", ["y", "n"])
+def test_move_working_copy_asks_about_held_workspace(
+    repo: Path, fake_cfg: Callable[..., Config], answer: str
+) -> None:
+    from project_sandbox_tui.vcs import workspace_path
+    from tests.conftest import jj
+
+    path = workspace_path(repo, "feature/x", None)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.backend.add_workspace("feature/x", path)
+        (path / "b.txt").write_text("finished\n")
+        jj(path, "bookmark", "set", "--allow-backwards", "feature/x", "-r", "@")
+        old = jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id")
+        await app.refresh_data()
+        app.marked = ["feature/x"]
+        await pilot.press("@")
+        await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        assert isinstance(app.screen, ConfirmScreen)
+        assert "working copy of workspace feature/x" in app.screen.body
+        await pilot.press(answer)
+        await app.workers.wait_for_complete()
+        target = app.backend._bookmark_commit("feature/x")
+        if answer == "y":
+            assert jj(repo, "log", "--no-graph", "-r", "@-", "-T", "commit_id") == target
+            assert jj(path, "log", "--no-graph", "-r", "@-", "-T", "commit_id") == target
+        else:
+            assert jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id") == old
+            assert any("W removes workspace" in str(n.message) for n in app._notifications)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_move_working_copy_keeps_held_workspace_with_session(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.jobs import JobManager
+    from project_sandbox_tui.sandbox import LaunchSpec
+    from project_sandbox_tui.vcs import workspace_path
+    from tests.conftest import jj
+
+    cfg = fake_cfg()
+    path = workspace_path(repo, "feature/x", None)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.backend.add_workspace("feature/x", path)
+        jj(path, "bookmark", "set", "--allow-backwards", "feature/x", "-r", "@")
+        held = jj(path, "log", "--no-graph", "-r", "@", "-T", "commit_id")
+        JobManager(repo, cfg).record_external(LaunchSpec(branch="feature/x", agent="codex"), [])
+        await app._move_working_copy("feature/x", new_in_holders=True).wait()
+        assert jj(path, "log", "--no-graph", "-r", "@", "-T", "commit_id") == held
+        assert any("already has" in str(n.message) for n in app._notifications)
+
+    run_app(repo, cfg, scenario)
+
+
 @pytest.mark.parametrize("mode", ["r", "i"])
 @pytest.mark.parametrize("multiple", [False, True])
 def test_launch_inputs_remain_visible_when_focused(

@@ -110,6 +110,14 @@ again since.
 `saved/<change-id>` for later recovery, then runs `jj new` on the chosen bookmark
 and checks out its files. Running sessions in `@` block the move.
 
+When the bookmark's commit is still the working copy of another workspace,
+typically one [kept from a session](sessions.md#kept-workspaces), `@` asks
+first. Any later edit in that workspace would rewrite the commit and leave the
+repository's working copy stale. Confirming starts a new empty change in that
+workspace so its next edits land on top of the bookmark, then moves `@`; a
+session running there blocks this. Cancelling leaves everything as it was; `W`
+removes the workspace instead.
+
 ## Command line
 
 `:` opens a command line at the bottom of the list, as in vim.

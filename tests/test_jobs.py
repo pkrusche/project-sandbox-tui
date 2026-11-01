@@ -550,3 +550,31 @@ def test_now_always_has_microseconds(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(jobs_module, "datetime", Fixed)
     assert jobs_module._now() == "2026-01-02T03:04:05.000000Z"
+
+
+def test_replaced_and_forgotten_records_move_to_history(tmp_path: Path) -> None:
+    jobs = JobManager(tmp_path, Config())
+    first = jobs.record_external(LaunchSpec("topic", "codex"), ["first"])
+    first.status, first.session_id = "completed", "session-1"
+    jobs.save(first)
+    second = jobs.record_external(LaunchSpec("topic", "codex"), ["second"])
+    second.status = "completed"
+    jobs.save(second)
+    assert [j.session_id for j in jobs.history("topic")] == ["session-1"]
+    assert jobs.cancel("topic", {}).endswith("status cleared")  # x on a finished run
+    fresh = JobManager(tmp_path, Config())
+    assert "topic" not in fresh.jobs  # history is not adopted as current records
+    assert [j.argv for j in fresh.history("topic")] == [["second"], ["first"]]
+    assert fresh.history("other") == []
+
+
+def test_history_keeps_newest_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import project_sandbox_tui.jobs as jobs_mod
+
+    monkeypatch.setattr(jobs_mod, "HISTORY_PER_BRANCH", 2)
+    jobs = JobManager(tmp_path, Config())
+    for n in range(4):
+        started = f"2026-01-0{n + 1}T00:00:00Z"
+        jobs.save(JobRecord("topic", bg("topic", str(n)), 0, started, status="completed"))
+        assert jobs.clear("topic")
+    assert [j.spec.prompt_text for j in jobs.history("topic")] == ["3", "2"]

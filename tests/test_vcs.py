@@ -566,6 +566,56 @@ def test_move_working_copy_avoids_saved_name_collision(repo: Path) -> None:
     assert backend._bookmark_commit(base) == backend._bookmark_commit("main")
 
 
+def _kept_workspace(repo: Path, name: str) -> Path:
+    """A workspace whose finished session left the bookmark on its working copy."""
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    path = vcs.workspace_path(repo, name, None)
+    backend.add_workspace(name, path)
+    (path / "b.txt").write_text("finished\n")
+    jj(path, "bookmark", "set", "--allow-backwards", name, "-r", "@")  # as finalize does
+    return path
+
+
+def test_move_working_copy_refuses_commit_held_by_workspace(repo: Path) -> None:
+    from tests.conftest import jj
+
+    path = _kept_workspace(repo, "feature/x")
+    backend = vcs.detect(repo)
+    old = jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id")
+    with pytest.raises(vcs.HeldByWorkspaceError) as caught:
+        backend.move_working_copy_to("feature/x")
+    assert caught.value.workspaces == [("feature/x", path)]
+    assert jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id") == old
+    assert not any(b.name.startswith("saved/") for b in backend.list_branches())
+
+
+def test_move_working_copy_starts_new_change_in_holder(repo: Path) -> None:
+    from tests.conftest import jj
+
+    path = _kept_workspace(repo, "feature/x")
+    (path / "b.txt").write_text("unsnapshotted\n")  # joins the bookmark's change first
+    backend = vcs.detect(repo)
+    backend.move_working_copy_to("feature/x", new_in_holders=True)
+    target = backend._bookmark_commit("feature/x")
+    assert "unsnapshotted" in backend._jj("file", "show", "-r", target, "b.txt")
+    assert jj(path, "log", "--no-graph", "-r", "@-", "-T", "commit_id") == target
+    assert jj(repo, "log", "--no-graph", "-r", "@-", "-T", "commit_id") == target
+    assert backend.workspaces_at(target) == []
+    (path / "c.txt").write_text("later session\n")
+    jj(path, "status")  # the workspace's next edits no longer rewrite feature/x
+    assert backend._bookmark_commit("feature/x") == target
+    assert (repo / "b.txt").read_text() == "unsnapshotted\n"
+    jj(repo, "status")  # and the repository's working copy is not stale
+
+
+def test_move_working_copy_ignores_workspace_on_top_of_target(repo: Path) -> None:
+    backend = vcs.detect(repo)
+    backend.add_workspace("feature/x", vcs.workspace_path(repo, "feature/x", None))
+    assert backend.move_working_copy_to("feature/x") is not None
+
+
 def test_move_working_copy_requires_local_bookmark(repo: Path) -> None:
     backend = vcs.detect(repo)
     with pytest.raises(vcs.VcsError, match="not a local bookmark"):

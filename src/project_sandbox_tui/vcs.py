@@ -21,6 +21,20 @@ class StaleWorkingCopyError(VcsError):
     """jj refuses to snapshot: another workspace rewrote this one's working-copy commit."""
 
 
+class HeldByWorkspaceError(VcsError):
+    """The target commit is another workspace's working copy.
+
+    Moving onto it would leave this working copy stale as soon as that
+    workspace snapshots an edit, which rewrites the commit underneath it.
+    """
+
+    def __init__(self, target: str, workspaces: list[tuple[str, Path | None]]) -> None:
+        names = ", ".join(name for name, _ in workspaces)
+        super().__init__(f"{target} is the working copy of workspace {names}")
+        self.target = target
+        self.workspaces = workspaces
+
+
 @dataclass(frozen=True)
 class MainComparison:
     ahead: int
@@ -570,14 +584,44 @@ class JjBackend:
             self._jj("bookmark", "move", f"exact:{revset_symbol(main)}", "--to", destination)
         return True
 
-    def move_working_copy_to(self, target: str) -> str | None:
+    def workspaces_at(self, commit: str) -> list[tuple[str, Path | None]]:
+        """Other workspaces whose working-copy commit is ``commit``, with their roots."""
+        current = 'if(target.current_working_copy(), "1", "0")'
+        fields = f'stringify(name) ++ "\\x00" ++ target.commit_id() ++ "\\x00" ++ {current}'
+        try:
+            out = self._jj("workspace", "list", "-T", f'{fields} ++ "\\x00" ++ root ++ "\\n"')
+        except VcsError:  # jj without the ``root`` template keyword
+            out = self._jj("workspace", "list", "-T", f'{fields} ++ "\\x00\\n"')
+        held: list[tuple[str, Path | None]] = []
+        for line in out.splitlines():
+            name, at, is_current, root = (line.split("\0") + ["", "", ""])[:4]
+            if at == commit and is_current != "1":
+                held.append((name, Path(root) if root else None))
+        return held
+
+    def move_working_copy_to(self, target: str, *, new_in_holders: bool = False) -> str | None:
         """Save an unbookmarked @, then start a new working-copy change on target.
+
+        Raise :class:`HeldByWorkspaceError` if target's commit is another
+        workspace's working copy, unless ``new_in_holders``: then first start a
+        new empty change in each such workspace, so later edits there land on
+        top of target instead of rewriting it. The caller must make sure no
+        session is running in those workspaces.
 
         Return the name of a bookmark created for the old working copy, if any.
         """
         # Snapshot first: edits can rewrite the target bookmark or its ancestors.
         _run(["jj", "--no-pager", "--color=never", "status"], self.root)
         commit = self._bookmark_commit(target)
+        if held := self.workspaces_at(commit):
+            if not new_in_holders:
+                raise HeldByWorkspaceError(target, held)
+            for name, root in held:
+                if root is None or not root.is_dir():
+                    raise VcsError(f"workspace {name}: directory not found; remove it with W")
+                # Snapshots that workspace first, which may move target with it.
+                _run(["jj", "--no-pager", "--color=never", "new"], root)
+            commit = self._bookmark_commit(target)
         destination = f"bookmarks(exact:{json.dumps(target)}) & {commit}"
         old_commit, change = (
             self._jj("log", "--no-graph", "-r", "@", "-T", 'commit_id ++ "\\x00" ++ change_id')

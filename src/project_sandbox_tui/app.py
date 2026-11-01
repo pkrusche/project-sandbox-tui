@@ -80,6 +80,7 @@ from project_sandbox_tui.vcs import (
     WORKING_COPY,
     Branch,
     FileChange,
+    HeldByWorkspaceError,
     JjBackend,
     StaleWorkingCopyError,
     VcsError,
@@ -1081,31 +1082,64 @@ class SandboxTUI(App[None]):
         )
 
     @work(group="vcs")  # not exclusive: see _create_branch
-    async def _move_working_copy(self, target: str) -> None:
+    async def _move_working_copy(self, target: str, new_in_holders: bool = False) -> None:
+        """``new_in_holders``: the user agreed to start new changes in workspaces holding target."""
+
         def move_if_idle() -> str | None:
             # Share the launch lock so another TUI cannot start a session between
             # the busy check and checkout. Read records again, not the UI cache.
             with self.jobs._locked():
                 self.jobs.load()
+                # A session in target's workspace would have @ moved under it.
+                names = [WORKING_COPY, target] if new_in_holders else [WORKING_COPY]
                 sessions = running_by_branch(
-                    read_sessions(self.sessions_dir), self.repo, [WORKING_COPY], self.worktree_dir
+                    read_sessions(self.sessions_dir), self.repo, names, self.worktree_dir
                 )
-                reason = self.jobs._busy_reason(WORKING_COPY, sessions)
-                if reason:
-                    raise BusyError(reason)
-                return self.backend.move_working_copy_to(target)
+                for name in names:
+                    if reason := self.jobs._busy_reason(name, sessions):
+                        raise BusyError(reason)
+                return self.backend.move_working_copy_to(target, new_in_holders=new_in_holders)
 
         try:
             async with self._history_lock:
                 saved = await asyncio.to_thread(move_if_idle)
+        except HeldByWorkspaceError as exc:
+            self._confirm_new_in_holders(exc)
         except (BusyError, VcsError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
         else:
             message = f"working copy moved onto {target}"
+            if new_in_holders:
+                message += "; workspace started a new change"
             if saved:
                 message += f"; previous change saved as {saved}"
             self.notify(message)
         await self.refresh_data()
+
+    def _confirm_new_in_holders(self, exc: HeldByWorkspaceError) -> None:
+        """Offer to move a kept workspace off the commit @ is about to build on."""
+        target = exc.target
+        names = ", ".join(name for name, _ in exc.workspaces)
+
+        def decided(confirmed: bool | None) -> None:
+            if confirmed:
+                self._move_working_copy(target, new_in_holders=True)
+            else:
+                self.notify(
+                    f"working copy not moved; W removes workspace {names}", severity="warning"
+                )
+
+        body = (
+            f"{target} is the working copy of workspace {names}, kept from an earlier "
+            "session. Any later edit there, such as another session with "
+            "--keep-workspace, rewrites this commit and leaves the repository's "
+            "working copy stale, mixing that work into the commit you checked out.\n\n"
+            f"Start a new empty change in {names} first? Its next edits then land on "
+            f"top of {target}. Or cancel and remove the workspace with W."
+        )
+        self.push_screen(
+            ConfirmScreen(f"{target} is held by a workspace", body, "new change & move"), decided
+        )
 
     @work(group="vcs")  # not exclusive: see _create_branch
     async def _fast_forward_main(self, main: str, target: str) -> None:

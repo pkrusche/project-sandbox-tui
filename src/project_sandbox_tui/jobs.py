@@ -2,7 +2,10 @@
 
 Every job has a JSON record in ``<state>/<repo>/jobs/<branch-slug>.json`` so a
 restarted TUI re-adopts running background sessions and still notifies about
-ones that finished while it was closed.
+ones that finished while it was closed. A record replaced by a newer run, or
+forgotten, moves to ``jobs/history/<branch-slug>/`` (the newest
+``HISTORY_PER_BRANCH`` per branch), so earlier runs' session ids and outcomes
+stay available.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ SIGINT_EXITS = {130, -signal.SIGINT}
 # Refreshes in a row without its session before an external session counts as
 # ended: one miss may be a session record that was being rewritten.
 EXTERNAL_MISSES = 2
+HISTORY_PER_BRANCH = 50
 
 
 class BusyError(RuntimeError):
@@ -202,6 +206,45 @@ class JobManager:
     def _record_path(self, branch: str) -> Path:
         return self.jobs_dir / f"{branch_slug(branch)}.json"
 
+    def _history_dir(self, branch: str) -> Path:
+        return self.jobs_dir / "history" / branch_slug(branch)
+
+    def _archive(self, branch: str) -> None:
+        """Copy the branch's current record into its history before it is replaced.
+
+        Best effort: a full disk must not block cancelling or forgetting a run.
+        """
+        path = self._record_path(branch)
+        try:
+            text = path.read_text(encoding="utf-8")
+            started = str(json.loads(text).get("started_at") or "")
+        except (OSError, ValueError, AttributeError):
+            return
+        stamp = "".join(c for c in started if c.isalnum()) or uuid.uuid4().hex
+        history = self._history_dir(branch)
+        try:
+            private_dir(history.parent)
+            private_dir(history)
+            target = history / f"{stamp}.json"
+            if not target.exists():
+                tmp = history / f".{uuid.uuid4().hex}.tmp"
+                tmp.write_text(text, encoding="utf-8")
+                tmp.replace(target)
+            for old in sorted(history.glob("*.json"))[:-HISTORY_PER_BRANCH]:
+                old.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def history(self, branch: str) -> list[JobRecord]:
+        """Earlier runs on ``branch``, newest first (the current record excluded)."""
+        records: list[JobRecord] = []
+        for path in sorted(self._history_dir(branch).glob("*.json"), reverse=True):
+            try:
+                records.append(JobRecord.from_dict(json.loads(path.read_text(encoding="utf-8"))))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return records
+
     def save(self, job: JobRecord) -> None:
         private_dir(self.state_dir)
         private_dir(self.jobs_dir)
@@ -317,6 +360,7 @@ class JobManager:
                     start_new_session=True,  # survive the TUI; own process group for cancel()
                 )
             self._procs[spec.branch] = proc
+            self._archive(spec.branch)
             job = JobRecord(
                 branch=spec.branch,
                 spec=spec,
@@ -364,6 +408,7 @@ class JobManager:
                 argv=build_argv(self.cfg, self.repo, spec),
                 notified=True,  # nothing to notify: the user is watching
             )
+            self._archive(spec.branch)
             self.jobs[spec.branch] = job
             self.save(job)
         try:
@@ -410,6 +455,7 @@ class JobManager:
                 notified=True,
                 external=True,
             )
+            self._archive(spec.branch)
             self.jobs[spec.branch] = job
             self.save(job)
             return job
@@ -570,6 +616,7 @@ class JobManager:
         return branch in self._stop_stage
 
     def _forget(self, branch: str) -> None:
+        self._archive(branch)
         self._record_path(branch).unlink(missing_ok=True)
         self.jobs.pop(branch, None)
         self._stop_stage.pop(branch, None)

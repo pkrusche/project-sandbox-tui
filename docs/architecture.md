@@ -85,7 +85,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | `dd` | history → graph → jobs | Busy check, delete, undo entry |
 | `u` / `ctrl+r` | history → graph → jobs | Busy check, delete or restore, move the undo position |
 | `f` | history → graph | Fast-forward main, undo entry |
-| `@` | history → jobs | Busy check of the working copy, move it |
+| `@` | history → jobs | Busy check of the working copy (and of the target's workspace before starting a change there), move it |
 | `e` | history | Describe, only if the target is still the commit that was edited |
 | `:*` | jobs, tasks | Create a missing workspace unless a session is starting; start the task |
 | `o` | jobs | Create a missing workspace unless a session is starting |

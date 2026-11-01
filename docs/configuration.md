@@ -232,6 +232,7 @@ sbx-tui config set --project actions.chores.effort low
 | `<repo>-<hash>/diff_review.json` | Files marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
+| `<repo>-<hash>/jobs/history/<bookmark>-<hash>/` | [Replaced and cleared job records](sessions.md#one-sandbox-per-bookmark), the last 50 per bookmark |
 | `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output, including `:*` tasks |
 | `<repo>-<hash>/tasks/`, `<repo>-<hash>/tasks.lock` | [`:*` task](usage.md#running-in-each-workspace) records |
 
