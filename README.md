@@ -38,13 +38,18 @@ uv tool install git+https://github.com/pkrusche/project-sandbox-tui
 # From a checkout: uv tool install . (or uv sync && uv run sbx-tui)
 
 cd ~/workspace/myproject
-sbx-tui --init      # write config templates; set the image source in .project-sandbox-tui.toml
+sbx-tui --init      # detect the project type, write config and install a local setup skill
 sbx-tui doctor      # check dependencies, runtime and configuration
 sbx-tui --dry-run   # preview project-sandbox calls
 sbx-tui             # launch
 ```
 
 Press `?` for full help.
+
+`--init` detects a root `Dockerfile`, Python/uv, Rust/Cargo or Node/npm project
+(in that order). It installs a gitignored `sbx-tui-config` agent skill to help
+tailor the configuration. Existing config and skill files are preserved; see
+[initialization](docs/configuration.md#initialization) for detection and skill paths.
 
 ## Documentation
 

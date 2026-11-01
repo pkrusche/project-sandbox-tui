@@ -4,7 +4,7 @@
 
 ```sh
 sbx-tui [REPO]               # open the TUI; default: current directory
-sbx-tui --init               # initialize config and model catalog
+sbx-tui --init               # detect project type; initialize config, setup skill and model catalog
 sbx-tui --print-config       # show effective config and an interactive command
 sbx-tui --trust-config       # review changed project config
 sbx-tui --dry-run            # preview sandbox calls or workspace cleanup

@@ -6,6 +6,7 @@ import pytest
 
 from project_sandbox_tui import config
 from project_sandbox_tui.cli import main
+from tests.conftest import jj
 
 
 def test_missing_repo_path_is_an_error(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -96,6 +97,137 @@ def test_init_preserves_existing_untrusted_config(
     assert project.read_text() == text
     assert config.ProjectTrust.check(repo).needs_review
     assert config.load(repo).sandbox.command == "project-sandbox"
+
+
+@pytest.mark.parametrize(
+    ("markers", "source", "value"),
+    [
+        (["Dockerfile"], "dockerfile", "Dockerfile"),
+        (["pyproject.toml"], "build", "python-uv"),
+        (["uv.lock"], "build", "python-uv"),
+        (["Cargo.toml"], "build", "rust-cargo"),
+        (["package.json"], "build", "node-npm"),
+        (
+            ["Dockerfile", "pyproject.toml", "Cargo.toml", "package.json"],
+            "dockerfile",
+            "Dockerfile",
+        ),
+        (["pyproject.toml", "Cargo.toml", "package.json"], "build", "python-uv"),
+        (["Cargo.toml", "package.json"], "build", "rust-cargo"),
+    ],
+)
+def test_init_detects_project_from_repo_root(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    markers: list[str],
+    source: str,
+    value: str,
+) -> None:
+    for marker in markers:
+        (repo / marker).touch()
+    nested = repo / "nested"
+    nested.mkdir()
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    assert main([str(nested), "--init"]) == 0
+    trust = config.ProjectTrust.check(repo)
+    assert not trust.needs_review
+    assert trust.current == trust.trusted
+    cfg = config.load(repo)
+    assert getattr(cfg.project, source) == value
+    assert cfg.project.base_image == ""
+    assert cfg.project.docker_context == ("." if source == "dockerfile" else "")
+    assert cfg.project.build_version == ""
+    assert not config.project_config_path(nested).exists()
+
+
+def test_init_ignores_directories_and_nested_project_markers(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repo / "Dockerfile").mkdir()
+    (repo / "pyproject.toml").mkdir()
+    nested = repo / "nested"
+    nested.mkdir()
+    (nested / "Cargo.toml").touch()
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    assert main([str(repo), "--init"]) == 0
+    assert config.load(repo).project.base_image == "python:3.12-slim"
+
+
+@pytest.mark.parametrize(
+    "marker", ["Dockerfile", "pyproject.toml", "Cargo.toml", "package.json", ""]
+)
+@pytest.mark.parametrize(
+    "global_project",
+    [
+        'base_image = "global-image"',
+        'dockerfile = "global.Dockerfile"\ndocker_context = "global-context"',
+        'build = "rust-cargo"\nbuild_version = "1.90"',
+    ],
+)
+def test_init_image_choice_overrides_global_image_settings(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, marker: str, global_project: str
+) -> None:
+    if marker:
+        (repo / marker).touch()
+    gpath = repo / "global.toml"
+    original = f'[project]\n{global_project}\n[defaults]\nagent = "codex"\n'
+    gpath.write_text(original)
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    assert main([str(repo), "--config", str(gpath), "--init"]) == 0
+    cfg = config.load(repo, gpath)
+    assert cfg.has_image_source()
+    assert cfg.defaults.agent == "codex"
+    assert cfg.project.build_version == ""
+    assert cfg.project.docker_context == ("." if marker == "Dockerfile" else "")
+    assert gpath.read_text() == original
+
+
+def test_init_installs_local_skills_and_preserves_edits_on_rerun(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    ignore = repo / ".gitignore"
+    ignore.write_text("# keep this rule\ncache/")  # no final newline
+    assert main([str(repo), "--init"]) == 0
+    paths = [repo / root / "skills/sbx-tui-config/SKILL.md" for root in (".agents", ".claude")]
+    assert paths[0].read_text() == paths[1].read_text()
+    assert paths[0].read_text().startswith("---\nname: sbx-tui-config\n")
+    ignored = ignore.read_text()
+    assert ignored.startswith("# keep this rule\ncache/\n")
+    # Real jj snapshot: our skills are local, other skills remain trackable.
+    other = repo / ".agents/skills/other/SKILL.md"
+    other.parent.mkdir(parents=True)
+    other.write_text("another skill\n")
+    tracked = jj(repo, "file", "list").splitlines()
+    assert ".agents/skills/other/SKILL.md" in tracked
+    assert config.PROJECT_CONFIG_NAME in tracked
+    for path in paths:
+        assert path.relative_to(repo).as_posix() not in tracked
+        path.write_text("user-edited skill\n")
+    project_text = config.project_config_path(repo).read_text()
+    global_text = config.global_config_path().read_text()
+    (repo / "Dockerfile").touch()  # rerunning must not replace the earlier choice
+    assert main([str(repo), "--init"]) == 0
+    assert ignore.read_text() == ignored
+    assert config.project_config_path(repo).read_text() == project_text
+    assert config.global_config_path().read_text() == global_text
+    assert all(path.read_text() == "user-edited skill\n" for path in paths)
+    assert not config.ProjectTrust.check(repo).needs_review
+    # Restore a missing copy without changing the other one.
+    paths[0].unlink()
+    assert main([str(repo), "--init"]) == 0
+    assert paths[0].read_text().startswith("---\n")
+    assert paths[1].read_text() == "user-edited skill\n"
+    assert ignore.read_text() == ignored
+
+
+def test_init_reports_skill_install_errors(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo / ".agents").write_text("cannot create a directory here\n")
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    assert main([str(repo), "--init"]) == 2
+    assert "could not install configuration skill" in capsys.readouterr().err
 
 
 def test_init_trusts_only_the_template_even_if_the_file_changes(
