@@ -23,7 +23,14 @@ Tests cover units, Textual Pilot interactions and pseudo-terminal sessions.
 `fake_project_sandbox.py` supplies session records, logs and summaries.
 
 - Keep state in `tmp_path`, never shared or global paths: tests must pass in
-  parallel. `conftest.py` isolates `XDG_*` and `CODEX_HOME` per test.
+  parallel. `conftest.py` isolates XDG state, config, data and runtime directories,
+  `CODEX_HOME` and `JJ_CONFIG` per test. The offline packaging test reuses uv's
+  dependency cache; its checkout and build artifacts live in `tmp_path`.
+- `conftest.py` tracks real child processes and stops and reaps them at teardown,
+  including detached job/task groups when an assertion fails. Keep explicit
+  cleanup for resources outside those groups, such as containers and tmux servers.
+  On Linux it also adopts and reaps orphaned descendants in those groups, so tests
+  do not depend on a container's PID 1 to collect them.
 - Use `repo`, `jj_repo`, `jj_repo_no_bookmarks`, or `repo_copy(build, dest)` for
   a new layout. Each test gets a mutable copy of a repo built once per worker.
 

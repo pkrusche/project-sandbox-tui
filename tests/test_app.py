@@ -1327,7 +1327,6 @@ def test_interactive_session_in_tmux_window(
 
     monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))  # private tmux server
     monkeypatch.delenv("TMUX", raising=False)
-    subprocess.run(["tmux", "new-session", "-d", "-s", "host"], check=True)
     agent = Path(__file__).with_name("fake_interactive_agent.py")
     cfg = fake_cfg()
     cfg.sandbox.command = f"{sys.executable} {agent}"
@@ -1363,6 +1362,7 @@ def test_interactive_session_in_tmux_window(
         await wait_until(pilot, lambda: not window_exists())
 
     try:
+        subprocess.run(["tmux", "-f", "/dev/null", "new-session", "-d", "-s", "host"], check=True)
         address = subprocess.check_output(
             ["tmux", "display-message", "-p", "#{socket_path},#{pid},0"], text=True
         ).strip()
@@ -2514,7 +2514,7 @@ def test_unwritable_run_records_do_not_crash_the_app(
         assert app.is_running
         assert notices == [
             "could not update the run records: No space left on device",
-            "could not update the :* task records: No space left on device",
+            "could not update the task records: No space left on device",
         ]  # once each while the problem lasts
 
     run_app(repo, fake_cfg(), scenario)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -97,11 +98,61 @@ def test_old_tasks_are_pruned(tmp_path: Path) -> None:
     for _ in range(KEEP + 2):
         tasks.append(start(manager, tmp_path, "true"))
         wait_for(lambda: finished(manager, tasks[-1].id))
+        manager.mark_notified(tasks[-1])
     start(manager, tmp_path, "true", bookmark="other")
     kept = manager.for_bookmark("feature/x")
     assert [t.id for t in kept] == [t.id for t in reversed(tasks)][:KEEP]
     assert not Path(tasks[0].out_path).exists()
     assert manager.latest("other") is not None
+
+
+def test_finished_batch_is_pruned_after_notifications(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path / "state")
+    release = tmp_path / "release"
+    tasks = [
+        start(manager, tmp_path, "while [ ! -f release ]; do sleep 0.01; done")
+        for _ in range(KEEP + 2)
+    ]
+    assert len(manager.tasks) == KEEP + 2  # running tasks must never be pruned
+    release.touch()
+    wait_for(lambda: (manager.refresh(), manager.running_count())[1] == 0)
+    # Every completion can still be announced, including the oldest runs.
+    for task in manager.refresh():
+        assert manager.mark_notified(task)
+    assert len(manager.tasks) == KEEP
+    for task in tasks[:2]:
+        assert not manager._record_path(task.id).exists()
+        assert not Path(task.out_path).exists()
+        assert not Path(task.exit_path).exists()
+    assert not manager._procs
+
+
+@pytest.mark.parametrize("failure", ["spawn", "save"])
+def test_failed_launch_leaves_no_process_or_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    manager = TaskManager(tmp_path / "state")
+    children: list[subprocess.Popen[Any]] = []
+    popen = subprocess.Popen
+
+    def spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        if failure == "spawn":
+            raise OSError("failed launch")
+        proc = popen(*args, **kwargs)
+        children.append(proc)
+        return proc
+
+    def save(_task: TaskRecord) -> None:
+        raise OSError("failed launch")
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(manager, "save", save)
+    with pytest.raises(OSError, match="failed launch"):
+        start(manager, tmp_path, "sleep 30")
+    assert all(proc.returncode is not None for proc in children)
+    assert not manager.tasks and not manager._procs
+    assert not list(manager.tasks_dir.glob("*"))
+    assert not list(manager.logs_dir.iterdir())
 
 
 def test_adopted_task_with_an_empty_exit_file_is_still_running(tmp_path: Path) -> None:

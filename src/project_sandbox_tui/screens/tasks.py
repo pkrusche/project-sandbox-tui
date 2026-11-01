@@ -1,4 +1,4 @@
-"""T: every ``:*`` task across the workspaces, running ones first."""
+"""T: every background task across the workspaces, running ones first."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ class TasksScreen(Screen[None]):
         table: DataTable[Text] = DataTable(cursor_type="row", zebra_stripes=False)
         yield table
         yield Static(
-            "No :* tasks yet. Mark rows, then :*!cmd or :*name runs a command in each workspace.",
+            "No tasks yet. :&!cmd runs in the repository; :*!cmd runs in each selected workspace.",
             id="tasks-empty",
         )
         yield Static(KeyHints(HINT), id="tasks-hint")

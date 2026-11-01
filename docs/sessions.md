@@ -56,8 +56,9 @@ Sessions reuse a bookmark's workspace when it is kept (`keep_workspace`, or
   not check sbx-tui's runs, so a session started from a shell on a bookmark that
   sbx-tui is running can share its workspace and both edit the same files.
   Check the bookmark's status column before starting one by hand.
-- **Shell tasks do not wait for agents.** [`:*` commands](usage.md#running-in-each-workspace)
-  only warn when a session is running on the target. Tests run meanwhile may
+- **Shell tasks do not wait for agents.** [`:&`](usage.md#background-commands)
+  and [`:*` commands](usage.md#running-in-each-workspace) only warn when a
+  session is running on the target. Tests run meanwhile may
   see half-made edits, and commands that write files change the session's work.
 
 ## Interactive sessions

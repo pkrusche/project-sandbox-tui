@@ -56,11 +56,11 @@ diffs or the comparison is unavailable. Counts follow the saved marks from
 | `/` | Filter (`enter` keeps it, `esc` clears) |
 | `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
 | `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout; asks first on the main bookmark |
-| `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark) or running [`:*` tasks](#running-in-each-workspace): repeat to cancel harder, a third time to forget a run; clears a finished status at once; asks first before signalling several |
-| `l` / `enter` | [Logs](#log-viewer) and the latest `:*` output, or run details while a bookmark has neither |
-| `P` | Last run details (agent, times, IDs, log, command line), history, recent `:*` tasks and the interactive command |
+| `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark) or running [tasks](#tasks): repeat to cancel harder, a third time to forget a run; clears a finished status at once; asks first before signalling several |
+| `l` / `enter` | [Logs](#log-viewer) and the latest task output, or run details while a bookmark has neither |
+| `P` | Last run details (agent, times, IDs, log, command line), history, recent tasks and the interactive command |
 | `L` | [Op history](#op-history): every prompt, session, merge and rebase as a graph |
-| `T` | [Tasks](#tasks): every `:*` task in all workspaces |
+| `T` | [Tasks](#tasks): every background task in all workspaces |
 | `n` | New bookmark: name and start revision |
 | `e` | Edit the full description of one bookmark or the working copy (`ctrl+s` saves, `esc` cancels) |
 | `dd` · `u` · `ctrl+r` | Delete bookmark, keeping its history · [undo · redo](#bookmark-history) |
@@ -90,7 +90,7 @@ The status column shows the last run's outcome and, when inactive, how long ago
 it ended (or started if the end time is unavailable), such as `completed · 5m ago`.
 Its node in the graph shows the outcome as a symbol
 (`▶` running, `✓` completed, `✗` failed, `⚠` other).
-The latest [`:*` task](#running-in-each-workspace) follows while it runs or until
+The latest [background task](#tasks) follows while it runs or until
 a newer run starts: `:pytest ▶` (`+N` more running), `:pytest ✓`, `:pytest ✗1`
 with its exit status.
 
@@ -124,9 +124,10 @@ removes the workspace instead.
 
 | Command | Action |
 |---|---|
-| `:!cmd` | Run `cmd` with `sh -c` in the repository |
-| `:name args` | Run the configured [`[commands]`](configuration.md#commands-and-leader-key) entry `name`, appending `args` |
-| `:*!cmd` · `:*name args` | The same, in [each target workspace](#running-in-each-workspace) at once |
+| `:!cmd` | Run `cmd` with `sh -c` in the repository, in the foreground |
+| `:name args` | Run the configured [`[commands]`](configuration.md#commands-and-leader-key) entry `name` in the foreground, appending `args` |
+| `:&!cmd` · `:&name args` | Run once in the repository as a [background task](#background-commands) |
+| `:*!cmd` · `:*name args` | Run a background task in [each target workspace](#running-in-each-workspace) at once |
 | `:action args` | Start the [`[actions]`](configuration.md#agent-actions) prompt on each target, with `args` appended |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
 
@@ -137,13 +138,59 @@ removes the workspace instead.
 | `→` at end | Accept the newest matching command shown as ghost text |
 | `enter` · `esc` | Run · cancel (`backspace` on an empty line also cancels) |
 
-Shell commands take over the terminal like a diff: the TUI is suspended and
-returns after `enter`, and a non-zero exit status is reported. They run in the
-repository root and receive `SBX_REPO`, `SBX_BOOKMARK` (the highlighted
-bookmark, `@` for the working copy) and `SBX_WORKSPACE` (its workspace
-directory, empty if it has none yet), e.g.
-`cd "$SBX_WORKSPACE" && uv run pytest`. Each repository remembers the latest
-500 distinct command lines.
+### Choosing how to run a shell command
+
+For a walkthrough with terminal illustrations, see
+[Workflow: run tests while keeping sbx-tui open](command-workflow.md).
+
+These forms run host shell commands. With `test = "uv run pytest"` in
+`[commands]`, the named forms in the table run the same script as the literal
+examples. [Agent actions](#agent-actions) start sandbox runs and already run
+in the background on each target.
+
+| Behavior | Foreground: `:!uv run pytest` / `:test` | Repository background: `:&!uv run pytest` / `:&test` | Workspace background: `:*!uv run pytest` / `:*test` |
+|---|---|---|---|
+| Where it starts | Repository root, once | Repository root, once | Each target's workspace; repository root for `@` |
+| Which rows it uses | Ignores marked rows | Ignores marked rows | Marked rows, or the highlighted row if none are marked |
+| Missing workspace | Does not create one | Does not create one | Creates one for each target that needs it |
+| Terminal and output | Takes over the terminal; accepts interactive input | TUI stays usable; output captured; no interactive input | TUI stays usable; output captured per target; no interactive input |
+| Task record | No background task record | One task under `@` | One task under each target |
+| Stop or return | `Ctrl+C` interrupts; `Enter` at the exit prompt returns to the TUI | `T`, select task, `x` to cancel; `Enter` to view output | Same task controls, separately for each target |
+| After quitting sbx-tui | Return from the command before quitting the TUI | Task keeps running | Tasks keep running |
+
+For example, with `feature/x` highlighted and several rows marked, `:&test`
+still runs just once in the repository and appears under `@`. `:*test` runs
+in every marked workspace. Clear the marks to use `:*test` only in the
+highlighted workspace. Merely highlighting a bookmark never changes the
+starting directory of `:test` or `:&test`.
+
+All three forms receive `SBX_REPO` as the repository root. For `:!` / `:name`
+and `:&`, `SBX_BOOKMARK` identifies the highlighted row and `SBX_WORKSPACE`
+is its existing workspace directory, or empty if it has none. For `:*`, those
+two variables identify each task's target and workspace. A script can change
+directory explicitly, e.g. `cd "$SBX_WORKSPACE" && uv run pytest`; it then
+runs there, while `:&` still records its task under `@`.
+
+Foreground commands report their exit status before returning to the TUI.
+After `Ctrl+C`, `-2` or `130` means the command was interrupted. Each repository
+remembers the latest 500 distinct command lines; all three forms support
+completion and leader mappings.
+
+### Background commands
+
+Use `:&!uv run pytest` or `:&test` to start a command in the background and
+keep using the TUI. It runs once in the repository root, ignoring marked rows,
+with the same environment as the foreground form. The task is tracked under
+`@` because it runs in the repository, even when another bookmark is highlighted.
+It does not create a workspace.
+
+Put `&` before `!` or the configured command name. A trailing shell `&`, as
+in `:!uv run pytest &`, does not create a tracked sbx-tui background task.
+
+`T` lists the task and opens its captured output with `enter`; `x` in that view
+cancels it. On the bookmark list, `l` and `x` on `@` show its output and cancel
+it. Tasks keep running after sbx-tui exits. For one task per selected workspace,
+use `:*` below. Both forms support command history, completion and leader mappings.
 
 ### Running in each workspace
 
@@ -163,7 +210,8 @@ run's logs), `P` lists recent tasks and [`T`](#tasks) shows those of every
 workspace. `x` sends SIGINT to the target's
 running tasks, then SIGTERM and SIGKILL on further presses. Output is kept in
 the [state directory](configuration.md#state-directory), the last ten tasks per
-bookmark.
+bookmark. Running tasks and completions awaiting notification are kept until they
+finish and are announced, then older records and their output are pruned.
 
 ### Agent actions
 
@@ -180,8 +228,9 @@ history.
 
 The leader key (`\` by default, `ui.leader`) followed by a key sequence from
 [`[leader]`](configuration.md#commands-and-leader-key) runs its command line, so
-`t = "test"` makes `\t` run `:test`, `T = "*test"` runs it in each selected
-workspace and `rc = "chores"` starts the `chores` action. The header shows the keys typed so far;
+`t = "test"` makes `\t` run `:test`, `b = "&test"` runs it once in the
+repository background, `T = "*test"` runs it in each selected workspace and
+`rc = "chores"` starts the `chores` action. The header shows the keys typed so far;
 `esc`, an unmapped key or 1.5 seconds without a key cancels. `?` lists the
 configured commands and mappings.
 
@@ -259,7 +308,8 @@ none.
 
 ## Tasks
 
-`T` lists the [`:*` tasks](#running-in-each-workspace) of every workspace:
+`T` lists all [`:&` background commands](#background-commands) and
+[`:*` tasks](#running-in-each-workspace):
 running ones first, then finished ones, newest first. Each row shows the
 outcome, its age (since it ended, or started while running), the bookmark,
 the status with any exit code and the command line. The title counts running

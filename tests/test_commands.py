@@ -45,8 +45,38 @@ def test_parse_errors(line: str, message: str) -> None:
         cmd.parse(line, CONFIGURED)
 
 
+@pytest.mark.parametrize(
+    ("line", "script"),
+    [
+        (":&!make lint", "make lint"),
+        ("& !make", "make"),
+        ("&test -k 'a b'", "uv run pytest -k 'a b'"),
+        ("&!echo 'a & b' && true", "echo 'a & b' && true"),
+    ],
+)
+def test_parse_background(line: str, script: str) -> None:
+    command = cmd.parse(line, CONFIGURED)
+    assert command.background and not command.each
+    assert command.script == script
+    assert command.line == line.removeprefix(":")
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("&", ":& needs a command"),
+        ("&!", "needs a shell command"),
+        ("&quit", "cannot run in the background"),
+        ("&review", "already runs in the background"),
+    ],
+)
+def test_parse_background_errors(line: str, message: str) -> None:
+    with pytest.raises(cmd.CommandError, match=message):
+        cmd.parse(line, CONFIGURED, {"review"})
+
+
 def test_validate_accepts_mappings_to_any_command_line() -> None:
-    mappings = {"t": "test", "tf": "test -x", "s": "!jj st", "r": ":reload"}
+    mappings = {"t": "test", "tf": "test -x", "s": "!jj st", "r": ":reload", "b": "&test"}
     with pytest.raises(cmd.CommandError, match="prefix"):
         cmd.validate(CONFIGURED, "\\", mappings)
     del mappings["t"]
@@ -125,6 +155,9 @@ def test_complete_programs_after_bang(tmp_path: Path) -> None:
 
 
 def test_complete_file_arguments(tmp_path: Path) -> None:
+    # Completion sees only its workspace, not the test's isolated XDG directories.
+    tmp_path = tmp_path / "workspace"
+    tmp_path.mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_a.py").write_text("")
     (tmp_path / "tests" / "test b.py").write_text("")
@@ -202,10 +235,11 @@ def test_validate_actions() -> None:
         cmd.validate({}, "\\", {}, {"re view"})
 
 
-def test_complete_after_each(tmp_path: Path) -> None:
+@pytest.mark.parametrize("prefix", ["*", "&"])
+def test_complete_after_prefix(tmp_path: Path, prefix: str) -> None:
     (tmp_path / "notes.txt").write_text("")
-    assert cmd.complete("*te", ["test", "help"], tmp_path) == (1, ["test"])
-    assert cmd.complete("* te", ["test"], tmp_path) == (2, ["test"])
-    assert cmd.complete("*test no", ["test"], tmp_path) == (6, ["notes.txt"])
-    start, words = cmd.complete("*!ech", [], tmp_path, path=str(tmp_path))
+    assert cmd.complete(f"{prefix}te", ["test", "help"], tmp_path) == (1, ["test"])
+    assert cmd.complete(f"{prefix} te", ["test"], tmp_path) == (2, ["test"])
+    assert cmd.complete(f"{prefix}test no", ["test"], tmp_path) == (6, ["notes.txt"])
+    start, words = cmd.complete(f"{prefix}!ech", [], tmp_path, path=str(tmp_path))
     assert start == 2 and words == []

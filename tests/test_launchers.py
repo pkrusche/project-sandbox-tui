@@ -191,8 +191,8 @@ def test_real_tmux_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     """Use a private server to check window execution and failure acknowledgement."""
     monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
     monkeypatch.delenv("TMUX", raising=False)
-    subprocess.run(["tmux", "new-session", "-d", "-s", "host"], check=True)
     try:
+        subprocess.run(["tmux", "-f", "/dev/null", "new-session", "-d", "-s", "host"], check=True)
         address = subprocess.check_output(
             ["tmux", "display-message", "-p", "#{socket_path},#{pid},0"], text=True
         ).strip()

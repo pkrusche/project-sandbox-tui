@@ -1,10 +1,10 @@
-"""Host commands run in bookmark workspaces by ``:*`` — in parallel, output captured.
+"""Background host commands (``:&`` and ``:*``), with output captured.
 
 Each task runs detached (``start_new_session``) under a small shell wrapper that
 writes the command's exit status to a file, so a TUI started later still learns
 how a task ended. Records live in ``<state>/<repo>/tasks/<id>.json`` and output
 in ``<state>/<repo>/logs/<id>.task.out``; the newest :data:`KEEP` per bookmark
-are kept.
+are kept, along with running tasks and completions awaiting notification.
 
 Unlike sandbox jobs (jobs.py), a bookmark may run several tasks at once.
 """
@@ -27,6 +27,7 @@ from typing import Any
 
 from project_sandbox_tui.config import private_dir
 from project_sandbox_tui.jobs import SIGINT_EXITS, _now, _parse_ts, branch_slug
+from project_sandbox_tui.processes import reap_later
 from project_sandbox_tui.sandbox import pid_alive
 
 KEEP = 10  # records per bookmark
@@ -69,7 +70,7 @@ class TaskRecord:
     @property
     def name(self) -> str:
         """Short label for the status column: the command name, or the program after ``!``."""
-        body = self.line.lstrip("*").strip()
+        body = self.line.lstrip("*&").strip()
         word = body.removeprefix("!").split(maxsplit=1)
         return (word[0] if word else body)[:12]
 
@@ -177,13 +178,14 @@ class TaskManager:
             with contextlib.suppress(OSError):
                 Path(path).unlink(missing_ok=True)
         self.tasks.pop(task.id, None)
-        self._procs.pop(task.id, None)
+        if proc := self._procs.pop(task.id, None):
+            reap_later(proc)
         self._stop_stage.pop(task.id, None)
         self._stop_last.pop(task.id, None)
 
     def _prune(self, bookmark: str) -> None:
         for task in self.for_bookmark(bookmark)[KEEP:]:
-            if not task.running:
+            if not task.running and task.notified:
                 self._forget(task)
 
     # ------------------------------------------------------------ queries
@@ -215,16 +217,20 @@ class TaskManager:
         with self._locked():
             self.load()
             private_dir(self.logs_dir)
-            with out.open("wb") as stream:
-                proc = subprocess.Popen(
-                    ["sh", "-c", WRAPPER, "sbx-task", script, str(exit_file)],
-                    cwd=cwd,
-                    env=dict(env),
-                    stdin=subprocess.DEVNULL,
-                    stdout=stream,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,  # survives the TUI; own group for cancel()
-                )
+            try:
+                with out.open("wb") as stream:
+                    proc = subprocess.Popen(
+                        ["sh", "-c", WRAPPER, "sbx-task", script, str(exit_file)],
+                        cwd=cwd,
+                        env=dict(env),
+                        stdin=subprocess.DEVNULL,
+                        stdout=stream,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,  # survives the TUI; own group for cancel()
+                    )
+            except OSError:
+                out.unlink(missing_ok=True)
+                raise
             task = TaskRecord(
                 id=task_id,
                 bookmark=bookmark,
@@ -306,6 +312,8 @@ class TaskManager:
                     self._stop_last.pop(task.id, None)
                 if not task.notified:
                     out.append(task)
+            for bookmark in {task.bookmark for task in self.tasks.values()}:
+                self._prune(bookmark)
             return out
 
     def mark_notified(self, task: TaskRecord) -> bool:
@@ -321,6 +329,8 @@ class TaskManager:
             current.notified = True
             self.save(current)
             task.notified = True
+            self.load()
+            self._prune(current.bookmark)
             return True
 
     # ------------------------------------------------------------ cancelling
