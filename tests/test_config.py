@@ -224,9 +224,15 @@ def test_commands_and_leader_merge(tmp_path: Path) -> None:
     c.ProjectTrust.check(repo).trust(repo)
     cfg = c.load(repo)
     assert cfg.ui.leader == ","
-    assert cfg.commands == {"test": "uv run pytest", "lint": "ruff check"}
+    assert cfg.commands == {**c.DEFAULT_COMMANDS, "test": "uv run pytest", "lint": "ruff check"}
     assert cfg.leader == {"t": "test", "s": "!jj st"}
     assert c.load(tmp_path).ui.leader == "\\"  # vim's default
+
+
+def test_default_commands(tmp_path: Path) -> None:
+    assert c.load(tmp_path).commands["abandon-empty"] == "jj abandon -r '(~empty())..'"
+    write(c.global_config_path(), '[commands]\nabandon-empty = "true"\n')
+    assert c.load(tmp_path).commands["abandon-empty"] == "true"
 
 
 def test_terminal_mode_resolution(tmp_path: Path) -> None:

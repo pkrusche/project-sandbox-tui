@@ -173,6 +173,18 @@ letter and use letters, digits, `_` and `-`; built-in commands (`help`, `quit`,
 shell code: use `SBX_REPO`, `SBX_BOOKMARK` and `SBX_WORKSPACE` rather than
 placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 
+One command is built in as a default, and a `[commands]` entry of the same name
+replaces it:
+
+| Command | Runs |
+|---|---|
+| `:abandon-empty` | `jj abandon -r '(~empty())..'`: abandons empty commits that have only empty descendants, such as leftover empty heads |
+
+`:abandon-empty` asks for confirmation first: run it only when all workspaces are
+inactive. Other workspaces' empty working-copy commits are empty heads too, so
+abandoning them leaves those workspaces stale; bookmarks on empty heads are
+deleted. A redefined `abandon-empty` runs without asking.
+
 `:&name` runs it once in the background in the repository, ignoring marked rows;
 see [background commands](usage.md#background-commands).
 `:*name` runs it in the background in each selected workspace instead, with `cwd`,

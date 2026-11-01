@@ -51,6 +51,7 @@ class Command:
     background: bool = False  # a single captured task (``:&``)
     action: str = ""  # an [actions] name: a sandbox run on each target
     args: str = ""  # an action's extra words, appended to its prompt
+    name: str = ""  # the [commands] entry that supplied ``script``, if any
 
 
 def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ()) -> Command:
@@ -82,7 +83,11 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
         return Command(line, builtin=builtin)
     if name in commands:
         return Command(
-            line, script=f"{commands[name]} {args}".strip(), each=each, background=background
+            line,
+            script=f"{commands[name]} {args}".strip(),
+            each=each,
+            background=background,
+            name=name,
         )
     if name in actions:
         if background:

@@ -41,6 +41,7 @@ from project_sandbox_tui.config import (
     ConfigError,
     LastUsed,
     ProjectTrust,
+    command_warning,
     load,
     load_candidate,
     remember,
@@ -2322,6 +2323,18 @@ class SandboxTUI(App[None]):
         except commands.CommandError as exc:
             self.notify(str(exc), severity="error")
             return
+        warning = command_warning(self.cfg.commands, command.name)
+        if warning:
+
+            def decided(confirmed: bool | None) -> None:
+                if confirmed:
+                    self.call_later(self._dispatch_command, command)
+
+            self.push_screen(ConfirmScreen(f"run :{command.line}?", warning, "run"), decided)
+            return
+        await self._dispatch_command(command)
+
+    async def _dispatch_command(self, command: commands.Command) -> None:
         if command.action:
             self._run_action(command)
         elif command.each:

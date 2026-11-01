@@ -156,6 +156,27 @@ class Action:
 
 ACTION_KEYS: dict[str, Any] = {"prompt": "", "agent": "", "model": "", "effort": "", "timeout": 0}
 
+# [commands] every configuration starts with; config files can redefine them.
+DEFAULT_COMMANDS: dict[str, str] = {
+    # Empty commits with only empty descendants, e.g. leftover working-copy heads.
+    "abandon-empty": "jj abandon -r '(~empty())..'",
+}
+# Asked before a DEFAULT_COMMANDS entry runs, unless a config file redefined it.
+DEFAULT_COMMAND_WARNINGS: dict[str, str] = {
+    "abandon-empty": (
+        "Run this only when all workspaces are inactive. Other workspaces' empty "
+        "working-copy commits are empty heads too: abandoning them leaves those "
+        "workspaces stale, and bookmarks on empty heads are deleted."
+    ),
+}
+
+
+def command_warning(commands: dict[str, str], name: str) -> str:
+    """The warning to confirm before ``:name``, or "" if it has none or was redefined."""
+    if not name or commands.get(name) != DEFAULT_COMMANDS.get(name):
+        return ""
+    return DEFAULT_COMMAND_WARNINGS.get(name, "")
+
 
 @dataclass
 class Config:
@@ -166,7 +187,9 @@ class Config:
     ui: UI = field(default_factory=UI)
     prompts: Prompts = field(default_factory=Prompts)
     models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
-    commands: dict[str, str] = field(default_factory=dict)  # :name -> shell command (commands.py)
+    commands: dict[str, str] = field(  # :name -> shell command (commands.py)
+        default_factory=lambda: dict(DEFAULT_COMMANDS)
+    )
     leader: dict[str, str] = field(default_factory=dict)  # keys after ui.leader -> command line
     actions: dict[str, Action] = field(default_factory=dict)  # :name -> sandbox run per target
     sources: list[Path] = field(default_factory=list)  # files that were loaded

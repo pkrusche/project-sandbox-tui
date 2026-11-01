@@ -96,6 +96,51 @@ def test_configured_commands_take_arguments(
     run_app(repo, cfg, scenario)
 
 
+def test_default_command_warns_before_running(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from project_sandbox_tui.config import DEFAULT_COMMANDS
+    from project_sandbox_tui.screens.dialogs import ConfirmScreen
+
+    cfg = fake_cfg()
+    cfg.commands = {**DEFAULT_COMMANDS, "plain": "true"}
+    ran: list[str] = []
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_run_shell", lambda command: ran.append(command.script))
+        monkeypatch.setattr(app, "_run_background", lambda command: ran.append(command.line))
+        await type_line(pilot, "abandon-empty")
+        await pilot.press("enter")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfirmScreen) and screen.title_text == "run :abandon-empty?"
+        assert "all workspaces are inactive" in screen.body
+        await pilot.press("n")
+        await pilot.pause()
+        assert ran == []
+
+        await type_line(pilot, "&abandon-empty")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.press("y")
+        await pilot.pause()
+        assert ran == ["&abandon-empty"]
+
+        await type_line(pilot, "plain")  # commands without a warning run at once
+        await pilot.press("enter")
+        await pilot.pause()
+        assert ran == ["&abandon-empty", "true"]
+
+        app.cfg.commands["abandon-empty"] = "true"  # redefined: no warning
+        await type_line(pilot, "abandon-empty")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert ran == ["&abandon-empty", "true", "true"]
+
+    run_app(repo, cfg, scenario)
+
+
 def test_command_line_completion_and_history(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     cfg = fake_cfg()
     cfg.commands = {"test": "true", "tidy": "true"}
