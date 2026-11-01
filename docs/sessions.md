@@ -11,7 +11,13 @@ at project-sandbox's location, on a new change on top of the bookmark; later
 sessions reuse it with `keep_workspace`. Rows with a starting session wait for
 the session's own workspace.
 
-The main bookmark and `@` are greyed out and protected from sessions, including
+Select `@ working copy` to run directly in the TUI's checkout with `i`, `r`, or
+a configured agent action. These sessions use the existing files, including
+project-local skills and other ignored files that a new jj workspace would not
+contain. They omit `--branch` and the workspace options, and share the same
+busy-session checks as bookmark sessions.
+
+The main bookmark is greyed out and protected from sessions, including
 interactive runs, background runs and configured agent actions. Press `n` to
 create a bookmark for changes, then start a session there. Main follows
 `project.main_branch`, or the first existing bookmark main/master/trunk.

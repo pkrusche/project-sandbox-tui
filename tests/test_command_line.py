@@ -13,7 +13,7 @@ from textual.widgets import Input, Static
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.screens.command import CommandScreen
-from project_sandbox_tui.screens.dialogs import HelpScreen
+from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen
 from tests.test_app import run_app
 
 
@@ -397,13 +397,15 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
         await type_line(pilot, "chores sleep:0.2")
         await pilot.press("enter")
         await pilot.pause()
-        assert app.screen is app.main
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.press("y")
         await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
-        assert set(app.jobs.jobs) == {"feature/x"}
-        for target in ("@", "main"):
-            assert any(
-                f"skipped: {target} is protected; create a bookmark" in m for m in messages(app)
-            )
+        assert set(app.jobs.jobs) == {"@", "feature/x"}
+        assert any("skipped: main is protected; create a bookmark" in m for m in messages(app))
+        working_copy = app.jobs.jobs["@"]
+        assert working_copy.spec.main_checkout
+        assert working_copy.spec.prompt_text == "chores on @ vs main\n\nsleep:0.2\n"
+        assert not any(arg.startswith("--branch") for arg in working_copy.argv)
         job = app.jobs.jobs["feature/x"]
         assert job.mode == "background" and (job.spec.agent, job.spec.effort) == ("bash", "low")
         assert job.spec.prompt_text == "chores on feature/x vs main\n\nsleep:0.2\n"

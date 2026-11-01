@@ -138,7 +138,7 @@ def validate_branch_name(name: str) -> str | None:
     """
     if not name:
         return "bookmark name is empty"
-    if _INVALID_NAME.search(name):
+    if name == WORKING_COPY or _INVALID_NAME.search(name):
         return f"invalid bookmark name: {name!r}"
     return None
 
@@ -682,7 +682,7 @@ def session_target_error(name: str, names: Collection[str], configured: str = ""
     # Include a new target: creating the first main/master/trunk bookmark must
     # not bypass the protection just because it does not exist yet.
     main = main_branch([*names, name], configured) or configured or "main"
-    if name in (WORKING_COPY, main):
+    if name == main:
         return f"{name} is protected; create a bookmark for changes before starting a session"
     return ""
 

@@ -23,6 +23,7 @@ def test_names_and_validation() -> None:
         (OctopusPlan("merge", ["a", "b"], "a"), "already exists"),
         (OctopusPlan("merge", ["a", "b"], ""), "bookmark name is empty"),
         (OctopusPlan("merge", ["a", "b"], "bad name"), "invalid"),
+        (OctopusPlan("merge", ["a", "b"], "@"), "invalid"),
         (OctopusPlan("rebase", ["a", "b"], "r"), "needs a base"),
     ]:
         with pytest.raises(OctopusError, match=message):

@@ -270,6 +270,7 @@ def test_bookmarked_ancestors(repo: Path) -> None:
     [
         ("feature/x", True),
         ("fix-123", True),
+        ("@", False),
         ("", False),
         ("has space", False),
         ("a..b", False),
