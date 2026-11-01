@@ -1,5 +1,7 @@
 # project-sandbox-tui
 
+[![PyPI](https://img.shields.io/pypi/v/project-sandbox-tui)](https://pypi.org/project/project-sandbox-tui/)
+
 A [vim](https://www.vim.org/)/[ranger](https://ranger.fm/)-style terminal UI for
 running coding agents in [project-sandbox](https://github.com/pkrusche/project-sandbox)
 containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bookmarks/).
@@ -34,7 +36,9 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 ```sh
 uv tool install project-sandbox
-uv tool install git+https://github.com/pkrusche/project-sandbox-tui
+uv tool install project-sandbox-tui
+# For latest from Github:
+# uv tool install git+https://github.com/pkrusche/project-sandbox-tui
 # From a checkout: uv tool install . (or uv sync && uv run sbx-tui)
 
 cd ~/workspace/myproject
