@@ -59,6 +59,7 @@ def test_project_overrides_global(tmp_path: Path) -> None:
         ("[nope]\n", "unknown section"),
         ("[defaults]\nagent = 'gpt'\n", "defaults.agent"),
         ("[defaults]\neffort = 'extreme'\n", "defaults.effort"),
+        ("[defaults]\nfast = 'true'\n", "defaults.fast must be true or false"),
         ("[ui]\nbell = 'yes'\n", "ui.bell must be true or false"),
         ("[network]\nca_certs = '/x.pem'\n", "list of strings"),
         ("[project]\nbase_image = 'a'\nbuild = 'python-uv'\n", "only one of"),
@@ -174,6 +175,22 @@ def test_last_used_updates_defaults(tmp_path: Path) -> None:
     assert (final.agent, final.model, final.effort, final.timeout) == ("claude", "opus", "", 600)
 
 
+def test_fast_mode_defaults_and_remembered_choices(tmp_path: Path) -> None:
+    write(c.global_config_path(), "[defaults]\nfast = true\n")
+    cfg = c.load(tmp_path)
+    assert c.resolve_launch_defaults(cfg, c.LastUsed.load(tmp_path)).fast
+    c.remember(tmp_path, "claude", "", "", None, fast=False)
+    c.remember(tmp_path, "codex", "", "", None, fast=True)
+    c.remember(tmp_path, "bash", "", "", None)
+    last = c.LastUsed.load(tmp_path)
+    assert last.fast_by_agent == {"claude": False, "codex": True}
+    assert not c.resolve_fast(cfg, last, "claude")  # explicit off overrides config
+    assert c.resolve_fast(cfg, last, "codex")
+    assert not c.resolve_launch_defaults(cfg, last).fast
+    for agent in ("pi", "opencode", "bash"):
+        assert not c.resolve_fast(cfg, last, agent)
+
+
 def test_state_dir_is_per_repo(tmp_path: Path) -> None:
     a = c.repo_state_dir(tmp_path / "x" / "repo")
     b = c.repo_state_dir(tmp_path / "y" / "repo")
@@ -278,6 +295,7 @@ def test_last_used_ignores_invalid_fields_without_losing_valid_ones(
                 "effort": "extreme",
                 "timeout": timeout,
                 "model_by_agent": {"codex": "custom", "claude": 42},
+                "fast_by_agent": {"codex": "true", "claude": 1, "bash": True},
             }
         ),
     )

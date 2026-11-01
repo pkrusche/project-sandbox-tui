@@ -324,6 +324,7 @@ def _print_config(repo: Path, backend: JjBackend, cfg: config_mod.Config) -> int
             agent=d.agent,
             model=d.model,
             effort=d.effort,
+            fast=d.fast,
         )
         print(shlex.join(build_argv(cfg, repo, spec)))
     except ConfigError as exc:

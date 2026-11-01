@@ -30,6 +30,7 @@ from project_sandbox_tui import commands
 from project_sandbox_tui.launchers import TERMINALS, fill_command
 
 AGENTS: tuple[str, ...] = ("claude", "codex", "opencode", "pi", "bash")
+FAST_AGENTS: tuple[str, ...] = ("claude", "codex")
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 RUNTIMES: tuple[str, ...] = ("auto", "apple-container", "docker", "podman")
 GENERATED_BUILDS: tuple[str, ...] = ("", "python-uv", "rust-cargo", "node-npm")
@@ -52,6 +53,7 @@ class Defaults:
     model: str = ""  # "" = the agent's own default
     effort: str = ""  # "" = the agent's own default
     timeout: int = 0  # seconds for unsupervised runs; 0 = no timeout
+    fast: bool = False  # Codex and Claude; requires project-sandbox >= 0.3.1
 
 
 @dataclass
@@ -526,6 +528,7 @@ class LastUsed:
     effort: str | None = None  # None = never chosen; "" = explicitly agent default
     timeout: int | None = None
     model_by_agent: dict[str, str] = field(default_factory=dict)
+    fast_by_agent: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def load(cls, repo: Path) -> LastUsed:
@@ -546,6 +549,12 @@ class LastUsed:
         if isinstance(raw.get("model_by_agent"), dict):
             out.model_by_agent = {
                 k: v for k, v in raw["model_by_agent"].items() if isinstance(v, str)
+            }
+        if isinstance(raw.get("fast_by_agent"), dict):
+            out.fast_by_agent = {
+                k: v
+                for k, v in raw["fast_by_agent"].items()
+                if k in FAST_AGENTS and type(v) is bool
             }
         return out
 
@@ -569,6 +578,7 @@ class LaunchDefaults:
     model: str
     effort: str
     timeout: int
+    fast: bool = False
 
 
 def resolve_model(cfg: Config, last: LastUsed, agent: str) -> str:
@@ -577,6 +587,10 @@ def resolve_model(cfg: Config, last: LastUsed, agent: str) -> str:
     if agent == cfg.defaults.agent and cfg.defaults.model:
         return cfg.defaults.model
     return ""  # agent default; [models] entries are only autocomplete suggestions
+
+
+def resolve_fast(cfg: Config, last: LastUsed, agent: str) -> bool:
+    return agent in FAST_AGENTS and last.fast_by_agent.get(agent, cfg.defaults.fast)
 
 
 def resolve_launch_defaults(cfg: Config, last: LastUsed) -> LaunchDefaults:
@@ -588,16 +602,21 @@ def resolve_launch_defaults(cfg: Config, last: LastUsed) -> LaunchDefaults:
         model=resolve_model(cfg, last, agent),
         effort=effort,
         timeout=timeout,
+        fast=resolve_fast(cfg, last, agent),
     )
 
 
-def remember(repo: Path, agent: str, model: str, effort: str, timeout: int | None) -> None:
+def remember(
+    repo: Path, agent: str, model: str, effort: str, timeout: int | None, *, fast: bool = False
+) -> None:
     last = LastUsed.load(repo)
     last.agent = agent
     last.effort = effort
     if timeout is not None:
         last.timeout = timeout
     last.model_by_agent[agent] = model
+    if agent in FAST_AGENTS:
+        last.fast_by_agent[agent] = fast
     last.save(repo)
 
 
@@ -622,6 +641,7 @@ keep_workspace = true                  # -> --keep-workspace
 # agent = "claude"                     # claude | codex | opencode | pi | bash
 # model = ""
 # effort = "medium"                    # low | medium | high | xhigh | max
+# fast = false                         # Codex / Claude; project-sandbox >= 0.3.1
 
 # [commands]                           # :name runs the shell command in the repository
 # test = "uv run pytest"               # :test -k merge appends the arguments
@@ -642,6 +662,7 @@ GLOBAL_TEMPLATE = """\
 agent = "claude"          # claude | codex | opencode | pi | bash
 model = ""                # "" = the agent's own default
 effort = ""               # "" or low | medium | high | xhigh | max
+fast = false              # Codex / Claude; project-sandbox >= 0.3.1
 timeout = 0               # seconds for unsupervised runs; 0 = none
 
 [network]

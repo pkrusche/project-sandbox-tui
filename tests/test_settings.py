@@ -22,6 +22,8 @@ def cli(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str, str]:
         ("ui.refresh_seconds", "1.5", 1.5),
         ("ui.bell", "false", False),
         ("ui.bell", "true", True),
+        ("defaults.fast", "true", True),
+        ("defaults.fast", "false", False),
         ("project.base_image", "[x]", "[x]"),
         ("models.codex", '["a", "b"]', ["a", "b"]),
         ("models.codex", "[]", []),

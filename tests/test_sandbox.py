@@ -81,6 +81,29 @@ def test_values_starting_with_a_dash_stay_values(tmp_path: Path) -> None:
     assert "--branch=-x" in argv and "--prompt-text=--help" in argv
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex", "opencode", "pi", "bash"])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("fast", [False, True])
+def test_fast_mode_argv(tmp_path: Path, agent: str, background: bool, fast: bool) -> None:
+    spec = LaunchSpec(
+        branch="b",
+        agent=agent,
+        fast=fast,
+        mode="background" if background else "interactive",
+        prompt_text="review",
+    )
+    paths = RunPaths(log=tmp_path / "a.log", summary=tmp_path / "a.json", stdout=tmp_path / "a.out")
+    argv = build_argv(make_cfg(), tmp_path, spec, paths if background else None)
+    expected = fast and agent in ("claude", "codex")
+    assert ("--fast" in argv) == expected
+    assert ("fast" in spec.label()) == expected
+    assert LaunchSpec.from_dict(spec.to_dict()) == spec
+
+
+def test_old_launch_spec_defaults_fast_mode_to_off() -> None:
+    assert not LaunchSpec.from_dict({"branch": "b", "agent": "codex"}).fast
+
+
 def test_background_argv(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     cfg = Config()

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui.config import Config, ConfigError
+from project_sandbox_tui.config import FAST_AGENTS, Config, ConfigError
 from project_sandbox_tui.vcs import WORKING_COPY, workspace_path
 
 Mode = Literal["interactive", "background"]
@@ -35,6 +35,7 @@ class LaunchSpec:
     operation: str = ""  # "" | "merge" | "rebase"
     inputs: list[str] = field(default_factory=list)
     base: str = ""
+    fast: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +49,7 @@ class LaunchSpec:
             "operation": self.operation,
             "inputs": list(self.inputs),
             "base": self.base,
+            "fast": self.fast,
         }
 
     @classmethod
@@ -66,6 +68,7 @@ class LaunchSpec:
             operation=str(raw.get("operation") or ""),
             inputs=[str(i) for i in raw.get("inputs") or [] if isinstance(i, str)],
             base=str(raw.get("base") or ""),
+            fast=raw.get("fast") is True,
         )
 
     @property
@@ -79,6 +82,8 @@ class LaunchSpec:
             parts.append(self.model)
         if self.effort:
             parts.append(self.effort)
+        if self.fast and self.agent in FAST_AGENTS:
+            parts.append("fast")
         return "/".join(parts)
 
 
@@ -154,6 +159,8 @@ def build_argv(
             argv.append(f"--model={spec.model}")
         if spec.effort:
             argv.append(f"--effort={spec.effort}")
+    if spec.fast and spec.agent in FAST_AGENTS:
+        argv.append("--fast")
 
     # network
     if n.internet_proxy:

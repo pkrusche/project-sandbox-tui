@@ -16,7 +16,15 @@ from textual.widgets import Button, Input, Static, TextArea
 
 from project_sandbox_tui import models as models_mod
 from project_sandbox_tui import octopus as octopus_mod
-from project_sandbox_tui.config import AGENTS, EFFORTS, Config, LastUsed, LaunchDefaults
+from project_sandbox_tui.config import (
+    AGENTS,
+    EFFORTS,
+    FAST_AGENTS,
+    Config,
+    LastUsed,
+    LaunchDefaults,
+    resolve_fast,
+)
 from project_sandbox_tui.config import resolve_model as _resolve_model
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import LaunchSpec, Mode
@@ -103,6 +111,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.cfg = cfg
         self.last = last
         self.defaults = defaults
+        self._fast_by_agent = {agent: resolve_fast(cfg, last, agent) for agent in FAST_AGENTS}
+        self._fast_by_agent[defaults.agent] = defaults.fast
         self.preview_fn = preview
         self.initial_prompt = draft or prompt_text
         self._baseline_prompt = prompt_text  # what the prompt shows without edits
@@ -182,6 +192,11 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             hint_widget.display = bool(model_hint)
             yield hint_widget
             yield CycleField("effort", ("", *EFFORTS), self.defaults.effort, id="effort")
+            fast = CycleField(
+                "fast", ("off", "on"), "on" if self.defaults.fast else "off", id="fast"
+            )
+            fast.display = self.defaults.agent in FAST_AGENTS
+            yield fast
             if self.mode == "background":
                 with Horizontal(classes="field"):
                     yield Static("timeout", classes="field-label")
@@ -352,6 +367,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             operation=operation,
             inputs=inputs,
             base=base,
+            fast=agent in FAST_AGENTS and self.query_one("#fast", CycleField).value == "on",
         )
 
     def _update_preview(self) -> None:
@@ -365,6 +381,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     @on(CycleField.Changed, "#agent")
     def _agent_changed(self, event: CycleField.Changed) -> None:
+        fast = self.query_one("#fast", CycleField)
+        fast.display = event.value in FAST_AGENTS
+        fast.value = "on" if self._fast_by_agent.get(event.value, False) else "off"
         model = self.query_one("#model", CycleField)
         current = "" if event.value == "bash" else _resolve_model(self.cfg, self.last, event.value)
         model.options = self._model_options(event.value, current)
@@ -404,6 +423,13 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self._update_preview()
         # after PromptArea has processed the same Changed (browse state, suggestion)
         self.call_after_refresh(self._update_prompt_hint)
+
+    @on(CycleField.Changed, "#fast")
+    def _fast_changed(self) -> None:
+        agent = self.query_one("#agent", CycleField).value
+        if agent in FAST_AGENTS:
+            self._fast_by_agent[agent] = self.query_one("#fast", CycleField).value == "on"
+        self._changed()
 
     @on(PromptArea.SearchRequested)
     def _search_history(self, event: PromptArea.SearchRequested) -> None:

@@ -42,13 +42,15 @@ settings take effect:
 ## Settings reference
 
 Precedence: remembered launch choices → trusted project → global → built-in.
-The last agent, effort, timeout and per-agent model are remembered per repository.
+The last agent, effort, timeout and per-agent model and fast mode are remembered
+per repository.
 
 ```toml
 [defaults]
 agent = "claude"        # claude | codex | opencode | pi | bash
 model = ""              # "" = the agent's own default
 effort = ""             # "" or low | medium | high | xhigh | max
+fast = false            # Codex / Claude only; requires project-sandbox >= 0.3.1
 timeout = 0             # seconds for unsupervised runs, 0 = none
 
 [network]

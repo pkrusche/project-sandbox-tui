@@ -326,7 +326,7 @@ not snapshotted are recorded first and can be recovered via `jj op log`), and
 | Key | Action |
 |---|---|
 | `tab` | Next field (`j`/`k` on choice fields) |
-| `h` `l` | Cycle agent, effort or model |
+| `h` `l` | Cycle agent, effort, model or fast mode |
 | `enter` | Launch interactive session; newline in a background prompt |
 | `ctrl+s` / `ctrl+enter` | Launch background run (or click **launch**); `ctrl+enter` requires terminal support |
 | `esc` | Cancel, keeping an edited background prompt as a draft |
@@ -335,6 +335,12 @@ The form remembers launch choices per repository; see
 [defaults and precedence](configuration.md#settings-reference). A bookmark
 name that does not exist yet is flagged under the field: launching creates it
 from the highlighted bookmark.
+
+For Codex and Claude, the **fast** field enables fast mode in interactive and
+background runs. It requires project-sandbox 0.3.1 or later and adds `--fast`
+to the command preview. It starts off unless `defaults.fast = true` is configured;
+successful launches remember the choice separately for each agent. Other agents
+hide the field and do not receive the flag. Agent actions also use this preference.
 
 An edited background prompt that was cancelled, or whose launch failed, comes
 back the next time `r` opens on the same bookmark (or the same merge inputs),
