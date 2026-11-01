@@ -2458,7 +2458,7 @@ def test_unwritable_run_records_do_not_crash_the_app(
         assert app.is_running
         assert notices == [
             "could not update the run records: No space left on device",
-            "could not update the :* task records: No space left on device",
+            "could not update the task records: No space left on device",
         ]  # once each while the problem lasts
 
     run_app(repo, fake_cfg(), scenario)

@@ -440,6 +440,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 ("ctrl+d / u", "half page down / up"),
                 ("/", "filter (esc clears)"),
                 (":", "command line, :! shell"),
+                (":&!cmd", "background command"),
                 ("\\ keys", "[leader] key mappings"),
                 ("R / ctrl+l", "refresh / reload config"),
                 ("H / ?", "cheat-sheet / this help"),

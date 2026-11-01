@@ -10,6 +10,8 @@
 - A leading ``*`` runs a shell command once in each target workspace instead
   of once in the repository: ``:*!pytest -x``, ``:*test``. Actions run per
   target anyway, so ``*`` changes nothing for them.
+- A leading ``&`` runs a shell command once in the background: ``:&!pytest``,
+  ``:&test``.
 
 ``[leader]`` maps keys typed after ``ui.leader`` to command lines, e.g.
 ``t = "test"`` runs ``:test`` on ``\\t``. No mapping may be a prefix of another,
@@ -46,6 +48,7 @@ class Command:
     builtin: str = ""  # a BUILTINS name, or "" for a shell command
     script: str = ""  # run with sh -c
     each: bool = False  # once in each target workspace (``:*``), not in the repository
+    background: bool = False  # a single captured task (``:&``)
     action: str = ""  # an [actions] name: a sandbox run on each target
     args: str = ""  # an action's extra words, appended to its prompt
 
@@ -54,26 +57,38 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
     """Interpret a command line typed after ``:`` (a leading ``:`` is ignored)."""
     line = line.strip().removeprefix(":").strip()
     each = line.startswith("*")
-    body = line[1:].strip() if each else line
+    background = line.startswith("&")
+    prefix = line[:1] if each or background else ""
+    body = line[1:].strip() if prefix else line
     if not body:
-        raise CommandError(":* needs a command, e.g. :*!make" if each else "empty command")
+        raise CommandError(
+            f":{prefix} needs a command, e.g. :{prefix}!make" if prefix else "empty command"
+        )
     if body.startswith("!"):
         script = body[1:].strip()
         if not script:
-            raise CommandError(f":{'*' if each else ''}! needs a shell command, e.g. :!make")
-        return Command(line, script=script, each=each)
+            raise CommandError(f":{prefix}! needs a shell command, e.g. :{prefix}!make")
+        return Command(line, script=script, each=each, background=background)
     name, *rest = body.split(maxsplit=1)
     args = rest[0] if rest else ""
     builtin = ALIASES.get(name, name)
     if builtin in BUILTINS:
         if each:
             raise CommandError(f":{name} cannot run per workspace")
+        if background:
+            raise CommandError(f":{name} cannot run in the background")
         if args:
             raise CommandError(f":{name} takes no arguments")
         return Command(line, builtin=builtin)
     if name in commands:
-        return Command(line, script=f"{commands[name]} {args}".strip(), each=each)
+        return Command(
+            line, script=f"{commands[name]} {args}".strip(), each=each, background=background
+        )
     if name in actions:
+        if background:
+            raise CommandError(
+                f":{name} already runs in the background on each target; use :{name}"
+            )
         return Command(line, action=name, args=args, each=True)
     raise CommandError(f"unknown command :{name} (tab lists commands)")
 
@@ -171,15 +186,15 @@ def complete(
     """Completions for the word at the end of ``line``.
 
     Returns where that word starts and its replacements: command names for the
-    first word (also after ``*``), programs on ``path`` (default ``$PATH``) after ``!``, and file
-    names relative to ``cwd`` for arguments.
+    first word (also after ``*`` or ``&``), programs on ``path`` (default
+    ``$PATH``) after ``!``, and file names relative to ``cwd`` for arguments.
     """
-    each = len(line) - len(line[1:].lstrip()) if line.startswith("*") else 0
-    line = line[each:]
+    prefix = len(line) - len(line[1:].lstrip()) if line.startswith(("*", "&")) else 0
+    line = line[prefix:]
     shell = line.startswith("!")
     body = line[1:] if shell else line
     word_start, word = _last_word(body)
-    start = each + word_start + int(shell)
+    start = prefix + word_start + int(shell)
     if body[:word_start].strip() or (shell and "/" in word):
         return start, files(word, cwd)
     if shell:

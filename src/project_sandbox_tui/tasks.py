@@ -1,4 +1,4 @@
-"""Host commands run in bookmark workspaces by ``:*`` — in parallel, output captured.
+"""Background host commands (``:&`` and ``:*``), with output captured.
 
 Each task runs detached (``start_new_session``) under a small shell wrapper that
 writes the command's exit status to a file, so a TUI started later still learns
@@ -70,7 +70,7 @@ class TaskRecord:
     @property
     def name(self) -> str:
         """Short label for the status column: the command name, or the program after ``!``."""
-        body = self.line.lstrip("*").strip()
+        body = self.line.lstrip("*&").strip()
         word = body.removeprefix("!").split(maxsplit=1)
         return (word[0] if word else body)[:12]
 

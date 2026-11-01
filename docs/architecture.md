@@ -13,11 +13,11 @@ require a `.jj/` directory.
 | `vcs.py` | Bookmark discovery, creation, changed files, working-copy moves and fast-forwarding |
 | `sandbox.py` | `LaunchSpec`, argv construction and session matching |
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
-| `tasks.py` | `:*` host commands in bookmark workspaces: detached, output and exit status captured |
+| `tasks.py` | `:&` / `:*` host commands: detached, output and exit status captured |
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
-| `commands.py` | `:` command parsing (`:!`, `:*`, `[actions]`), completion and leader-key mappings |
+| `commands.py` | `:` command parsing (`:!`, `:&`, `:*`, `[actions]`), completion and leader-key mappings |
 | `review.py` | Diff review: files marked seen per bookmark |
 | `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
@@ -71,7 +71,7 @@ process work in worker threads. These locks order what they do:
   directory)                  │                  guard: busy checks and spawns
                               │                  happen under it
                               ▼
-                      tasks.lock                 :* task records
+                      tasks.lock                 background task records
 ```
 
 A lock is only taken while holding the ones above it, never the reverse, so
@@ -93,6 +93,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | `@` | history → jobs | Busy check of the working copy, move it |
 | `e` | history | Describe, only if the target is still the commit that was edited |
 | `:*` | jobs, tasks | Create a missing workspace unless a session is starting; start the task |
+| `:&` | jobs, tasks | Start one task in the repository under `@`; warn if a session is running there |
 | `o` | jobs | Create a missing workspace unless a session is starting |
 | `x` | tasks, jobs, graph | Signal tasks; signal or forget the run; record a forgotten run's outcome |
 | `W` | tasks; removal: history → graph → jobs → tasks | List without the launch guard; recheck each chosen workspace right before deleting it |

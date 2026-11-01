@@ -127,7 +127,7 @@ class Row:
     session: SessionRecord | None
     graph: tuple[str, int] | None = None  # history graph line and its node position
     review: tuple[int, int] | None = None  # reviewed files, total files against main
-    tasks: list[TaskRecord] = dataclasses.field(default_factory=list)  # :* tasks, newest first
+    tasks: list[TaskRecord] = dataclasses.field(default_factory=list)  # host tasks, newest first
 
     def name_cell(self, selected: bool = False) -> Text:
         b = self.branch
@@ -166,7 +166,7 @@ class Row:
         return glyph, colour, status
 
     def task_tag(self) -> str:
-        """The latest ``:*`` task, while it runs or until a newer sandbox run."""
+        """The latest host task, while it runs or until a newer sandbox run."""
         if not self.tasks:
             return ""
         task, job = self.tasks[0], self.job
@@ -277,7 +277,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("gg G", "top / bottom"),
             ("^d ^u", "half page"),
             ("/", "filter"),
-            (":", "command · :! :* shell"),
+            (":", "command · :! :& :*"),
             ("?", "full help"),
             ("H", "hide sheet"),
             ("q", "quit"),
@@ -292,7 +292,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("l ⏎", "log / transcript"),
             ("P", "details / command"),
             ("L", "op history graph"),
-            ("T", ":* tasks"),
+            ("T", "tasks"),
         ),
     ),
     (
@@ -461,7 +461,7 @@ class SandboxTUI(App[None]):
         self.config_path = config_path
         self.dry_run = dry_run
         self.jobs = jobs or JobManager(repo, cfg)
-        self.tasks = TaskManager(self.jobs.state_dir)  # :* commands in workspaces
+        self.tasks = TaskManager(self.jobs.state_dir)  # background host commands
         self.sessions_dir = sessions_dir
         self.branches: list[Branch] = []
         self._reviews: dict[str, tuple[int, int]] = {}
@@ -595,7 +595,7 @@ class SandboxTUI(App[None]):
             for task in await asyncio.to_thread(self.tasks.refresh):
                 self._announce_task(task)
         except OSError as exc:
-            self._state_problem("tasks", f"could not update the :* task records: {exc}")
+            self._state_problem("tasks", f"could not update the task records: {exc}")
         else:
             self._state_problem("tasks", "")
         # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
@@ -1604,7 +1604,7 @@ class SandboxTUI(App[None]):
     def _confirm_running_tasks(
         self, names: list[str], title: str, body: str, verb: str, go: Callable[[], object]
     ) -> None:
-        """Run ``go`` at once unless ``names`` have running ``:*`` tasks; then ask first."""
+        """Run ``go`` at once unless ``names`` have running host tasks; then ask first."""
         running = [f"{n}  :{t.line}" for n in names for t in self.tasks.running(n)]
         if not running:
             go()
@@ -1615,9 +1615,7 @@ class SandboxTUI(App[None]):
                 go()
 
         listed = "\n".join(running)
-        self.push_screen(
-            ConfirmScreen(title, f"Running :* tasks:\n{listed}\n\n{body}", verb), decided
-        )
+        self.push_screen(ConfirmScreen(title, f"Running tasks:\n{listed}\n\n{body}", verb), decided)
 
     @work(group="history")  # not exclusive: cancelling would drop what jj already did
     async def _delete_bookmarks(self, names: list[str]) -> None:
@@ -1974,7 +1972,7 @@ class SandboxTUI(App[None]):
             if history := self._history_lines(name):
                 parts.append("history\n" + "\n".join(history))
             if tasks := self.tasks.for_bookmark(name):
-                parts.append("tasks (:*)\n" + "\n".join(map(self._task_line, tasks)))
+                parts.append("tasks (:& / :*)\n" + "\n".join(map(self._task_line, tasks)))
             try:
                 spec = LaunchSpec(
                     branch=name, agent=d.agent, model=d.model, effort=d.effort, fast=d.fast
@@ -2000,7 +1998,7 @@ class SandboxTUI(App[None]):
         self.push_screen(OpLogScreen(self.graph, self.jobs, head.id if head else None))
 
     def action_tasks(self) -> None:
-        """T: every :* task across the workspaces, starting on the highlighted row's."""
+        """T: every host task across the workspaces, starting on the highlighted row's."""
         self.push_screen(TasksScreen(self.tasks, self.selected_branch_name()))
 
     def action_cleanup_workspaces(self) -> None:
@@ -2297,6 +2295,8 @@ class SandboxTUI(App[None]):
             self._run_action(command)
         elif command.each:
             self._run_each(command)
+        elif command.background:
+            self._run_background(command)
         elif command.builtin == "quit":
             await self.action_quit()
         elif command.builtin == "help":
@@ -2308,16 +2308,19 @@ class SandboxTUI(App[None]):
         else:
             self._run_shell(command)
 
-    def _run_shell(self, command: commands.Command) -> None:
-        """Run a shell command in this terminal, like vim's ``:!``, then wait for Enter."""
+    def _shell_env(self) -> dict[str, str]:
+        """Repository commands receive the highlighted bookmark's context."""
         name = self.selected_branch_name() or ""
         workspace = self._workspace_dir(name) if name else None
-        env = {
+        return {
             **os.environ,
             "SBX_REPO": str(self.repo),
             "SBX_BOOKMARK": name,
             "SBX_WORKSPACE": str(workspace) if workspace and workspace.is_dir() else "",
         }
+
+    def _run_shell(self, command: commands.Command) -> None:
+        """Run a shell command in this terminal, like vim's ``:!``, then wait for Enter."""
         try:
             with self._suspended():
                 shown = (
@@ -2327,7 +2330,9 @@ class SandboxTUI(App[None]):
                 )
                 print(f"\n── sbx-tui: :{shown} ──\n", flush=True)
                 with terminal.preserved():
-                    proc = subprocess.Popen(["sh", "-c", command.script], cwd=self.repo, env=env)
+                    proc = subprocess.Popen(
+                        ["sh", "-c", command.script], cwd=self.repo, env=self._shell_env()
+                    )
                     while True:
                         try:
                             code = proc.wait()
@@ -2342,6 +2347,20 @@ class SandboxTUI(App[None]):
         if code:
             self.notify(f":{command.line} exited with {code}", severity="warning")
         self.call_later(self.refresh_data)  # the command may have changed bookmarks
+
+    def _run_background(self, command: commands.Command) -> None:
+        """``:&``: run once in the repository, tracked under the working copy."""
+        try:
+            self.tasks.start(
+                WORKING_COPY, command.line, command.script, self.repo, self._shell_env()
+            )
+        except OSError as exc:
+            self.notify(f"could not run :{command.line}: {exc}", severity="error")
+            return
+        self.notify(f":{command.line} started in repository (T shows tasks, x on @ cancels)")
+        if self.jobs.busy_reason(WORKING_COPY, self.sessions):
+            self.notify("@: a sandbox session is still changing these files", severity="warning")
+        self._render_table()
 
     def _confirm_targets(
         self, targets: list[str], title: str, body: str, verb: str, go: Callable[[], None]

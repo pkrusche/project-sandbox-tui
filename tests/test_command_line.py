@@ -234,7 +234,7 @@ def test_each_runs_in_every_selected_workspace(repo: Path, fake_cfg: Callable[..
         assert isinstance(app.screen, LogScreen) and app.screen.current == Path(feature.out_path)
         await pilot.press("q", "P")
         assert isinstance(app.screen, MessageScreen)
-        assert "tasks (:*)" in app.screen.body and "failed (8)" in app.screen.body
+        assert "tasks (:& / :*)" in app.screen.body and "failed (8)" in app.screen.body
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -257,6 +257,72 @@ def test_each_cancel_and_leader(repo: Path, fake_cfg: Callable[..., Config]) -> 
         task = app.tasks.latest("feature/x")
         assert task is not None and task.status == "interrupted"
         assert any("sent SIGINT to :*wait" in m for m in messages(app))
+
+    run_app(repo, cfg, scenario)
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_background_runs_once_in_repository(
+    repo: Path, fake_cfg: Callable[..., Config], configured: bool
+) -> None:
+    from project_sandbox_tui.screens.log import LogScreen
+    from project_sandbox_tui.screens.tasks import TasksScreen
+    from tests.test_app import wait_until
+
+    script = 'printf "%s\\n" "$SBX_REPO" "$SBX_BOOKMARK" "$SBX_WORKSPACE" "$PWD"; exit 7'
+    cfg = fake_cfg()
+    cfg.commands = {"check": script}
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # environment still describes the highlighted bookmark
+        mark(app, "@", "feature/x")
+        line = "&check" if configured else f"&!{script}"
+        await type_line(pilot, line)
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: len(app.tasks.tasks) == 1)
+        assert app.screen is app.main  # no suspension or Enter prompt
+        await wait_until(pilot, lambda: not app.tasks.running_count())
+        task = app.tasks.latest("@")
+        assert task is not None and task.line == line
+        assert task.cwd == str(repo)
+        assert (task.status, task.exit_code) == ("failed", 7)
+        assert task.name == ("check" if configured else "printf")
+        assert Path(task.out_path).read_text().splitlines() == [
+            str(repo),
+            "feature/x",
+            "",
+            str(repo),
+        ]
+        assert not app._workspace_dir("feature/x").exists()
+        assert not app.tasks.for_bookmark("feature/x")
+        assert app.command_history.newest_first()[0] == line
+        await pilot.press("T")
+        assert isinstance(app.screen, TasksScreen)
+        await pilot.press("enter")
+        assert isinstance(app.screen, LogScreen) and app.screen.current == Path(task.out_path)
+
+    run_app(repo, cfg, scenario)
+
+
+def test_background_leader_task_can_be_cancelled(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from tests.test_app import wait_until
+
+    cfg = fake_cfg()
+    cfg.commands = {"wait": "echo ready; sleep 30"}
+    cfg.leader = {"b": "&wait"}
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "backslash", "b")
+        await wait_until(pilot, lambda: app.tasks.latest("@") is not None)
+        task = app.tasks.latest("@")
+        assert task is not None
+        await wait_until(pilot, lambda: "ready" in Path(task.out_path).read_text())
+        await pilot.press("T", "x")
+        await wait_until(pilot, lambda: not app.tasks.running_count())
+        assert task.status == "interrupted"
+        assert any("sent SIGINT to :&wait" in m for m in messages(app))
 
     run_app(repo, cfg, scenario)
 

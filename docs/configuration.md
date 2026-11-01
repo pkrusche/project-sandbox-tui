@@ -166,19 +166,25 @@ as `eval` can execute them even when passed safely.
 ## Commands and leader key
 
 `[commands]` names shell commands for the [command line](usage.md#command-line):
-`:name args` runs the command with `sh -c` in the repository, with `args`
+`:name args` runs the command with `sh -c` in the repository foreground, with `args`
 appended (`:test -k merge` runs `uv run pytest -k merge`). Names start with a
 letter and use letters, digits, `_` and `-`; built-in commands (`help`, `quit`,
 `q`, `refresh`, `reload`) cannot be redefined. Unlike `ui.*_command`, these are
 shell code: use `SBX_REPO`, `SBX_BOOKMARK` and `SBX_WORKSPACE` rather than
 placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 
-`:*name` runs it in each selected workspace instead, with `cwd`,
+`:&name` runs it once in the background in the repository, ignoring marked rows;
+see [background commands](usage.md#background-commands).
+`:*name` runs it in the background in each selected workspace instead, with `cwd`,
 `SBX_BOOKMARK` and `SBX_WORKSPACE` set for each; see
 [running in each workspace](usage.md#running-in-each-workspace).
+The [comparison table](usage.md#choosing-how-to-run-a-shell-command) explains
+selection, directories, environment variables, output and cancellation for all
+three forms. These prefixes choose how to run the same configured shell script;
+you do not need separate `[commands]` entries.
 
 `[leader]` maps key sequences typed after `ui.leader` (one character, `\` by
-default) to command lines as typed after `:`, e.g. `t = "test"`, `T = "*test"`,
+default) to command lines as typed after `:`, e.g. `t = "test"`, `b = "&test"`, `T = "*test"`,
 `s = "!jj st"`, `rc = "chores"` or `r = "reload"`. Sequences may be longer than one key
 (`tf = "test -x"`), but none may be a prefix of another, so a mapping runs as
 soon as it is complete. Unknown command names are configuration errors. A
@@ -232,8 +238,8 @@ sbx-tui config set --project actions.chores.effort low
 | `<repo>-<hash>/diff_review.json` | Files marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
-| `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output, including `:*` tasks |
-| `<repo>-<hash>/tasks/`, `<repo>-<hash>/tasks.lock` | [`:*` task](usage.md#running-in-each-workspace) records |
+| `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output, including `:&` and `:*` tasks |
+| `<repo>-<hash>/tasks/`, `<repo>-<hash>/tasks.lock` | [Background task](usage.md#tasks) records (`:&` and `:*`) |
 
 Job records include full argv and prompts. Repository state, job and log
 directories use mode `0700` (user-only access), including older directories.
