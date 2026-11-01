@@ -2,8 +2,47 @@
 
 Settings are deep-merged from global
 `$XDG_CONFIG_HOME/project-sandbox-tui/config.toml` (default `~/.config/…`) and
-trusted `<repo>/.project-sandbox-tui.toml`. Unknown keys are errors. `--init`
-writes missing templates.
+trusted `<repo>/.project-sandbox-tui.toml`. Unknown keys are errors.
+
+## Initialization
+
+Run `sbx-tui --init` from the repository or a subdirectory (or pass a repository
+path). It writes missing global and project config files, trusts only the project
+config it creates, and downloads the model catalog if missing. Existing files
+and their trust status are preserved.
+
+For a new project config, it checks files at the repository root in this order:
+
+| File | Image source |
+| --- | --- |
+| `Dockerfile` | `project.dockerfile = "Dockerfile"`, `project.docker_context = "."` |
+| `pyproject.toml` or `uv.lock` | `project.build = "python-uv"` |
+| `Cargo.toml` | `project.build = "rust-cargo"` |
+| `package.json` | `project.build = "node-npm"` |
+| No match | `project.base_image = "python:3.12-slim"` |
+
+The first match wins in mixed projects. Detection does not search subdirectories
+or infer language versions. Review the starter settings for monorepos, alternate
+package managers, or Dockerfiles intended only for production. Rerunning
+`--init` does not redetect or change an existing project config.
+The new template explicitly clears unused image settings so that an inherited
+global image source or build version cannot conflict with the detected choice.
+
+Initialization also installs the `sbx-tui-config` agent skill at:
+
+- `.agents/skills/sbx-tui-config/SKILL.md` ([Codex skill location](https://developers.openai.com/codex/skills/)).
+- `.claude/skills/sbx-tui-config/SKILL.md` ([Claude Code skill location](https://code.claude.com/docs/en/skills)).
+
+Both copies teach image selection, configuration scopes, commands/actions, and
+validation and trust handling. Ask the agent to use `sbx-tui-config` to configure
+the project; other agents can read either file directly. Only these two skill
+directories are added to the root `.gitignore`; other skills and the project
+config remain eligible for version control. Existing skill files are preserved.
+To refresh a bundled skill, remove its installed `SKILL.md` and rerun `--init`.
+Ignored skills are local to each checkout/workspace, so run `--init` there too
+when needed.
+
+## Editing
 
 Edit TOML directly or use `config set/unset`. `ctrl+l` reloads both files,
 keeping current settings on error; running sessions retain their launch settings.
@@ -42,13 +81,15 @@ settings take effect:
 ## Settings reference
 
 Precedence: remembered launch choices → trusted project → global → built-in.
-The last agent, effort, timeout and per-agent model are remembered per repository.
+The last agent, effort, timeout and per-agent model and fast mode are remembered
+per repository.
 
 ```toml
 [defaults]
 agent = "claude"        # claude | codex | opencode | pi | bash
 model = ""              # "" = the agent's own default
 effort = ""             # "" or low | medium | high | xhigh | max
+fast = false            # Codex / Claude only; requires project-sandbox >= 0.3.1
 timeout = 0             # seconds for unsupervised runs, 0 = none
 
 [network]

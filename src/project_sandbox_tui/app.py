@@ -43,6 +43,7 @@ from project_sandbox_tui.config import (
     load,
     load_candidate,
     remember,
+    resolve_fast,
     resolve_launch_defaults,
     trusted_config_path,
 )
@@ -1452,6 +1453,7 @@ class SandboxTUI(App[None]):
                 spec.model,
                 spec.effort,
                 spec.timeout if spec.mode == "background" else None,
+                fast=spec.fast,
             )
         self.call_later(self.refresh_data)
 
@@ -1962,7 +1964,9 @@ class SandboxTUI(App[None]):
             if tasks := self.tasks.for_bookmark(name):
                 parts.append("tasks (:*)\n" + "\n".join(map(self._task_line, tasks)))
             try:
-                spec = LaunchSpec(branch=name, agent=d.agent, model=d.model, effort=d.effort)
+                spec = LaunchSpec(
+                    branch=name, agent=d.agent, model=d.model, effort=d.effort, fast=d.fast
+                )
                 command = self._spec_preview(spec)
             except ConfigError as exc:
                 command = f"! {exc}"
@@ -2400,7 +2404,8 @@ class SandboxTUI(App[None]):
             self.notify(f"skipped: {reason}", severity="warning")
         if not idle:
             return
-        d = resolve_launch_defaults(self.cfg, LastUsed.load(self.repo))
+        last = LastUsed.load(self.repo)
+        d = resolve_launch_defaults(self.cfg, last)
         agent = action.agent or d.agent
         model = action.model or (d.model if agent == d.agent else "")
         main = self.main_name() or ""
@@ -2410,6 +2415,7 @@ class SandboxTUI(App[None]):
                 agent=agent,
                 model=model,
                 effort=action.effort or d.effort,
+                fast=resolve_fast(self.cfg, last, agent),
                 mode="background",
                 prompt_text=action.render(name, main, command.args),
                 timeout=action.timeout if action.timeout is not None else d.timeout,

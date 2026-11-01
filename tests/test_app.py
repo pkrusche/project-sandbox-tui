@@ -667,6 +667,54 @@ def test_launch_form_shows_base_branch(
     run_app(repo, fake_cfg(), scenario)
 
 
+@pytest.mark.parametrize("mode", ["r", "i"])
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_launch_form_fast_mode(
+    repo: Path, fake_cfg: Callable[..., Config], mode: str, agent: str
+) -> None:
+    cfg = fake_cfg()
+    cfg.defaults.agent = agent
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", mode)
+        form = app.screen
+        assert isinstance(form, LaunchScreen)
+        fast = form.query_one("#fast", CycleField)
+        assert fast.display and fast.value == "off"
+        fast.focus()
+        await pilot.press("l")
+        assert form.current_spec().fast
+        assert "--fast" in str(form.query_one("#preview", Static).render())
+        agent_field = form.query_one("#agent", CycleField)
+        for other in ("pi", "opencode", "bash"):
+            agent_field.value = other
+            await pilot.pause()
+            assert not fast.display and not form.current_spec().fast
+            assert "--fast" not in str(form.query_one("#preview", Static).render())
+        agent_field.value = agent
+        await pilot.pause()
+        assert fast.display and fast.value == "on"
+        fast.focus()
+        await pilot.press("h")
+        assert not form.current_spec().fast
+        assert "--fast" not in str(form.query_one("#preview", Static).render())
+        await pilot.press("l")
+        if mode == "r":
+            form.query_one("#prompt", TextArea).text = "exit:0"
+            await pilot.press("ctrl+s")
+            await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+            await wait_until(pilot, lambda: not app.jobs.jobs["feature/x"].running)
+            assert LastUsed.load(repo).fast_by_agent == {agent: True}
+            restored = JobManager(repo, cfg).jobs["feature/x"]
+            assert restored.spec.fast and "--fast" in restored.argv
+            await pilot.press("r")
+            assert isinstance(app.screen, LaunchScreen)
+            assert app.screen.current_spec().fast
+        await pilot.press("escape")
+
+    run_app(repo, cfg, scenario)
+
+
 def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     cfg = fake_cfg()
     cfg.models = {"codex": ["gpt-x"]}
@@ -680,7 +728,8 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await pilot.press("ctrl+enter")
         assert app.screen is form
         form.query_one("#prompt", TextArea).text = "sleep:0.6 exit:0"
-        await pilot.press("shift+tab", "shift+tab", "shift+tab", "shift+tab", "l")  # agent → codex
+        form.query_one("#agent", CycleField).focus()
+        await pilot.press("l")  # agent → codex
         assert form.current_spec().agent == "codex"
         assert form.current_spec().model == ""  # agent default until chosen
         model = form.query_one("#model", CycleField)
@@ -700,13 +749,12 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
 
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].status == "completed")
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
-
-        def current_row() -> list[str]:
-            return next(r for r in row_texts(app) if r[1] == "feature/x")
-
         # Records are refreshed in a thread; the table is redrawn when the pass ends.
-        await wait_until(pilot, lambda: current_row()[0] == "✓")
-        row = current_row()
+        await wait_until(
+            pilot, lambda: any(r[1] == "feature/x" and r[0] == "✓" for r in row_texts(app))
+        )
+        row = next(r for r in row_texts(app) if r[1] == "feature/x")
+        assert row[0] == "✓"
         assert row[6].startswith("completed · ") and row[6].endswith(" ago")
         # The history records the outcome once a listing after the run's end is seen.
         await wait_until(pilot, lambda: app.graph.state.history("feature/x")[0].status != "")
@@ -988,7 +1036,8 @@ def test_jj_working_copy_alongside_bookmarks(
         assert "--branch=main" in argv
 
         app.jobs.cancel("@", app.sessions)
-        await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
+        # A run that finished during the form interaction is forgotten by cancel.
+        await wait_until(pilot, lambda: "@" not in app.jobs.jobs or not app.jobs.jobs["@"].running)
 
     run_app(jj_repo, fake_cfg(), scenario)
 

@@ -54,6 +54,7 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
             "PKG-INFO",
         }
         assert Path("src/project_sandbox_tui/cli.py") in names
+        assert Path("src/project_sandbox_tui/skills/sbx-tui-config/SKILL.md") in names
         assert Path("scripts/test.sh") in names
         assert Path("LICENSE") in names
     with zipfile.ZipFile(
@@ -63,6 +64,7 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         metadata = f"project_sandbox_tui-{version}.dist-info"
         assert "project_sandbox_tui/cli.py" in names
         assert "project_sandbox_tui/app.py" in names
+        assert "project_sandbox_tui/skills/sbx-tui-config/SKILL.md" in names
         assert f"{metadata}/licenses/LICENSE" in names
         assert (
             "sbx-tui = project_sandbox_tui.cli:main"
