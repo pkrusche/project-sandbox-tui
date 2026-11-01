@@ -196,6 +196,19 @@ def test_merged_bookmark_without_workspace(repo: Path, capsys) -> None:
     assert names == ["main"]
 
 
+def test_merged_bookmarks_with_pattern_characters(repo: Path, capsys) -> None:
+    # Deleted by exact name: unquoted, ``exact:fix-`` does not parse and
+    # ``exact:old|main`` would delete main as well.
+    for name in ('"fix-"', '"old|main"'):
+        run("jj", "bookmark", "create", "--quiet", name, "-r", "main", cwd=repo)
+    assert set(_scan(repo)) == {"fix-", "old|main"}
+    assert main([str(repo), "--cleanup-workspaces"]) == 0
+    out = capsys.readouterr().out
+    assert "deleted bookmark fix-" in out and "deleted bookmark old|main" in out
+    names = run("jj", "bookmark", "list", "-T", 'name ++ "\\n"', cwd=repo).split()
+    assert names == ["feature/x", "main"]
+
+
 def test_missing_jj_workspace_forgotten_once_merged(jj_repo: Path) -> None:
     path = jj_repo.parent / "gone"
     run("jj", "workspace", "add", "--quiet", str(path), "--name", "gone", "-r", "main", cwd=jj_repo)
@@ -518,3 +531,30 @@ def test_cleanup_keeps_workspace_with_running_task(repo: Path, capsys) -> None:
         tasks._procs[task.id].wait()
     [ws] = find_workspaces(detect(repo), Config())  # removable again once it ends
     assert ws.removable
+
+
+def test_each_workspace_is_checked_right_before_removal(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editors and shells take no lock: a file saved while another workspace is
+    being removed must keep its workspace."""
+    import project_sandbox_tui.cleanup as cleanup
+
+    for name in ("a", "b"):
+        run("jj", "bookmark", "create", "--quiet", name, "-r", "main", cwd=repo)
+    first, second = _add_workspace(repo, "a"), _add_workspace(repo, "b")
+    rows = [ws for ws in find_workspaces(detect(repo), Config()) if ws.path in (first, second)]
+    assert len(rows) == 2 and all(ws.removable for ws in rows)
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path: Path) -> None:
+        if Path(path) == first:
+            (second / "unsaved.txt").write_text("edited meanwhile\n")
+        real_rmtree(path)
+
+    monkeypatch.setattr(cleanup.shutil, "rmtree", rmtree)
+    results = remove_workspaces(detect(repo), Config(), rows)
+    assert results[:2] == [f"removed a: {first}", "deleted bookmark a"] and not first.exists()
+    [kept] = results[2:]
+    assert kept.startswith("skipped b:") and "uncommitted changes" in kept
+    assert (second / "unsaved.txt").exists()

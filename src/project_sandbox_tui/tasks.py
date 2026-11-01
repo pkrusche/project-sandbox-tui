@@ -35,8 +35,11 @@ STOP_DEBOUNCE_S = 1.0
 
 # The trap keeps the wrapper alive when x sends SIGINT to the process group, so
 # it still records the command's status; the command itself gets the default
-# action, since trapped signals are reset in children.
-WRAPPER = 'trap : INT TERM; sh -c "$1"; printf %s "$?" >"$2"'
+# action, since trapped signals are reset in children. The status is renamed
+# into place: a TUI that sees the exit file must never read it half-written.
+WRAPPER = 'trap : INT TERM; sh -c "$1"; printf %s "$?" >"$2.tmp" && mv -f "$2.tmp" "$2"'
+STATUSES = frozenset({"running", "completed", "failed", "interrupted", "orphaned"})
+_TEXT_FIELDS = ("id", "bookmark", "line", "script", "cwd", "started_at", "out_path", "exit_path")
 
 
 @dataclass
@@ -77,12 +80,24 @@ class TaskRecord:
         return _parse_ts(self.started_at)
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> TaskRecord:
+    def from_dict(cls, raw: Any) -> TaskRecord:
+        if not isinstance(raw, dict):
+            raise ValueError("invalid task record")
         known = {f.name for f in fields(cls)}
         values = {k: v for k, v in raw.items() if k in known}
         task = cls(**values)
-        if not isinstance(task.pid, int) or not isinstance(task.id, str):
+        # As for job records: pid 0 or a negative pid would make cancel signal
+        # this TUI's own process group or every process it may signal.
+        if type(task.pid) is not int or not 0 < task.pid < 2**31:
+            raise ValueError("invalid process id")
+        if not all(isinstance(getattr(task, name), str) for name in _TEXT_FIELDS):
             raise ValueError("invalid task record")
+        if task.status not in STATUSES:
+            task.status = "orphaned"
+        if type(task.exit_code) is not int:
+            task.exit_code = None
+        task.ended_at = task.ended_at if isinstance(task.ended_at, str) else ""
+        task.notified = task.notified is True
         return task
 
 
@@ -135,23 +150,30 @@ class TaskManager:
 
     def load(self) -> None:
         previous = self.tasks
-        self.tasks = {}
-        if not self.tasks_dir.is_dir():
-            return
-        for path in self.tasks_dir.glob("*.json"):
+        tasks: dict[str, TaskRecord] = {}
+        for path in self.tasks_dir.glob("*.json") if self.tasks_dir.is_dir() else ():
             try:
                 task = TaskRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError, TypeError):
+                continue
+            if task.id != path.stem:  # the id names the files that _forget deletes
                 continue
             old = previous.get(task.id)
             if old is not None:
                 old.__dict__.update(task.__dict__)  # keep an open log screen's record current
                 task = old
-            self.tasks[task.id] = task
+            tasks[task.id] = task
+        # One assignment: refresh() runs in a worker thread while the UI thread
+        # iterates the tasks, so it must see the old dict or the new one, never
+        # one being filled.
+        self.tasks = tasks
+        for task_id in [t for t in self._stop_stage if t not in tasks]:
+            self._stop_stage.pop(task_id, None)
+            self._stop_last.pop(task_id, None)
 
     def _forget(self, task: TaskRecord) -> None:
         self._record_path(task.id).unlink(missing_ok=True)
-        for path in (task.out_path, task.exit_path):
+        for path in (task.out_path, task.exit_path, f"{task.exit_path}.tmp"):
             with contextlib.suppress(OSError):
                 Path(path).unlink(missing_ok=True)
         self.tasks.pop(task.id, None)
@@ -239,8 +261,9 @@ class TaskManager:
         if proc is not None and proc.pid == task.pid:
             code = proc.poll()
             return code is not None, code
-        # Started by an earlier TUI. Writing the exit file is the wrapper's last step.
-        if Path(task.exit_path).exists():
+        # Started by an earlier TUI. Writing the exit file is the wrapper's last
+        # step. Older wrappers wrote it in place, so an empty one may be in progress.
+        if self._read_exit(task) is not None:
             return True, None
         try:
             pid, _status = os.waitpid(task.pid, os.WNOHANG) if task.pid > 0 else (0, 0)
@@ -255,6 +278,13 @@ class TaskManager:
         """Update running tasks; return finished ones not yet announced."""
         with self._locked():
             self.load()
+            # Reap children whose records another TUI (or a cleanup scan) finalised.
+            for task_id, proc in list(self._procs.items()):
+                task = self.tasks.get(task_id)
+                if proc.poll() is not None and (
+                    task is None or task.pid != proc.pid or not task.running
+                ):
+                    self._procs.pop(task_id, None)
             out = []
             for task in list(self.tasks.values()):
                 if task.running:
@@ -269,10 +299,11 @@ class TaskManager:
                     if task.id in self._stop_stage and task.status in ("failed", "orphaned"):
                         task.status = "interrupted"
                     task.ended_at = _now()
+                    # Saved first: if that fails, the next pass still has the child's status.
+                    self.save(task)
                     self._procs.pop(task.id, None)
                     self._stop_stage.pop(task.id, None)
                     self._stop_last.pop(task.id, None)
-                    self.save(task)
                 if not task.notified:
                     out.append(task)
             return out
@@ -321,6 +352,8 @@ class TaskManager:
         last = self._stop_last.get(task.id)
         if last is not None and now - last < STOP_DEBOUNCE_S:
             return f"{where} cancel already requested"
+        if task.pid <= 0:  # never killpg(0): that is this TUI's own process group
+            return f"{task.bookmark}: invalid process id {task.pid}"
         stage = min(self._stop_stage.get(task.id, 0), len(STOP_SIGNALS) - 1)
         sig = STOP_SIGNALS[stage]
         try:

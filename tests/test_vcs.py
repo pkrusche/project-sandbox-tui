@@ -410,15 +410,32 @@ def test_diff_uses_configured_formatter_and_snapshots_working_copy(repo: Path) -
     assert run(*backend.diff_command("main", "@"), cwd=repo) == "M a.txt\n"
 
 
-@pytest.mark.parametrize("names", [("main", "feature/x"), ("main+release", "feature+parser")])
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("main", "feature/x"),
+        ("main+release", "feature+parser"),
+        ("fix-", "a+b"),
+        # Unquoted, ``exact:main|stable`` would match (and move) ``stable`` too.
+        ("main|stable", "feature|x"),
+    ],
+)
 def test_fast_forward_preserves_target_and_working_copy(repo: Path, names: tuple[str, str]) -> None:
     from tests.conftest import jj
 
     main, target = names
     if main != "main":
-        jj(repo, "bookmark", "rename", "main", main)
-        jj(repo, "bookmark", "rename", "feature/x", target)
-    jj(repo, "bookmark", "create", f"{main}-other", "-r", main)
+        jj(repo, "bookmark", "rename", "main", vcs.revset_symbol(main))
+        jj(repo, "bookmark", "rename", "feature/x", vcs.revset_symbol(target))
+    jj(
+        repo,
+        "bookmark",
+        "create",
+        vcs.revset_symbol(f"{main}-other"),
+        "-r",
+        vcs.revset_symbol(main),
+    )
+    jj(repo, "bookmark", "create", "stable", "-r", vcs.revset_symbol(main))
     backend = vcs.detect(repo)
     old = backend._bookmark_commit(main)
     new = backend._bookmark_commit(target)
@@ -426,7 +443,7 @@ def test_fast_forward_preserves_target_and_working_copy(repo: Path, names: tuple
     (repo / "a.txt").write_text("uncommitted work\n")
     assert backend.fast_forward(main, target)
     assert backend._bookmark_commit(main) == backend._bookmark_commit(target) == new
-    assert backend._bookmark_commit(f"{main}-other") == old
+    assert backend._bookmark_commit(f"{main}-other") == backend._bookmark_commit("stable") == old
     assert backend._jj("log", "--no-graph", "-r", "@", "-T", "commit_id") == working_copy
     assert (repo / "a.txt").read_text() == "uncommitted work\n"
     assert not backend.fast_forward(main, target)

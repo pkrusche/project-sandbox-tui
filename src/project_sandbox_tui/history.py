@@ -10,11 +10,17 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
-import uuid
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
-from project_sandbox_tui.config import private_dir, repo_state_dir
+from project_sandbox_tui.config import (
+    STATE_VERSION,
+    private_dir,
+    read_state_for_update,
+    repo_state_dir,
+    write_state,
+)
 
 MAX_ENTRIES = 500
 
@@ -35,9 +41,12 @@ class PromptHistory:
 
     def _read(self) -> list[str]:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            return self._parse(json.loads(self.path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return []
+
+    @staticmethod
+    def _parse(raw: Any) -> list[str]:
         prompts = raw.get("prompts") if isinstance(raw, dict) else None
         if not isinstance(prompts, list):
             return []
@@ -60,18 +69,12 @@ class PromptHistory:
             return
         try:
             with self._locked():
-                entries = [e for e in self._read() if e.strip() != text]
+                # Strict: an unreadable file must not be replaced by this prompt alone.
+                stored = self._parse(read_state_for_update(self.path))
+                entries = [e for e in stored if e.strip() != text]
                 entries.append(text)
                 entries = entries[-self.max_entries :]
-                tmp = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
-                try:
-                    tmp.write_text(
-                        json.dumps({"version": 1, "prompts": entries}, indent=1), encoding="utf-8"
-                    )
-                    tmp.replace(self.path)
-                finally:
-                    with contextlib.suppress(OSError):
-                        tmp.unlink(missing_ok=True)
+                write_state(self.path, {"version": STATE_VERSION, "prompts": entries})
         except OSError:
             return  # history is a convenience, never fatal
         self.entries = entries

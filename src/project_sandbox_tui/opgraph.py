@@ -27,7 +27,12 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui.config import private_dir
+from project_sandbox_tui.config import (
+    STATE_VERSION,
+    private_dir,
+    read_state_for_update,
+    write_state,
+)
 from project_sandbox_tui.jobs import JobRecord, _parse_ts
 from project_sandbox_tui.vcs import Branch, VcsError
 
@@ -169,7 +174,7 @@ class State:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": STATE_VERSION,
             "nodes": [asdict(n) for n in self.nodes.values()],
             "current": dict(self.current),
             "undo": [asdict(e) for e in self.undo],
@@ -297,6 +302,45 @@ class State:
         self.nodes[node_id] = node
         self.current[bookmark] = node_id
         return node
+
+    def add_creation(
+        self, bookmark: str, kind: str, parents: Iterable[str], commit: str, since: float
+    ) -> Node:
+        """``add_lineage`` for a bookmark sbx-tui created at or after ``since``.
+
+        jj creates the bookmark before this is recorded, so a sync in between
+        (in any instance) may have adopted it as an existing bookmark. Take that
+        lineage over rather than start a second one: other bookmarks adopted in
+        the same sync may already have it as their parent.
+        """
+        root = self.nodes.get(self.current.get(bookmark, ""))
+        adopted = (
+            root is not None
+            and root.kind == "existing"
+            and root.at >= since
+            and not any(n.lineage == root.id and n.id != root.id for n in self.nodes.values())
+        )
+        if root is None or not adopted:
+            return self.add_lineage(bookmark, kind, parents, commit)
+        heads = [h.id for p in parents if p != bookmark and (h := self.head(p)) is not None]
+        root.kind = kind
+        root.parents = [h for h in dict.fromkeys(heads) if h != root.id]
+        root.commit = commit or root.commit
+        return root
+
+    def record_outcome(self, job: JobRecord, status: str, commit: str = "") -> None:
+        """Finish the run node of a job whose record is being forgotten (``x``):
+        without the record, :meth:`finish_runs` could never record it."""
+        for node in self.nodes.values():
+            if (node.kind, node.bookmark, node.job, node.status) == (
+                "run",
+                job.branch,
+                job.started_at,
+                "",
+            ):
+                node.status = status
+                if commit and self.is_current(node):
+                    node.commit = commit
 
     def add_run(self, job: JobRecord, prompt_text: str | None = None) -> Node:
         """Append a prompt's node to its bookmark's lineage."""
@@ -432,18 +476,13 @@ class OpGraph:
         with self.path.with_name(self.path.name + ".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                raw = self._read_raw()
+                # Strict: an unreadable file must not be replaced by an empty history.
+                raw = read_state_for_update(self.path)
                 state = State.from_dict(raw)
                 yield state
                 new = state.to_dict()
                 if new != raw:
-                    tmp = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
-                    try:
-                        tmp.write_text(json.dumps(new, indent=1), encoding="utf-8")
-                        tmp.replace(self.path)
-                    finally:
-                        with contextlib.suppress(OSError):
-                            tmp.unlink(missing_ok=True)
+                    write_state(self.path, new, durable=True)
                 self.state = state
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)

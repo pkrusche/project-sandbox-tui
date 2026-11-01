@@ -19,6 +19,7 @@ from project_sandbox_tui.vcs import (
     _run,
     _run_with_stderr,
     main_branch,
+    revset_symbol,
     workspace_path,
 )
 
@@ -225,9 +226,35 @@ def _merged_bookmarks(
     return found
 
 
-def _scan(
+@dataclass(frozen=True)
+class _Survey:
+    """The repository-wide facts deciding about each workspace needs, gathered once."""
+
+    repo: Path
+    main: str | None
+    jobs: JobManager
+    found: list[_Found]  # every workspace except the current one
+    roots: set[Path]  # their resolved paths
+    busy: set[Path]  # workspaces of running sessions
+    tasks: set[Path]  # directories of running :* tasks
+    merged_rows: list[Workspace]  # idle bookmarks merged into main
+
+    def inspect(self, ws: _Found) -> Workspace:
+        """Whether ``ws`` can be removed, checking its files now."""
+        merged = {row.branch for row in self.merged_rows}
+        return _inspect(
+            self.repo, self.main, self.busy, self.jobs, ws, merged, self.roots, self.tasks
+        )
+
+    def bookmark_rows(self) -> list[Workspace]:
+        """Merged bookmarks without a workspace of their own."""
+        taken = {ws.name for ws in self.found} | {ws.branch for ws in self.found}
+        return [ws for ws in self.merged_rows if ws.name not in taken]
+
+
+def _survey(
     backend: JjBackend, cfg: Config, jobs: JobManager, sessions_dir: Path | None
-) -> list[Workspace]:
+) -> _Survey:
     repo = backend.root.resolve()
     wd = cfg.resolve_path(cfg.project.worktree_dir, repo) if cfg.project.worktree_dir else None
     bookmarks = {b.name for b in backend.list_branches() if not b.working_copy}
@@ -248,14 +275,15 @@ def _scan(
     task_manager.refresh()  # records of tasks that ended since a TUI last looked
     tasks = {Path(t.cwd).resolve() for t in task_manager.tasks.values() if t.running}
     merged_rows = _merged_bookmarks(repo, main, busy | tasks, jobs, wd) if main else []
-    merged_names = {ws.branch for ws in merged_rows}
-    workspace_roots = {ws.path.resolve() for ws in found}
-    rows = [
-        _inspect(repo, main, busy, jobs, ws, merged_names, workspace_roots, tasks) for ws in found
-    ]
-    if main:
-        taken = {ws.name for ws in found} | {ws.branch for ws in found}
-        rows += [ws for ws in merged_rows if ws.name not in taken]
+    roots = {ws.path.resolve() for ws in found}
+    return _Survey(repo, main, jobs, found, roots, busy, tasks, merged_rows)
+
+
+def _scan(
+    backend: JjBackend, cfg: Config, jobs: JobManager, sessions_dir: Path | None
+) -> list[Workspace]:
+    survey = _survey(backend, cfg, jobs, sessions_dir)
+    rows = [survey.inspect(ws) for ws in survey.found] + survey.bookmark_rows()
     return sorted(rows, key=lambda ws: (not ws.removable, ws.path is None, ws.name))
 
 
@@ -266,11 +294,13 @@ def find_workspaces(
     state_dir: Path | None = None,
     sessions_dir: Path | None = None,
 ) -> list[Workspace]:
-    """Every workspace except the TUI's own, with whether it can be removed safely."""
-    jobs = JobManager(backend.root.resolve(), cfg, state_dir)
-    with jobs._locked():
-        jobs.load()
-        return _scan(backend, cfg, jobs, sessions_dir)
+    """Every workspace except the TUI's own, with whether it can be removed safely.
+
+    Without the launch lock: removal checks each row again under it, and a scan
+    of large workspaces must not stall launches and refreshes in every TUI.
+    """
+    jobs = JobManager(backend.root.resolve(), cfg, state_dir)  # reads the records
+    return _scan(backend, cfg, jobs, sessions_dir)
 
 
 def remove_workspaces(
@@ -285,40 +315,50 @@ def remove_workspaces(
     """Remove the ``chosen`` rows, re-checking each one first; returns a report."""
     repo = backend.root.resolve()
 
-    def key(ws: Workspace) -> tuple[Path | None, str]:
-        return (ws.path.absolute() if ws.path else None, ws.name)
+    def key(path: Path | None, name: str) -> tuple[Path | None, str]:
+        return (path.absolute() if path else None, name)
 
-    wanted = {key(ws): ws for ws in chosen}
+    wanted = {key(ws.path, ws.name): ws for ws in chosen}
     jobs = JobManager(repo, cfg, state_dir)
     results: list[str] = []
+
+    def remove(ws: Workspace) -> None:
+        if not ws.removable:
+            results.append(f"skipped {ws.describe}")
+            return
+        if ws.path is not None:
+            try:
+                if not dry_run:
+                    _run(["jj", "workspace", "forget", "--", ws.name], repo)
+                    if ws.path.exists():
+                        shutil.rmtree(ws.path)
+                verb = "would remove" if dry_run else "removed"
+                results.append(f"{verb} {ws.name}: {ws.path}")
+            except (VcsError, OSError) as exc:
+                results.append(f"skipped {ws.name}: {ws.path} ({exc})")
+                return
+        if ws.branch:
+            try:
+                if not dry_run:
+                    _jj(repo, "bookmark", "delete", f"exact:{revset_symbol(ws.branch)}")
+                verb = "would delete" if dry_run else "deleted"
+                results.append(f"{verb} bookmark {ws.branch}")
+            except VcsError as exc:
+                results.append(f"kept bookmark {ws.branch} ({exc})")
+
     # Share the launch lock so another TUI cannot start a job during removal.
     with jobs._locked():
         jobs.load()
-        for ws in _scan(backend, cfg, jobs, sessions_dir):
-            if wanted.pop(key(ws), None) is None:
-                continue
-            if not ws.removable:
-                results.append(f"skipped {ws.describe}")
-                continue
-            if ws.path is not None:
-                try:
-                    if not dry_run:
-                        _run(["jj", "workspace", "forget", "--", ws.name], repo)
-                        if ws.path.exists():
-                            shutil.rmtree(ws.path)
-                    verb = "would remove" if dry_run else "removed"
-                    results.append(f"{verb} {ws.name}: {ws.path}")
-                except (VcsError, OSError) as exc:
-                    results.append(f"skipped {ws.name}: {ws.path} ({exc})")
-                    continue
-            if ws.branch:
-                try:
-                    if not dry_run:
-                        _jj(repo, "bookmark", "delete", f"exact:{ws.branch}")
-                    verb = "would delete" if dry_run else "deleted"
-                    results.append(f"{verb} bookmark {ws.branch}")
-                except VcsError as exc:
-                    results.append(f"kept bookmark {ws.branch} ({exc})")
+        survey = _survey(backend, cfg, jobs, sessions_dir)
+        # Each workspace is inspected right before it is removed, not all of
+        # them first: editors and shells take no lock, so files may change
+        # while the others are being checked.
+        for found in sorted(survey.found, key=lambda ws: ws.name):
+            if wanted.pop(key(found.path, found.name), None) is not None:
+                remove(survey.inspect(found))
+        for ws in survey.bookmark_rows():
+            if wanted.pop(key(None, ws.name), None) is not None:
+                remove(ws)
     results += [
         f"skipped {path or 'bookmark ' + name}: no longer found"
         for path, name in sorted(wanted, key=str)
@@ -375,16 +415,16 @@ def force_remove_workspace(
     jobs = JobManager(repo, cfg, state_dir)
     with jobs._locked():
         jobs.load()
-        ws = next(
+        survey = _survey(backend, cfg, jobs, sessions_dir)
+        found = next(
             (
                 ws
-                for ws in _scan(backend, cfg, jobs, sessions_dir)
-                if ws.path is not None
-                and ws.path.absolute() == chosen.path.absolute()
-                and ws.name == chosen.name
+                for ws in survey.found
+                if ws.path.absolute() == chosen.path.absolute() and ws.name == chosen.name
             ),
             None,
         )
+        ws = survey.inspect(found) if found is not None else None
         if ws is None or ws.path is None:
             return f"skipped {chosen.name}: {chosen.path}: no longer a workspace"
         if not ws.forceable:

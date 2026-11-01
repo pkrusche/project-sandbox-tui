@@ -196,3 +196,10 @@ sbx-tui config set --project actions.chores.effort low
 
 Job records include full argv and prompts. Repository state, job and log
 directories use mode `0700` (user-only access), including older directories.
+
+TUI instances on one repository share these files: each change re-reads its
+file under a [lock](architecture.md#concurrency-and-locking) and replaces it
+atomically. A history, review or prompt file
+that cannot be read is left as it is rather than overwritten; one that does not
+parse is renamed to `<name>.corrupt-<time>` and started afresh. Files written
+by a newer sbx-tui version are not changed.

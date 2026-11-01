@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
+import signal
 import time
 from pathlib import Path
+from typing import Any
 
-from project_sandbox_tui.tasks import KEEP, TaskManager
+import pytest
+
+from project_sandbox_tui.tasks import KEEP, TaskManager, TaskRecord
 from tests.conftest import wait_for
 
 
@@ -25,6 +30,9 @@ def test_task_runs_in_its_directory_and_records_its_status(tmp_path: Path) -> No
     wait_for(lambda: finished(manager, ok.id) and finished(manager, bad.id))
     assert (ok.status, ok.exit_code) == ("completed", 0)
     assert Path(ok.out_path).read_text() == f"{tmp_path}\nout\nerr\n"
+    # The status is renamed into place, so readers never see it half-written.
+    assert Path(ok.exit_path).read_text() == "0"
+    assert not Path(f"{ok.exit_path}.tmp").exists()
     assert (bad.status, bad.exit_code) == ("failed", 3)
     assert ok.name == "pwd;" and bad.name == "exit"
 
@@ -94,3 +102,88 @@ def test_old_tasks_are_pruned(tmp_path: Path) -> None:
     assert [t.id for t in kept] == [t.id for t in reversed(tasks)][:KEEP]
     assert not Path(tasks[0].out_path).exists()
     assert manager.latest("other") is not None
+
+
+def test_adopted_task_with_an_empty_exit_file_is_still_running(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path / "state")
+    task = start(manager, tmp_path, "sleep 30")
+    # What an older wrapper's `printf >file` leaves between creating and writing it.
+    Path(task.exit_path).write_text("")
+    later = TaskManager(tmp_path / "state")
+    later.refresh()
+    assert later.tasks[task.id].running
+    os.killpg(task.pid, signal.SIGKILL)
+    wait_for(lambda: finished(manager, task.id))
+
+
+def test_task_finished_by_another_manager_is_reaped(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path / "state")
+    task = start(manager, tmp_path, "true")
+    proc = manager._procs[task.id]
+    later = TaskManager(tmp_path / "state")  # another TUI, or a cleanup scan
+    wait_for(lambda: finished(later, task.id))
+    manager.refresh()
+    assert task.id not in manager._procs and proc.returncode is not None
+
+
+def _rewrite(manager: TaskManager, task: TaskRecord, **change: Any) -> None:
+    path = manager._record_path(task.id)
+    raw = json.loads(path.read_text())
+    path.write_text(json.dumps({**raw, "status": "running", **change}))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"pid": 0},  # killpg(0) would signal the TUI's own process group
+        {"pid": -1},
+        {"pid": True},
+        {"pid": 2**31},
+        {"pid": "123"},
+        {"started_at": 5},
+        {"exit_path": None},
+        {"id": "other-id"},  # must name its own record file
+    ],
+)
+def test_invalid_task_records_are_ignored(tmp_path: Path, change: dict[str, Any]) -> None:
+    manager = TaskManager(tmp_path / "state")
+    task = start(manager, tmp_path, "true")
+    wait_for(lambda: finished(manager, task.id))
+    _rewrite(manager, task, **change)
+    later = TaskManager(tmp_path / "state")
+    assert later.tasks == {}
+    assert later.cancel("feature/x") == []
+
+
+def test_task_record_fields_are_normalised(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path / "state")
+    task = start(manager, tmp_path, "true")
+    wait_for(lambda: finished(manager, task.id))
+    _rewrite(manager, task, status="bogus", exit_code=1.5, notified="false", ended_at=None)
+    loaded = TaskManager(tmp_path / "state").tasks[task.id]
+    assert (loaded.status, loaded.exit_code, loaded.notified, loaded.ended_at) == (
+        "orphaned",
+        None,
+        False,
+        "",
+    )
+
+
+def test_load_swaps_in_a_complete_dict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """refresh() loads in a worker thread while the UI iterates the tasks."""
+    manager = TaskManager(tmp_path / "state")
+    for bookmark in ("a", "b"):
+        task = start(manager, tmp_path, "true", bookmark=bookmark)
+        wait_for(lambda task=task: finished(manager, task.id))
+    old = manager.tasks
+    during: list[bool] = []
+    real = TaskRecord.from_dict
+
+    def spy(raw: Any) -> TaskRecord:
+        during.append(manager.tasks is old)
+        return real(raw)
+
+    monkeypatch.setattr(TaskRecord, "from_dict", spy)
+    manager.load()
+    assert during == [True, True]
+    assert manager.tasks is not old and len(manager.tasks) == 2

@@ -229,8 +229,9 @@ highlighted bookmark's latest event.
 ```
 
 Each line shows its age and the commit the bookmark pointed to when it
-was created or the run ended. Runs show their outcome as in the bookmark list
-(`?` if it was never seen); bookmarks deleted since are marked `(deleted)`.
+was created or the run ended. Runs show their outcome as in the bookmark list,
+also after `x` forgot them (`interrupted` when killed), or `?` if it was never
+seen; bookmarks deleted since are marked `(deleted)`.
 The bottom pane follows the highlighted row and shows the agent, full prompt,
 command line, exact time, parents, commit and log path. Long details wrap;
 focus the pane with `tab` to scroll with arrow keys, Page Up/Down or Home/End.

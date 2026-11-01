@@ -560,14 +560,14 @@ class JjBackend:
                     "--color=never",
                     "bookmark",
                     "move",
-                    f"exact:{main}",
+                    f"exact:{revset_symbol(main)}",
                     "--to",
                     destination,
                 ],
                 self.root,
             )
         else:
-            self._jj("bookmark", "move", f"exact:{main}", "--to", destination)
+            self._jj("bookmark", "move", f"exact:{revset_symbol(main)}", "--to", destination)
         return True
 
     def move_working_copy_to(self, target: str) -> str | None:

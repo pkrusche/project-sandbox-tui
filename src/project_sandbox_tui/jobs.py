@@ -42,6 +42,9 @@ TERMINAL: frozenset[str] = frozenset(
 TIMEOUT_EXIT = 124
 RATE_LIMIT_EXIT = 75
 SIGINT_EXITS = {130, -signal.SIGINT}
+# Refreshes in a row without its session before an external session counts as
+# ended: one miss may be a session record that was being rewritten.
+EXTERNAL_MISSES = 2
 
 
 class BusyError(RuntimeError):
@@ -54,7 +57,9 @@ def branch_slug(branch: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    # Always with microseconds: records sort and compare these strings, and
+    # isoformat() would drop the fraction when it happens to be zero.
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def status_for_exit(code: int | None) -> Status:
@@ -178,6 +183,7 @@ class JobManager:
         self._procs: dict[str, subprocess.Popen[bytes]] = {}
         self._stop_stage: dict[str, int] = {}  # cancel steps taken so far
         self._stop_last: dict[str, float] = {}  # when the last one was sent
+        self._missed: dict[tuple[str, str], int] = {}  # external runs: refreshes without a session
         self.load()
 
     # ------------------------------------------------------------ persistence
@@ -210,12 +216,8 @@ class JobManager:
 
     def load(self) -> None:
         previous = self.jobs
-        self.jobs = {}
-        if not self.jobs_dir.is_dir():
-            self._stop_stage.clear()
-            self._stop_last.clear()
-            return
-        for path in sorted(self.jobs_dir.glob("*.json")):
+        jobs: dict[str, JobRecord] = {}
+        for path in sorted(self.jobs_dir.glob("*.json")) if self.jobs_dir.is_dir() else ():
             try:
                 job = JobRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError, KeyError, TypeError):
@@ -225,7 +227,13 @@ class JobManager:
                 # Keep references held by an open log screen up to date.
                 old.__dict__.update(job.__dict__)
                 job = old
-            self.jobs[job.branch] = job
+            jobs[job.branch] = job
+        # One assignment: worker threads load while the UI thread iterates the
+        # jobs, so it must see the old dict or the new one, never one being filled.
+        self.jobs = jobs
+        self._missed = {
+            run: n for run, n in self._missed.items() if (j := jobs.get(run[0])) and j.running
+        }
         for branch in list(self._stop_stage):
             old, new = previous.get(branch), self.jobs.get(branch)
             if old is None or new is None or (old.pid, old.started_at) != (new.pid, new.started_at):
@@ -367,6 +375,10 @@ class JobManager:
                 # A force-forgotten/replaced run must not overwrite a newer one.
                 current = self._read_record(spec.branch)
                 if current is not None and current.started_at == job.started_at:
+                    # Keep the ids another instance saw meanwhile in the session records.
+                    job.session_id = job.session_id or current.session_id
+                    job.container_name = job.container_name or current.container_name
+                    job.runtime = job.runtime or current.runtime
                     self.save(job)
 
     def _read_record(self, branch: str) -> JobRecord | None:
@@ -460,24 +472,33 @@ class JobManager:
                 continue
             rec = sessions.get(job.branch)
             if rec is not None:
+                ids = (job.session_id, job.container_name, job.runtime)
                 job.session_id = job.session_id or rec.session_id
                 job.container_name = job.container_name or rec.container_name
                 job.runtime = job.runtime or rec.runtime
-                self.save(job)
+                if (job.session_id, job.container_name, job.runtime) != ids:
+                    self.save(job)
 
             if job.external:
+                run = (job.branch, job.started_at)
                 if rec is not None:
+                    self._missed.pop(run, None)
                     if not job.session_seen:
                         job.session_seen = True
                         self.save(job)
                     continue
                 # Done once the session we saw has gone, or if none ever showed
                 # up within the grace period (which covers the image build).
-                started = _parse_ts(job.started_at)
-                if job.session_seen or now - started > external_grace_s:
-                    job.status = "completed"
-                    job.ended_at = _now()
-                    self.save(job)
+                if job.session_seen:
+                    self._missed[run] = self._missed.get(run, 0) + 1
+                    if self._missed[run] < EXTERNAL_MISSES:
+                        continue
+                elif now - _parse_ts(job.started_at) <= external_grace_s:
+                    continue
+                self._missed.pop(run, None)
+                job.status = "completed"
+                job.ended_at = _now()
+                self.save(job)
                 continue
 
             if job.mode == "interactive":
@@ -503,10 +524,12 @@ class JobManager:
             if job.branch in self._stop_stage and job.status in ("failed", "orphaned"):
                 job.status = "interrupted"
             job.ended_at = _now()
+            # Saved first: if that fails, the next pass still has the child's
+            # return code instead of finding it reaped and calling it orphaned.
+            self.save(job)
             self._procs.pop(job.branch, None)
             self._stop_stage.pop(job.branch, None)
             self._stop_last.pop(job.branch, None)
-            self.save(job)
             finished.append(job)
         return finished
 

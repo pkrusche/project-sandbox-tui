@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 from collections.abc import Callable
+from datetime import datetime, tzinfo
 from pathlib import Path
 
 import pytest
@@ -201,7 +202,11 @@ def test_external_session_closes_when_it_ends(repo: Path, fake_cfg: Callable[...
     jobs.refresh(sessions_for(repo, ["main"]))
     assert jobs.jobs["main"].session_seen and jobs.jobs["main"].running
     proc.wait()
-    jobs.refresh(sessions_for(repo, ["main"]))  # session gone → done, no 10-minute wait
+    # Session gone → done, no 10-minute wait; but only once it stays gone: one
+    # refresh may miss a session record that is being rewritten.
+    jobs.refresh(sessions_for(repo, ["main"]))
+    assert jobs.jobs["main"].running
+    jobs.refresh(sessions_for(repo, ["main"]))
     assert jobs.jobs["main"].status == "completed"
 
     # an external launch whose session never shows up closes after the grace period
@@ -480,3 +485,68 @@ def test_cancel_escalation_belongs_to_one_run(
     second.clear("topic", force=True)
     first.load()
     assert not first.cancel_started("topic")
+
+
+def test_failed_final_save_keeps_the_return_code(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    job = jobs.start_background(bg("main", "exit:3"), {})
+    jobs._procs["main"].wait()  # the child exited and was reaped; only Popen has its code
+    Path(job.summary_path).unlink(missing_ok=True)  # no summary to fall back on
+
+    def full_disk(_job: JobRecord) -> None:
+        raise OSError("disk full")
+
+    real_save = jobs.save
+    monkeypatch.setattr(jobs, "save", full_disk)
+    with pytest.raises(OSError):
+        jobs.refresh({})
+    monkeypatch.setattr(jobs, "save", real_save)
+    [done] = jobs.refresh({})
+    assert (done.status, done.exit_code) == ("failed", 3)
+
+
+def test_load_swaps_in_a_complete_dict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Worker threads load while the UI thread iterates the jobs."""
+    jobs = JobManager(tmp_path, Config(), tmp_path / "state")
+    for branch in ("a", "b"):
+        jobs.save(JobRecord(branch, LaunchSpec(branch=branch, agent="bash"), 0, "2026-01-01Z"))
+    old = jobs.jobs
+    during: list[bool] = []
+    real = JobRecord.from_dict
+
+    def spy(raw: dict) -> JobRecord:
+        during.append(jobs.jobs is old)
+        return real(raw)
+
+    monkeypatch.setattr(JobRecord, "from_dict", spy)
+    jobs.load()
+    assert during == [True, True]
+    assert jobs.jobs is not old and set(jobs.jobs) == {"a", "b"}
+
+
+def test_external_session_survives_one_missed_refresh(tmp_path: Path) -> None:
+    jobs = JobManager(tmp_path, Config(), tmp_path / "state")
+    jobs.record_external(LaunchSpec(branch="topic", agent="claude"), ["sandbox"])
+    session = SessionRecord("s1", "c1", str(tmp_path), "/ws/topic", "claude", "running", 1, "")
+    jobs.refresh({"topic": session})
+    jobs.refresh({})  # e.g. read while project-sandbox rewrote its record
+    jobs.refresh({"topic": session})
+    jobs.refresh({})
+    assert jobs.jobs["topic"].running  # never two misses in a row
+    jobs.refresh({})
+    assert jobs.jobs["topic"].status == "completed"
+
+
+def test_now_always_has_microseconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Records sort these strings: a missing fraction would sort after every other."""
+    import project_sandbox_tui.jobs as jobs_module
+
+    class Fixed:
+        @staticmethod
+        def now(tz: tzinfo | None = None) -> datetime:
+            return datetime(2026, 1, 2, 3, 4, 5, 0, tzinfo=tz)
+
+    monkeypatch.setattr(jobs_module, "datetime", Fixed)
+    assert jobs_module._now() == "2026-01-02T03:04:05.000000Z"

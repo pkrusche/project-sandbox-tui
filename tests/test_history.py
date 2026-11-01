@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -97,7 +98,7 @@ def test_blank_prompt_does_not_create_files(tmp_path: Path) -> None:
     assert not path.parent.exists()
 
 
-@pytest.mark.parametrize("operation", ["write_text", "replace"])
+@pytest.mark.parametrize("operation", ["dump", "replace"])
 def test_failed_write_preserves_history_and_cleans_temporary_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -111,7 +112,8 @@ def test_failed_write_preserves_history_and_cleans_temporary_files(
         raise OSError("disk unavailable")
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, operation, fail)
+        # dump: writing fails once the temporary file exists.
+        patch.setattr(*((json, "dump") if operation == "dump" else (Path, "replace")), fail)
         history.add("unsaved")
     assert history.entries == ["saved"]
     assert PromptHistory(path).entries == ["saved"]
@@ -134,3 +136,24 @@ def test_queries_respect_prefix_case_and_require_all_search_terms(tmp_path: Path
     newest = history.newest_first()
     newest.clear()
     assert history.entries == ["Fix café tests"]
+
+
+def test_unreadable_history_is_not_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "h.json"
+    history = PromptHistory(path)
+    history.add("saved")
+    saved = path.read_bytes()
+    real = Path.read_bytes
+
+    def flaky(self: Path) -> bytes:
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", flaky)
+        history.add("new")  # a convenience: not saved, but not lost either
+    assert path.read_bytes() == saved
+    assert PromptHistory(path).entries == ["saved"]

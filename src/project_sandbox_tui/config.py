@@ -20,6 +20,7 @@ import json
 import math
 import os
 import shlex
+import time
 import tomllib
 import uuid
 from dataclasses import dataclass, field
@@ -516,6 +517,61 @@ def private_dir(path: Path) -> Path:
     with contextlib.suppress(OSError):  # e.g. a directory someone else owns
         path.chmod(0o700)
     return path
+
+
+STATE_VERSION = 1  # of the JSON state files read with read_state_for_update
+
+
+class StateFileError(OSError):
+    """A state file cannot be updated without losing what it holds."""
+
+
+def read_state_for_update(path: Path) -> dict[str, Any] | None:
+    """The JSON object in ``path`` for a locked read-modify-write; None if missing.
+
+    Never mistakes an unreadable file for an empty one, since the write that
+    follows would discard everything it holds: read errors propagate. A file
+    that does not hold a JSON object is moved aside (``<name>.corrupt-…``) so it
+    can still be recovered, then treated as missing. One written by a newer
+    version is left alone: rewriting it would drop what this version does not know.
+    """
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except ValueError:
+        raw = None
+    if not isinstance(raw, dict):
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        path.replace(path.with_name(f"{path.name}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}"))
+        return None
+    version = raw.get("version")
+    if type(version) is int and version > STATE_VERSION:
+        raise StateFileError(f"{path} was written by a newer sbx-tui (version {version})")
+    return raw
+
+
+def write_state(path: Path, data: Any, *, durable: bool = False) -> None:
+    """Replace ``path`` atomically with ``data`` as JSON.
+
+    ``durable`` flushes it to disk first, so even a power loss leaves the old
+    or the new file, never an empty one. It costs a disk sync, so it is for
+    rarely written state that cannot be rebuilt (the bookmark history), not
+    for marks set on each key press.
+    """
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=1)
+            if durable:
+                stream.flush()
+                os.fsync(stream.fileno())
+        tmp.replace(path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 @dataclass

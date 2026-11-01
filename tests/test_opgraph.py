@@ -287,3 +287,96 @@ def test_invalid_undo_entries_do_not_shift_the_undo_position() -> None:
     state = State.from_dict({"undo": [None, entry], "position": 1})
     assert state.undo_entry() is None
     assert state.redo_entry() == UndoEntry("create", [UndoItem("topic", "", "c")])
+
+
+def _graph_with_main(tmp_path: Path) -> tuple[OpGraph, Path]:
+    path = tmp_path / "state" / "opgraph.json"
+    graph = OpGraph(path)
+    with graph.transaction() as state:
+        state.add_lineage("main", "existing", [], "c0")
+    return graph, path
+
+
+def test_unreadable_history_is_not_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph, path = _graph_with_main(tmp_path)
+    saved = path.read_bytes()
+    real = Path.read_bytes
+
+    def flaky(self: Path) -> bytes:
+        if self == path:
+            raise OSError(24, "Too many open files")
+        return real(self)
+
+    with monkeypatch.context() as patch, pytest.raises(OSError):
+        patch.setattr(Path, "read_bytes", flaky)
+        with graph.transaction() as state:
+            state.add_lineage("topic", "create", ["main"])
+    assert path.read_bytes() == saved  # not replaced by an empty history plus topic
+
+
+@pytest.mark.parametrize("content", [b"", b'{"nodes": [', b"[]", b"\xff"])
+def test_corrupt_history_is_moved_aside(tmp_path: Path, content: bytes) -> None:
+    graph, path = _graph_with_main(tmp_path)
+    path.write_bytes(content)
+    with graph.transaction() as state:
+        state.add_lineage("topic", "create", [])
+    [aside] = path.parent.glob("opgraph.json.corrupt-*")
+    assert aside.read_bytes() == content  # kept for recovery
+    assert set(OpGraph(path).state.current) == {"topic"}
+
+
+def test_history_from_a_newer_version_is_left_alone(tmp_path: Path) -> None:
+    graph, path = _graph_with_main(tmp_path)
+    raw = json.loads(path.read_text())
+    path.write_text(json.dumps({**raw, "version": 2, "future": True}))
+    saved = path.read_bytes()
+    with pytest.raises(OSError, match="newer sbx-tui"), graph.transaction() as state:
+        state.add_lineage("topic", "create", [])
+    assert path.read_bytes() == saved
+
+
+def test_creation_takes_over_a_lineage_adopted_meanwhile() -> None:
+    """jj creates the bookmark first; a sync may adopt it before it is recorded."""
+    state = State()
+    main = state.add_lineage("main", "existing", [], "c0", at=1.0)
+    since = 10.0
+    branches = [
+        Branch("main", "m", "", 0, commit="c0"),
+        Branch("topic", "t", "", 0, commit="c1"),
+        Branch("child", "c", "", 0, commit="c2"),
+    ]
+    ancestors = {"c1": [["main"]], "c2": [["topic"]]}
+    state.adopt(branches, lambda commit: ancestors[commit], "main")  # a sync in between
+    adopted = state.nodes[state.current["topic"]]
+    assert adopted.at >= since
+    child = state.nodes[state.current["child"]]
+    assert child.parents == [adopted.id]
+
+    node = state.add_creation("topic", "create", ["main"], "c1", since)
+    assert node is adopted and node.kind == "create" and node.parents == [main.id]
+    assert [n for n in state.nodes.values() if n.bookmark == "topic"] == [node]
+    assert state.bookmark_parents(["main", "topic", "child"])["child"] == ["topic"]
+
+    # A lineage from before the creation started is history, not a race: keep it.
+    old = state.add_creation("main", "create", [], "c0", since)
+    assert old is not main and main.kind == "existing"
+    # Nor one with runs on it.
+    job = JobRecord("child", LaunchSpec("child", "codex"), 1, "2026-01-01T00:00:00Z")
+    state.add_run(job)
+    assert state.add_creation("child", "create", ["topic"], "c2", since) is not child
+
+
+def test_forgotten_job_gets_its_outcome() -> None:
+    state = State()
+    state.add_lineage("topic", "create", [])
+    job = JobRecord("topic", LaunchSpec("topic", "codex", mode="background"), 1, "t1")
+    run = state.add_run(job)
+    other = JobRecord("other", LaunchSpec("other", "codex"), 2, "t1")
+    state.record_outcome(other, "failed")  # another bookmark's job: not this node
+    assert run.status == ""
+    state.record_outcome(job, "interrupted")
+    assert (run.status, run.commit) == ("interrupted", "")
+    state.record_outcome(job, "completed", "c9")  # recorded once
+    assert run.status == "interrupted"

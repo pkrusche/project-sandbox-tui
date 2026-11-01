@@ -700,8 +700,13 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
 
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].status == "completed")
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
-        row = next(r for r in row_texts(app) if r[1] == "feature/x")
-        assert row[0] == "✓"
+
+        def current_row() -> list[str]:
+            return next(r for r in row_texts(app) if r[1] == "feature/x")
+
+        # Records are refreshed in a thread; the table is redrawn when the pass ends.
+        await wait_until(pilot, lambda: current_row()[0] == "✓")
+        row = current_row()
         assert row[6].startswith("completed · ") and row[6].endswith(" ago")
         # The history records the outcome once a listing after the run's end is seen.
         await wait_until(pilot, lambda: app.graph.state.history("feature/x")[0].status != "")
@@ -942,7 +947,9 @@ def test_jj_repo_without_bookmarks_runs_in_working_copy(
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.current_spec().main_checkout
         assert form.query_one("#branch", Input).value == "@"
-        form.query_one("#prompt", TextArea).text = "sleep:3"
+        # Outlasts a loaded test machine: cancelled below, and cancelling a run
+        # that already finished would forget its record.
+        form.query_one("#prompt", TextArea).text = "sleep:60"
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
         assert not [a for a in app.jobs.jobs["@"].argv if a.startswith("--branch")]
@@ -962,7 +969,9 @@ def test_jj_working_copy_alongside_bookmarks(
         await pilot.press("r")  # on @: runs in the repo's own workspace
         form = app.screen
         assert isinstance(form, LaunchScreen) and form.current_spec().main_checkout
-        form.query_one("#prompt", TextArea).text = "sleep:3"
+        # Outlasts a loaded test machine: cancelled below, and cancelling a run
+        # that already finished would forget its record.
+        form.query_one("#prompt", TextArea).text = "sleep:60"
         await pilot.press("ctrl+enter")
         await wait_until(pilot, lambda: "@" in app.jobs.jobs)
         assert not [a for a in app.jobs.jobs["@"].argv if a.startswith("--branch")]
@@ -2379,5 +2388,90 @@ def test_stale_working_copy_dialog(
             assert app.is_running
         else:
             await wait_until(pilot, lambda: not app.is_running)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_unwritable_run_records_do_not_crash_the_app(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notices: list[str] = []
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        def broken(*_args: Any) -> Any:
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(app, "notify", lambda message, **_kw: notices.append(message))
+        monkeypatch.setattr(app.jobs, "refresh", broken)
+        monkeypatch.setattr(app.tasks, "refresh", broken)
+        await app.refresh_data()
+        await app.refresh_data()
+        assert app.is_running
+        assert notices == [
+            "could not update the run records: No space left on device",
+            "could not update the :* task records: No space left on device",
+        ]  # once each while the problem lasts
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_overlapping_repository_actions_keep_their_records(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    """A second action no longer cancels the first one's worker mid-way."""
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        app._create_branch(("topic", "main"))
+        app._fast_forward_main("main", "feature/x")  # same worker group, right after
+        await app.workers.wait_for_complete()
+        undo = [(e.op, e.names()) for e in app.graph.state.undo]
+        assert undo == [("create", "topic"), ("move", "main")]
+        assert app.graph.state.nodes[app.graph.state.current["topic"]].kind == "create"
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_forgetting_a_finished_run_records_its_outcome(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        spec = LaunchSpec("feature/x", "claude", mode="background", prompt_text="exit:0")
+        job = app.jobs.start_background(spec, {})
+        app._record_run(job)
+        await wait_until(pilot, lambda: bool(app.jobs.refresh({})) or not job.running)
+        assert job.status == "completed"
+        # x before any refresh recorded the outcome: the record goes, the outcome stays.
+        app._cancel(["feature/x"])
+        assert "feature/x" not in app.jobs.jobs
+        assert app.graph.state.history("feature/x")[0].status == "completed"
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_workspace_creation_rechecks_sessions(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    import json
+    import os
+
+    from project_sandbox_tui.sandbox import sessions_dir
+    from project_sandbox_tui.vcs import workspace_path
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        app.sessions = {}  # the UI's cache, from before the session started
+        path = workspace_path(repo, "feature/x", None)
+        record = {
+            "session_id": "s1",
+            "workspace_path": str(path),
+            "status": "running",
+            "pid": os.getpid(),
+        }
+        sessions_dir().mkdir(parents=True, exist_ok=True)
+        (sessions_dir() / "s1.json").write_text(json.dumps(record))
+        assert app._ensure_workspace("feature/x") is None  # its session creates it
+        assert not path.exists()
 
     run_app(repo, fake_cfg(), scenario)

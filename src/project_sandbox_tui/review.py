@@ -11,11 +11,17 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
-import uuid
 from collections.abc import Collection, Generator
 from pathlib import Path
+from typing import Any
 
-from project_sandbox_tui.config import private_dir, repo_state_dir
+from project_sandbox_tui.config import (
+    STATE_VERSION,
+    private_dir,
+    read_state_for_update,
+    repo_state_dir,
+    write_state,
+)
 
 MAX_MARKS = 5000  # per bookmark; the oldest go first
 
@@ -32,9 +38,12 @@ class SeenFiles:
 
     def _read(self) -> dict[str, list[str]]:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            return self._parse(json.loads(self.path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return {}
+
+    @staticmethod
+    def _parse(raw: Any) -> dict[str, list[str]]:
         bookmarks = raw.get("bookmarks") if isinstance(raw, dict) else None
         if not isinstance(bookmarks, dict):
             return {}
@@ -64,17 +73,10 @@ class SeenFiles:
         """
         try:
             with self._locked():
-                marks = self._read()
+                # Strict: an unreadable file must not be replaced by these marks alone.
+                marks = self._parse(read_state_for_update(self.path))
                 self._update(marks, bookmark, keys, seen)
-                tmp = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
-                try:
-                    tmp.write_text(
-                        json.dumps({"version": 1, "bookmarks": marks}, indent=1), encoding="utf-8"
-                    )
-                    tmp.replace(self.path)
-                finally:
-                    with contextlib.suppress(OSError):
-                        tmp.unlink(missing_ok=True)
+                write_state(self.path, {"version": STATE_VERSION, "bookmarks": marks})
         except OSError:
             self._update(self.marks, bookmark, keys, seen)
             raise

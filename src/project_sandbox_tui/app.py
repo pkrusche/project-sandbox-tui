@@ -478,6 +478,8 @@ class SandboxTUI(App[None]):
         self._leader = commands.LeaderKeys()
         self.graph = OpGraph(self.jobs.state_dir / "opgraph.json")
         self._graph_error = ""
+        self._state_errors: dict[str, str] = {}  # "jobs" / "tasks" → the error last reported
+        self._listed_at = 0.0  # when the bookmarks in self.branches started being listed
         # Creating, deleting and undoing run in order: u right after n undoes n.
         self._history_lock = asyncio.Lock()
         # Branch selection for operations on several branches: space marks
@@ -569,19 +571,42 @@ class SandboxTUI(App[None]):
             listed = False
         self.branches = sort_branches(branches)
         if listed:  # first: sessions and jobs are read back to back, then redrawn
+            self._listed_at = listed_at
             await self._sync_graph(listed_at)
             self._reviews = await asyncio.to_thread(self._review_counts)
         records = await asyncio.to_thread(read_sessions, self.sessions_dir)
         self.sessions = running_by_branch(
             records, self.repo, [b.name for b in self.branches], self.worktree_dir
         )
-        for job in self.jobs.refresh(self.sessions):
-            self._announce(job)
-        for task in await asyncio.to_thread(self.tasks.refresh):
-            self._announce_task(task)
+        # A full disk or read-only state directory must not crash the TUI (and
+        # with it every refresh after a restart): report it and keep going.
+        try:
+            # In a thread: another instance's cleanup or undo may hold the jobs lock.
+            for job in await asyncio.to_thread(self.jobs.refresh, self.sessions):
+                self._announce(job)
+        except OSError as exc:
+            self._state_problem("jobs", f"could not update the run records: {exc}")
+        else:
+            self._state_problem("jobs", "")
+        try:
+            for task in await asyncio.to_thread(self.tasks.refresh):
+                self._announce_task(task)
+        except OSError as exc:
+            self._state_problem("tasks", f"could not update the :* task records: {exc}")
+        else:
+            self._state_problem("tasks", "")
         # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
         with contextlib.suppress(NoMatches):
             self._render_table()
+
+    def _state_problem(self, area: str, error: str) -> None:
+        """Report a state-directory error once while it lasts, not on every refresh."""
+        if error and error != self._state_errors.get(area):
+            self.notify(error, severity="error", timeout=8)
+        if error:
+            self._state_errors[area] = error
+        else:
+            self._state_errors.pop(area, None)
 
     def _review_counts(self) -> dict[str, tuple[int, int]]:
         """Count current marks, caching file identities until either commit changes."""
@@ -644,7 +669,7 @@ class SandboxTUI(App[None]):
             await asyncio.to_thread(
                 self.graph.sync,
                 self.branches,
-                dict(self.jobs.jobs),  # a snapshot: load() refills the dict in place
+                dict(self.jobs.jobs),  # a snapshot: launches add to the dict meanwhile
                 listed_at,
                 self.backend.bookmarked_ancestors,
                 self.main_name() or "",
@@ -791,8 +816,9 @@ class SandboxTUI(App[None]):
 
     def _render_header(self, chosen: set[str]) -> None:
         running = self.jobs.running_count()
+        jobs = self.jobs.jobs  # once: a worker's load() may swap in a new dict meanwhile
         busy_other = sum(
-            1 for n in self.sessions if not (n in self.jobs.jobs and self.jobs.jobs[n].running)
+            1 for n in self.sessions if not ((job := jobs.get(n)) is not None and job.running)
         )
         count = sum(1 for b in self.branches if not b.working_copy)
         stats = [f"{count_label(count)} · {running} running"]
@@ -1053,7 +1079,7 @@ class SandboxTUI(App[None]):
             lambda: self._move_working_copy(target),
         )
 
-    @work(exclusive=True, group="vcs")
+    @work(group="vcs")  # not exclusive: see _create_branch
     async def _move_working_copy(self, target: str) -> None:
         def move_if_idle() -> str | None:
             # Share the launch lock so another TUI cannot start a session between
@@ -1069,7 +1095,8 @@ class SandboxTUI(App[None]):
                 return self.backend.move_working_copy_to(target)
 
         try:
-            saved = await asyncio.to_thread(move_if_idle)
+            async with self._history_lock:
+                saved = await asyncio.to_thread(move_if_idle)
         except (BusyError, VcsError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
         else:
@@ -1079,7 +1106,7 @@ class SandboxTUI(App[None]):
             self.notify(message)
         await self.refresh_data()
 
-    @work(exclusive=True, group="vcs")
+    @work(group="vcs")  # not exclusive: see _create_branch
     async def _fast_forward_main(self, main: str, target: str) -> None:
         try:
             async with self._history_lock:
@@ -1313,35 +1340,39 @@ class SandboxTUI(App[None]):
             ConfirmScreen(f"start an unsupervised run on {spec.branch}?", body, "start"), decided
         )
 
-    @work(exclusive=True, group="octopus")
+    @work(group="octopus")  # not exclusive: see _create_branch
     async def _integrate(self, spec: LaunchSpec, draft_key: tuple[str, ...] = ()) -> None:
         """Merge / rebase the inputs into the result branch on the host, then start
         the session that resolves what is left and reviews the integration."""
         operation: octopus.Operation = "rebase" if spec.operation == "rebase" else "merge"
         plan = octopus.OctopusPlan(operation, list(spec.inputs), spec.branch, spec.base)
         try:
-            branches = await asyncio.to_thread(self.backend.list_branches)
-            octopus.validate(plan, {b.name for b in branches if not b.working_copy})
-            reason = self.jobs.busy_reason(spec.branch, self.sessions)
-            if reason:
-                raise BusyError(reason)
-            moving = [i for i in spec.inputs if self.jobs.busy_reason(i, self.sessions)]
-            if moving:
+            async with self._history_lock:
+                branches = await asyncio.to_thread(self.backend.list_branches)
+                octopus.validate(plan, {b.name for b in branches if not b.working_copy})
+                reason = self.jobs.busy_reason(spec.branch, self.sessions)
+                if reason:
+                    raise BusyError(reason)
+                moving = [i for i in spec.inputs if self.jobs.busy_reason(i, self.sessions)]
+                if moving:
+                    self.notify(
+                        f"{', '.join(moving)} still has a session running; the {operation} "
+                        "uses its current state",
+                        severity="warning",
+                        timeout=8,
+                    )
                 self.notify(
-                    f"{', '.join(moving)} still has a session running; the {operation} "
-                    "uses its current state",
-                    severity="warning",
-                    timeout=8,
+                    f"{spec.branch}: preparing {operation} of {len(spec.inputs)} bookmarks…"
                 )
-            self.notify(f"{spec.branch}: preparing {operation} of {len(spec.inputs)} bookmarks…")
-            state = await asyncio.to_thread(octopus.prepare, self.repo, plan)
+                since = time.time()
+                state = await asyncio.to_thread(octopus.prepare, self.repo, plan)
+                warning = await asyncio.to_thread(
+                    self._record_creation, spec.branch, operation, list(spec.inputs), since
+                )
         except (octopus.OctopusError, BusyError, VcsError) as exc:
             self.notify(f"{spec.branch}: {exc}", severity="error", timeout=10)
             await self.refresh_data()
             return
-        warning = await asyncio.to_thread(
-            self._record_creation, spec.branch, operation, list(spec.inputs)
-        )
         if warning:
             self.notify(warning, severity="warning")
         self.notify(
@@ -1376,9 +1407,13 @@ class SandboxTUI(App[None]):
             self.branches = sort_branches(self.backend.list_branches())
             if new_branch_start is not None:
                 known = {b.name for b in self.branches if not b.working_copy}
+                since = time.time()
                 self.backend.create_branch(spec.branch, new_branch_start)
                 if warning := self._record_creation(
-                    spec.branch, "create", [new_branch_start] if new_branch_start in known else None
+                    spec.branch,
+                    "create",
+                    [new_branch_start] if new_branch_start in known else None,
+                    since,
                 ):
                     self.notify(warning, severity="warning")
                 self.branches = sort_branches(self.backend.list_branches())
@@ -1487,11 +1522,14 @@ class SandboxTUI(App[None]):
 
     # ------------------------------------------------------------ history
 
-    def _record_creation(self, name: str, kind: str, parents: list[str] | None) -> str | None:
+    def _record_creation(
+        self, name: str, kind: str, parents: list[str] | None, since: float
+    ) -> str | None:
         """Start the new bookmark's lineage and make its creation undoable.
 
-        ``parents`` defaults to the bookmarks on the nearest ancestors. Returns
-        a warning instead of raising: the bookmark exists either way.
+        ``parents`` defaults to the bookmarks on the nearest ancestors; ``since``
+        is when jj started creating it. Returns a warning instead of raising:
+        the bookmark exists either way.
         """
         try:
             branches = self.backend.list_branches()
@@ -1503,7 +1541,7 @@ class SandboxTUI(App[None]):
                     parents = state.infer_parents(
                         name, commit, branches, self.backend.bookmarked_ancestors, main
                     )
-                node = state.add_lineage(name, kind, parents, commit)
+                node = state.add_creation(name, kind, parents, commit, since)
                 state.push_undo(UndoEntry("create", [UndoItem(name, node.id, commit)]))
         except (OSError, VcsError) as exc:
             return f"{name}: not recorded in the bookmark history: {exc}"
@@ -1515,6 +1553,9 @@ class SandboxTUI(App[None]):
             return
         try:
             with self.graph.transaction() as state:
+                if job.branch not in state.current:  # created elsewhere since the last refresh
+                    main = self.main_name() or ""
+                    state.adopt(self.branches, self.backend.bookmarked_ancestors, main)
                 state.add_run(job, prompt)
         except OSError as exc:
             self.notify(f"{job.branch}: run not recorded in the history: {exc}", severity="warning")
@@ -1768,20 +1809,24 @@ class SandboxTUI(App[None]):
     def _new_branch_chosen(self, result: tuple[str, str] | None) -> None:
         self._create_branch(result)
 
-    @work(exclusive=True, group="vcs")
+    # Not exclusive, like the other workers that change the repository:
+    # cancelling one would skip recording what jj already did. They queue on
+    # _history_lock instead.
+    @work(group="vcs")
     async def _create_branch(self, result: tuple[str, str] | None) -> None:
         if result is None:
             return
         name, start = result
         known = {b.name for b in self.branches if not b.working_copy}
         async with self._history_lock:
+            since = time.time()
             try:
                 await asyncio.to_thread(self.backend.create_branch, name, start)
             except VcsError as exc:
                 self.notify(f"could not create {name}: {exc}", severity="error", timeout=8)
                 return
             warning = await asyncio.to_thread(
-                self._record_creation, name, "create", [start] if start in known else None
+                self._record_creation, name, "create", [start] if start in known else None, since
             )
         if warning:
             self.notify(warning, severity="warning")
@@ -1848,12 +1893,18 @@ class SandboxTUI(App[None]):
         path = self._workspace_dir(name)
         if path.exists():
             return path
-        if self.jobs.busy_reason(name, self.sessions):
-            # Its session is about to create the workspace: never race it.
-            self.notify(f"{name}: workspace not created yet; try again", severity="warning")
-            return None
         try:
-            self.backend.add_workspace(name, path)
+            # Under the launch lock, with sessions read again: no session may
+            # start (and create the workspace itself) between the check and jj.
+            with self.jobs._locked():
+                self.jobs.load()
+                if path.exists():  # created meanwhile
+                    return path
+                if self.jobs._busy_reason(name, self._sessions_now([name])):
+                    # Its session is about to create the workspace: never race it.
+                    self.notify(f"{name}: workspace not created yet; try again", severity="warning")
+                    return None
+                self.backend.add_workspace(name, path)
         except (VcsError, OSError) as exc:
             self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
             return None
@@ -2068,9 +2119,28 @@ class SandboxTUI(App[None]):
             job = self.jobs.jobs.get(name)
             if not messages or (job is not None and job.running):
                 messages.append(self.jobs.cancel(name, self.sessions))
+                if job is not None and name not in self.jobs.jobs:
+                    self._record_forgotten(job)
             for message in messages:
                 self.notify(message)
         self._render_table()
+
+    def _record_forgotten(self, job: JobRecord) -> None:
+        """Give the run node the outcome its job record took with it."""
+        commit = ""
+        if job.running:  # SIGKILLed, or a stuck record forgotten without a signal
+            status = "interrupted" if job.mode == "background" and job.pid > 0 else "unknown"
+        else:
+            status = job.status
+            branch = self.branch(job.branch)
+            # Only a listing made after the run ended shows the commit it left.
+            if branch is not None and job.ended_at and _ts(job.ended_at) <= self._listed_at:
+                commit = branch.commit
+        try:
+            with self.graph.transaction() as state:
+                state.record_outcome(job, status, commit)
+        except OSError as exc:
+            self.notify(f"{job.branch}: outcome not recorded in the history: {exc}")
 
     async def action_refresh(self) -> None:
         await self.refresh_data()
@@ -2367,7 +2437,8 @@ class SandboxTUI(App[None]):
 
     async def action_quit(self) -> None:
         """Quit, asking first while runs or sessions are still going (q and ctrl+q)."""
-        running = sorted(name for name, job in self.jobs.jobs.items() if job.running)
+        jobs = self.jobs.jobs  # once: a worker's load() may swap in a new dict meanwhile
+        running = sorted(name for name, job in jobs.items() if job.running)
         if not running or self._confirming_quit:  # ctrl+q again over the dialog quits
             self.exit()
             return
@@ -2378,7 +2449,7 @@ class SandboxTUI(App[None]):
                 self.exit()
 
         body = (
-            "\n".join(f"{name}  {self.jobs.jobs[name].spec.label()}" for name in running)
+            "\n".join(f"{name}  {jobs[name].spec.label()}" for name in running)
             + "\n\nThey keep running after sbx-tui exits. Completion notifications wait "
             "until sbx-tui is started again in this repository."
         )

@@ -48,3 +48,12 @@ def test_corrupt_file_and_failed_save(tmp_path: Path) -> None:
     else:
         raise AssertionError("expected OSError")
     assert blocked.seen("x") == {"1"}  # still applies for this session
+
+
+def test_corrupt_marks_are_kept_aside_not_overwritten(tmp_path: Path) -> None:
+    path = tmp_path / "review.json"
+    path.write_text("{truncated")
+    SeenFiles(path).mark("x", ["1"], True)
+    [aside] = tmp_path.glob("review.json.corrupt-*")
+    assert aside.read_text() == "{truncated"
+    assert SeenFiles(path).seen("x") == {"1"}

@@ -48,6 +48,66 @@ finalised with the bookmark's commit on the first refresh that lists bookmarks
 after the run ended. See [sessions](sessions.md) for terminal behavior and
 [state storage](configuration.md#state-directory) for paths and permissions.
 
+## Concurrency and locking
+
+Several TUI instances may run on one repository, and each does its jj, file and
+process work in worker threads. These locks order what they do:
+
+```text
+  this TUI only       _history_lock (asyncio)    held for a whole action that
+                              │                  changes the repository: n dd u
+                              │                  ctrl+r f @ e, merge or rebase
+                              │                  preparation, W removal
+                              ▼
+  every TUI on the    opgraph.json.lock          bookmark history and undo stack
+  repository                  │
+  (flock on files             ▼
+  in the state        jobs.lock                  job records, and the launch
+  directory)                  │                  guard: busy checks and spawns
+                              │                  happen under it
+                              ▼
+                      tasks.lock                 :* task records
+```
+
+A lock is only taken while holding the ones above it, never the reverse, so
+actions cannot deadlock. The diff review, prompt history and command history
+each have their own `<file>.lock`, taken alone.
+
+Which actions take which locks. *history* is `_history_lock`, *graph*
+`opgraph.json.lock`; `A → B` takes B while holding A, `A, B` one after the other:
+
+| Action | Locks | Done under them |
+|---|---|---|
+| Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks | Adopt new bookmarks and record finished runs; poll jobs and claim their notifications; the same for tasks |
+| `r` / `i`, `:NAME` actions | jobs, graph | Recheck busy, spawn and write the job record; add the run node. A new bookmark typed into the form is recorded first, under graph |
+| `r` / `i` with bookmarks selected | history → (jobs, graph); then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark |
+| `n` | history → graph | Create with jj, then record the creation and its undo entry |
+| `dd` | history → graph → jobs | Busy check, delete, undo entry |
+| `u` / `ctrl+r` | history → graph → jobs | Busy check, delete or restore, move the undo position |
+| `f` | history → graph | Fast-forward main, undo entry |
+| `@` | history → jobs | Busy check of the working copy, move it |
+| `e` | history | Describe, only if the target is still the commit that was edited |
+| `:*` | jobs, tasks | Create a missing workspace unless a session is starting; start the task |
+| `o` | jobs | Create a missing workspace unless a session is starting |
+| `x` | tasks, jobs, graph | Signal tasks; signal or forget the run; record a forgotten run's outcome |
+| `W` | tasks; removal: history → graph → jobs → tasks | List without the launch guard; recheck each chosen workspace right before deleting it |
+| `D` in the cleanup list | jobs → tasks | Recheck, then force-delete |
+| `sbx-tui --cleanup-workspaces` | tasks; jobs → tasks | As `W`, without the bookmark history |
+
+- Checks that guard an action are repeated under its lock with records and
+  session files read again. The UI's cached state only decides what to offer.
+- Inline sessions hold `jobs.lock` only while starting and finishing, not
+  while the agent runs.
+- Readers take no lock. Files are replaced atomically, and a reload swaps the
+  in-memory records in one assignment, so readers see the old state or the new.
+- Locks are `flock`s on separately opened files, so they also order the threads
+  of one TUI. They are not re-entrant: code holding one uses unlocked helpers
+  such as `JobManager._busy_reason`.
+- Workers that change the repository are not `exclusive`. A second action waits
+  for `_history_lock` instead of cancelling the first after jj has already run.
+- `last_used.json` and the trusted project config are replaced atomically
+  without a lock; the last write wins.
+
 ## Limitations
 
 - Inline sessions, diffs and shell commands suspend the event loop;
