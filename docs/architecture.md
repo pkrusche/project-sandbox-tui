@@ -41,6 +41,11 @@ and optional `--timeout`.
 4. **Notify:** claim `notified` atomically so only one instance announces completion.
 5. **Restart:** adopt live processes; finalise dead ones.
 
+Detached helpers (notifications, editors, terminal launchers and container stop
+commands) are reaped by daemon waiters. Forgotten or replaced job handles are
+handed to the same waiters so their children are collected even without another
+refresh. Waiters do not stop live processes or delay quitting the TUI.
+
 Inline sessions use temporary job records to mark workspaces busy across
 instances. Job records keep only each bookmark's latest run; `opgraph.json`
 keeps every run as a node of the [bookmark history](usage.md#bookmark-history),

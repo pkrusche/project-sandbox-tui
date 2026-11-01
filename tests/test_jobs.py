@@ -345,6 +345,8 @@ def test_failed_record_write_stops_detached_child(
         return proc
 
     def fail_save(job):
+        for path in (job.log_path, job.summary_path, str(Path(job.log_path).with_suffix(".md"))):
+            Path(path).write_text("unrecorded launch output")
         raise OSError("disk full")
 
     monkeypatch.setattr(subprocess, "Popen", spawn)
@@ -353,6 +355,39 @@ def test_failed_record_write_stops_detached_child(
         jobs.start_background(bg("main", "sleep:30"), {})
     assert len(children) == 1 and children[0].poll() is not None
     assert not jobs.jobs and not jobs._procs
+    assert not list(jobs.logs_dir.iterdir())
+
+
+def test_failed_spawn_leaves_no_output_file(
+    tmp_path: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.sandbox.command = str(tmp_path / "missing-sandbox")
+    jobs = JobManager(tmp_path, cfg)
+    with pytest.raises(FileNotFoundError):
+        jobs.start_background(bg("main", "go"), {})
+    assert not list(jobs.logs_dir.iterdir())
+    assert not jobs.jobs and not jobs._procs
+
+
+@pytest.mark.parametrize("forget", [False, True])
+def test_replaced_child_is_reaped_without_refresh(
+    tmp_path: Path, fake_cfg: Callable[..., Config], forget: bool
+) -> None:
+    jobs = JobManager(tmp_path, fake_cfg())
+    job = jobs.start_background(bg("main", "sleep:0.3"), {})
+    proc = jobs._procs["main"]
+    if forget:
+        jobs.clear("main", force=True)
+    else:
+        # Another manager finalised the record before this one next refreshed.
+        job.status = "completed"
+        JobManager(tmp_path, fake_cfg()).save(job)
+    jobs.start_background(bg("main", "sleep:30"), {})
+    # Replacing the branch's handle must neither terminate nor lose the old child.
+    wait_for(lambda: proc.returncode is not None)
+    assert proc.returncode == 0
+    assert jobs._procs["main"].poll() is None
 
 
 def test_parse_session_timestamps() -> None:

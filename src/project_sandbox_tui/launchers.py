@@ -25,6 +25,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from project_sandbox_tui.processes import reap_later
+
 TERMINALS: tuple[str, ...] = ("inline", "tmux", "zellij", "screen", "custom")
 MULTIPLEXERS: tuple[str, ...] = ("tmux", "zellij", "screen")
 
@@ -163,7 +165,7 @@ def start(launch: ExternalLaunch, cwd: Path, timeout: float = 15.0) -> None:
     window/pane/session exists, so their exit code and stderr are checked;
     a custom command may keep running (e.g. a terminal emulator) and is detached."""
     if launch.detached:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             launch.argv,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
@@ -171,6 +173,7 @@ def start(launch: ExternalLaunch, cwd: Path, timeout: float = 15.0) -> None:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        reap_later(proc)
         return
     try:
         proc = subprocess.run(

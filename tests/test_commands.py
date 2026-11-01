@@ -125,6 +125,9 @@ def test_complete_programs_after_bang(tmp_path: Path) -> None:
 
 
 def test_complete_file_arguments(tmp_path: Path) -> None:
+    # Completion sees only its workspace, not the test's isolated XDG directories.
+    tmp_path = tmp_path / "workspace"
+    tmp_path.mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_a.py").write_text("")
     (tmp_path / "tests" / "test b.py").write_text("")

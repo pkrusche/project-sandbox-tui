@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 from project_sandbox_tui.launchers import fill_command
+from project_sandbox_tui.processes import reap_later
 
 
 def notification_argv(title: str, message: str, command: str = "") -> list[str] | None:
@@ -42,13 +43,14 @@ def send(title: str, message: str, command: str = "") -> bool:
         argv = notification_argv(title, message, command)
         if not argv:
             return False
-        subprocess.Popen(
+        proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        reap_later(proc)
     except (OSError, ValueError):
         return False
     return True

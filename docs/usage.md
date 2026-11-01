@@ -155,7 +155,8 @@ run's logs), `P` lists recent tasks and [`T`](#tasks) shows those of every
 workspace. `x` sends SIGINT to the target's
 running tasks, then SIGTERM and SIGKILL on further presses. Output is kept in
 the [state directory](configuration.md#state-directory), the last ten tasks per
-bookmark.
+bookmark. Running tasks and completions awaiting notification are kept until they
+finish and are announced, then older records and their output are pruned.
 
 ### Agent actions
 

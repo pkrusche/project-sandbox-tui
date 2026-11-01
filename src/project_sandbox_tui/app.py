@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import os
 import shlex
+import signal
 import subprocess
 import time
 from collections.abc import Callable, Generator, Sequence
@@ -50,6 +51,7 @@ from project_sandbox_tui.config import (
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
+from project_sandbox_tui.processes import reap_later
 from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
@@ -1459,18 +1461,25 @@ class SandboxTUI(App[None]):
 
     @contextlib.contextmanager
     def _suspended(self) -> Generator[None, None, None]:
-        """``App.suspend()`` that always resumes.
+        """``App.suspend()`` that always resumes and keeps Ctrl+C local.
 
         Textual's ``suspend()`` has no try/finally around its ``yield``: an
         exception in the block (e.g. project-sandbox not on PATH) skips
         ``resume_application_mode()`` and leaves the TUI deaf to input.
+
+        asyncio's SIGINT handler cancels the app's main task on the first
+        Ctrl+C. While a child owns the terminal, use ordinary KeyboardInterrupt
+        instead so the caller can wait for the child and return to the TUI.
         """
         error: BaseException | None = None
         with self.suspend():
+            previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
             try:
                 yield
             except BaseException as exc:  # re-raised once the app has resumed
                 error = exc
+            finally:
+                signal.signal(signal.SIGINT, previous_sigint)
         if error is not None:
             raise error
 
@@ -1922,7 +1931,7 @@ class SandboxTUI(App[None]):
                 tokens = launchers.fill_command(self.cfg.ui.editor_command, {"path": str(path)})
                 if "{path}" not in self.cfg.ui.editor_command:
                     tokens.append(str(path))
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     tokens,
                     cwd=path,
                     stdin=subprocess.DEVNULL,
@@ -1930,6 +1939,7 @@ class SandboxTUI(App[None]):
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
+                reap_later(proc)
             except (OSError, ValueError) as exc:
                 self.notify(f"editor failed: {exc}", severity="error")
             return
@@ -1937,6 +1947,8 @@ class SandboxTUI(App[None]):
         try:
             with self._suspended(), terminal.preserved():
                 subprocess.call([*shlex.split(editor), str(path)], cwd=path)
+        except KeyboardInterrupt:
+            pass
         except (OSError, ValueError) as exc:
             self.notify(f"editor failed: {exc}", severity="error")
 

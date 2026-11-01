@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from project_sandbox_tui.config import Config, private_dir, repo_state_dir
+from project_sandbox_tui.processes import reap_later
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
     RunPaths,
@@ -232,7 +233,9 @@ class JobManager:
         # jobs, so it must see the old dict or the new one, never one being filled.
         self.jobs = jobs
         self._missed = {
-            run: n for run, n in self._missed.items() if (j := jobs.get(run[0])) and j.running
+            run: n
+            for run, n in self._missed.items()
+            if (j := jobs.get(run[0])) and j.running and j.started_at == run[1]
         }
         for branch in list(self._stop_stage):
             old, new = previous.get(branch), self.jobs.get(branch)
@@ -262,8 +265,7 @@ class JobManager:
         with self._locked():
             current = self._read_record(job.branch)
             if current is not None and current.started_at == job.started_at:
-                self._record_path(job.branch).unlink(missing_ok=True)
-                self.jobs.pop(job.branch, None)
+                self._forget(job.branch)
 
     # ------------------------------------------------------------ queries
 
@@ -307,15 +309,20 @@ class JobManager:
             paths = self.new_run_paths(spec.branch)
             argv = build_argv(self.cfg, self.repo, spec, paths)
             private_dir(paths.log.parent)
-            with paths.stdout.open("wb") as out:
-                proc = subprocess.Popen(
-                    argv,
-                    cwd=self.repo,
-                    stdin=subprocess.DEVNULL,
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,  # survive the TUI; own process group for cancel()
-                )
+            try:
+                with paths.stdout.open("wb") as out:
+                    proc = subprocess.Popen(
+                        argv,
+                        cwd=self.repo,
+                        stdin=subprocess.DEVNULL,
+                        stdout=out,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,  # survive the TUI; own group for cancel()
+                    )
+            except OSError:
+                paths.stdout.unlink(missing_ok=True)
+                raise
+            self._release_process(spec.branch)
             self._procs[spec.branch] = proc
             job = JobRecord(
                 branch=spec.branch,
@@ -335,14 +342,17 @@ class JobManager:
                 # guarded or adopted. Tear it down if persistence fails.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(proc.pid, signal.SIGTERM)
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    with contextlib.suppress(ProcessLookupError):
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait()
-                self.jobs.pop(spec.branch, None)
+                # The parent may have exited before its children did.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
                 self._procs.pop(spec.branch, None)
+                self.load()  # retain the previous run if its record is still on disk
+                for path in (paths.stdout, paths.log, paths.summary, paths.transcript()):
+                    with contextlib.suppress(OSError):
+                        path.unlink(missing_ok=True)
                 raise
             return job
 
@@ -527,7 +537,7 @@ class JobManager:
             # Saved first: if that fails, the next pass still has the child's
             # return code instead of finding it reaped and calling it orphaned.
             self.save(job)
-            self._procs.pop(job.branch, None)
+            self._release_process(job.branch)
             self._stop_stage.pop(job.branch, None)
             self._stop_last.pop(job.branch, None)
             finished.append(job)
@@ -572,8 +582,14 @@ class JobManager:
     def _forget(self, branch: str) -> None:
         self._record_path(branch).unlink(missing_ok=True)
         self.jobs.pop(branch, None)
+        self._release_process(branch)
         self._stop_stage.pop(branch, None)
         self._stop_last.pop(branch, None)
+        self._missed = {run: n for run, n in self._missed.items() if run[0] != branch}
+
+    def _release_process(self, branch: str) -> None:
+        if proc := self._procs.pop(branch, None):
+            reap_later(proc)
 
     def _cancel(self, branch: str, sessions: dict[str, SessionRecord]) -> str:
         job = self.jobs.get(branch)
@@ -621,13 +637,14 @@ class JobManager:
         cli = runtime_cli(runtime or self.cfg.sandbox.runtime)
         if container and cli:
             try:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     [cli, "stop", container],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
+                reap_later(proc)
             except OSError as exc:
                 return f"{branch}: sent SIGKILL, record forgotten; container stop failed: {exc}"
             return (

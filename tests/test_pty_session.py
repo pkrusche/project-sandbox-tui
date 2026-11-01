@@ -11,6 +11,7 @@ import fcntl
 import json
 import os
 import select
+import shlex
 import signal
 import struct
 import subprocess
@@ -36,8 +37,8 @@ class Tui:
         # dimensions instead, or its small-window layout hides the startup marker.
         env = {key: value for key, value in env.items() if key not in ("COLUMNS", "LINES")}
         self.fd, slave = pty.openpty()
-        self.resize(110, 30)
         try:
+            self.resize(110, 30)
             # pytest/xdist already has threads: never run Python between fork
             # and exec in that process. A fresh interpreter safely acquires the
             # controlling terminal before replacing itself with the real TUI.
@@ -88,11 +89,13 @@ class Tui:
         os.write(self.fd, data)
 
     def close(self) -> None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(self.proc.pid, signal.SIGKILL)  # also stop an interrupted test's agent
-        self.proc.kill()  # also works if startup failed before login_tty created a session
-        self.proc.wait(timeout=5)
-        os.close(self.fd)
+        try:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self.proc.pid, signal.SIGKILL)  # also stop an interrupted test's agent
+            self.proc.kill()  # also works if startup failed before login_tty created a session
+            self.proc.wait(timeout=5)
+        finally:
+            os.close(self.fd)
 
 
 def start_tui(repo: Path, command: str, **env_extra: str) -> Tui:
@@ -170,6 +173,42 @@ def test_tui_recovers_when_sandbox_command_is_missing(repo: Path, tmp_path: Path
         tui.send(b"\r")
         assert tui.wait_for(b"could not start project-sandbox", 10)
         assert_responsive(tui)
+    finally:
+        tui.close()
+
+
+@pytest.mark.parametrize("launch", ["shell", "interactive"])
+@pytest.mark.parametrize("interrupt_at", ["child", "prompt"])
+def test_tui_survives_ctrl_c(repo: Path, launch: str, interrupt_at: str) -> None:
+    script = repo.parent / "interruptible.py"
+    script.write_text(
+        "import sys, time\n"
+        "print('INTERRUPTIBLE-READY', flush=True)\n"
+        + ("time.sleep(60)\n" if interrupt_at == "child" else "")
+        + "sys.exit(3)\n"
+    )
+    command = shlex.join([sys.executable, str(script)])
+    tui = start_tui(repo, command)
+    try:
+        for _ in range(2):  # a previous interrupt must not poison the next session
+            tui.buf.clear()
+            if launch == "shell":
+                tui.send(b":")
+                tui.pump(0.5)  # let the command input mount before typing
+                tui.send(f"!exec {command}".encode())
+            else:
+                tui.send(b"i")
+            tui.pump(0.5)
+            tui.send(b"\r")
+            assert tui.wait_for(b"INTERRUPTIBLE-READY"), tui.buf.decode(errors="replace")
+            if interrupt_at == "child":
+                tui.send(b"\x03")
+            assert tui.wait_for(b"press Enter to return to sbx-tui")
+            tui.send(b"\r" if interrupt_at == "child" else b"\x03")
+            assert_responsive(tui)
+            assert tui.proc.poll() is None
+            tui.send(b"q")  # close help before the next session
+            tui.pump(0.5)
     finally:
         tui.close()
 

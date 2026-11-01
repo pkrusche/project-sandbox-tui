@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
@@ -52,8 +55,72 @@ def run(*args: str, cwd: Path, env_extra: dict[str, str] | None = None) -> str:
 def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # also isolates jj's config
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    runtime = tmp_path / ".runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))  # never the real ~/.codex
+    # XDG alone does not override JJ_CONFIG or ~/.jjconfig.toml.
+    monkeypatch.setenv("JJ_CONFIG", str(tmp_path / "jj.toml"))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def child_processes(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Own every real child, including launches hidden inside UI worker threads.
+
+    Tests may deliberately quit with detached jobs running. Always stop those
+    groups, even on assertion failure and even if the group leader has exited.
+    Capture the real signal functions before tests mock them.
+    """
+    children: list[tuple[subprocess.Popen[Any], bool]] = []
+    init = subprocess.Popen.__init__
+    killpg, kill, waitpid = os.killpg, os.kill, os.waitpid
+    # Container PID 1 is not always an init that reaps orphans. Adopt our
+    # grandchildren on Linux, then wait only for the groups created by this test.
+    # On other supported systems, init collects them normally.
+    prctl = ctypes.CDLL(None, use_errno=True).prctl if sys.platform == "linux" else None
+    was_subreaper = ctypes.c_int()
+    if prctl is not None:
+        assert prctl(37, ctypes.byref(was_subreaper), 0, 0, 0) == 0  # GET_CHILD_SUBREAPER
+        assert prctl(36, 1, 0, 0, 0) == 0  # SET_CHILD_SUBREAPER
+
+    def track(proc: subprocess.Popen[Any], *args: Any, **kwargs: Any) -> None:
+        init(proc, *args, **kwargs)
+        children.append((proc, bool(kwargs.get("start_new_session"))))
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", track)
+    try:
+        yield
+    finally:
+        try:
+            # Signal all children before waiting; one stuck child must not prevent
+            # cleanup of the others. Only detached groups belong wholly to this test.
+            for proc, group in reversed(children):
+                with contextlib.suppress(ProcessLookupError):
+                    if group:
+                        killpg(proc.pid, signal.SIGKILL)
+                    elif proc.poll() is None:
+                        kill(proc.pid, signal.SIGKILL)
+            for proc, _group in children:
+                proc.wait(timeout=5)
+            if prctl is not None:
+                for proc, _group in children:
+                    deadline = time.monotonic() + 5
+                    while True:
+                        try:
+                            pid, _status = waitpid(-proc.pid, os.WNOHANG)
+                        except ChildProcessError:
+                            break
+                        if pid == 0:
+                            # Also covers PTYs that call setsid after Popen.
+                            with contextlib.suppress(ProcessLookupError):
+                                killpg(proc.pid, signal.SIGKILL)
+                            assert time.monotonic() < deadline, f"child group {proc.pid} survived"
+                            time.sleep(0.01)
+        finally:
+            if prctl is not None:
+                assert prctl(36, was_subreaper.value, 0, 0, 0) == 0
 
 
 def jj(repo: Path, *args: str) -> str:
