@@ -130,8 +130,9 @@ Choose a version bump or leave the version unchanged. A bump updates the project
 and lockfile and records a Git commit or jj change, then stops. Move the jj
 `main` bookmark to that change if needed, push main, and rerun the script.
 It runs the locked install, Ruff lint and formatting, ty, and `scripts/test.sh`,
-then asks you to confirm the real container smoke test described above was run
-for that commit. It builds the sdist and wheel and checks the installed CLI and
+then runs the real container smoke test above through `scripts/e2e-test.sh`, so
+project-sandbox and a running container runtime are required (set
+`SBX_E2E_RUNTIME` to choose the runtime). It builds the sdist and wheel and checks the installed CLI and
 application import in a separate environment before creating a GitHub release
 at the verified commit. GitHub release creation, TestPyPI, and PyPI each require
 confirmation; registry tokens are read without echo and passed only to uv.

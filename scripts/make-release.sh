@@ -9,11 +9,13 @@ if [[ $# -gt 0 ]]; then
         --help|-h)
             cat <<'HELP'
 Usage: scripts/make-release.sh
-Check clean, pushed main; optionally bump and commit the version; run checks;
-confirm container smoke testing; build and verify artifacts; create a GitHub release;
-publish to TestPyPI and PyPI with separate confirmations and hidden token prompts.
+Check clean, pushed main; optionally bump and commit the version; run checks and
+the real container smoke test (scripts/e2e-test.sh; SBX_E2E_RUNTIME selects the
+runtime); build and verify artifacts; create a GitHub release; publish to TestPyPI
+and PyPI with separate confirmations and hidden token prompts.
 Resume by running again. Progress and artifacts live in .release-status/ and are
-scoped to the release version and source commit. Requires uv, git, jj, and gh.
+scoped to the release version and source commit. Requires uv, git, jj, gh,
+project-sandbox, and a running container runtime.
 HELP
             exit 0 ;;
         *) die "Unknown argument: $*" ;;
@@ -91,9 +93,8 @@ if ! done_step checks; then
     mark checks
 fi
 if ! done_step smoke; then
-    echo "See docs/development.md for the real container smoke test."
-    confirm "Have you run scripts/test.sh -n 0 tests/test_container_smoke.py --container-smoke for this commit?" \
-        || die "Run the container smoke test before releasing."
+    echo "Running the real container smoke test; see docs/development.md."
+    scripts/e2e-test.sh || die "Container smoke test failed; fix it before releasing."
     mark smoke
 fi
 ARTIFACTS="$STATE/dist"

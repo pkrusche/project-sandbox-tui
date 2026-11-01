@@ -189,6 +189,11 @@ def build_release_repo(path: Path) -> None:
     shutil.copy2(ROOT / "scripts/make-release.sh", path / "scripts/make-release.sh")
     (path / "scripts/test.sh").write_text("#!/bin/sh\nexit 0\n")
     (path / "scripts/test.sh").chmod(0o755)
+    (path / "scripts/e2e-test.sh").write_text(
+        '#!/bin/sh\necho \'["e2e", [], null]\' >> "$RELEASE_TEST_LOG"\n'
+        'exit "${RELEASE_TEST_E2E_EXIT:-0}"\n'
+    )
+    (path / "scripts/e2e-test.sh").chmod(0o755)
     (path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
     (path / "uv.lock").write_text("lock\n")
     (path / ".gitignore").write_text(".release-status/\n")
@@ -284,7 +289,7 @@ def test_release_resume_targets_verified_commit_and_keeps_git_dir_scoped(
             capture_output=True,
         )
         path = workspace
-    first = run_release(path, "\ny\ny\nn\n")
+    first = run_release(path, "\ny\nn\n")
     assert first.returncode == 0, first.stdout + first.stderr
     state = path / ".release-status" / f"1.0.0-{commit}"
     assert (state / "github").exists()
@@ -293,6 +298,7 @@ def test_release_resume_targets_verified_commit_and_keeps_git_dir_scoped(
     assert second.returncode == 0, second.stdout + second.stderr
     calls = release_calls(path)
     assert sum(args[0] == "build" for name, args, _ in calls if name == "uv") == 1
+    assert sum(name == "e2e" for name, _, _ in calls) == 1
     create = [args for name, args, _ in calls if name == "gh" and args[0] == "release"]
     assert len(create) == 1
     assert create[0][create[0].index("--target") + 1] == commit
@@ -314,7 +320,7 @@ def test_release_rejects_dirty_source_and_changed_artifacts(release_repo: Path) 
     result = run_release(path)
     assert result.returncode != 0 and "clean" in result.stderr
     (path / "untracked").unlink()
-    result = run_release(path, "\ny\ny\nn\n")
+    result = run_release(path, "\ny\nn\n")
     assert result.returncode == 0, result.stdout + result.stderr
     wheel = next((path / ".release-status").glob("*/dist/*.whl"))
     wheel.write_text("changed")
@@ -326,20 +332,25 @@ def test_release_rejects_dirty_source_and_changed_artifacts(release_repo: Path) 
 def test_release_rejects_existing_remote_tag(release_repo: Path) -> None:
     git(release_repo, "tag", "v1.0.0")
     git(release_repo, "push", "origin", "v1.0.0")
-    result = run_release(release_repo, "\ny\n")
+    result = run_release(release_repo, "\n")
     assert result.returncode != 0 and "already exists" in result.stderr
     assert not any(name == "gh" for name, _, _ in release_calls(release_repo))
 
 
-def test_release_does_not_reuse_checks_for_a_different_commit(release_repo: Path) -> None:
-    first = run_release(release_repo, "\ny\nn\n")
+def test_release_does_not_reuse_checks_for_a_different_commit(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = run_release(release_repo, "\nn\n")
     assert first.returncode == 0, first.stdout + first.stderr
     (release_repo / "new-source").write_text("new commit")
     git(release_repo, "add", "new-source")
     git(release_repo, "commit", "-m", "changed source")
     git(release_repo, "push", "origin", "main")
-    # Declining the smoke confirmation on the new commit stops before building.
-    second = run_release(release_repo, "\nn\n")
-    assert second.returncode != 0 and "Run the container smoke test" in second.stderr
+    # A failing smoke test on the new commit stops before building.
+    monkeypatch.setenv("RELEASE_TEST_E2E_EXIT", "1")
+    second = run_release(release_repo, "\n")
+    assert second.returncode != 0 and "Container smoke test failed" in second.stderr
     calls = release_calls(release_repo)
     assert sum(args[0] == "sync" for name, args, _ in calls if name == "uv") == 2
+    assert sum(name == "e2e" for name, _, _ in calls) == 2
+    assert sum(args[0] == "build" for name, args, _ in calls if name == "uv") == 1
