@@ -3,3 +3,37 @@
 build = "python-uv"                  # python-uv | rust-cargo | node-npm
 keep_workspace = true                  # -> --keep-workspace
 default_branch_start = "main"        # start revision for new branches
+
+[actions.review]
+prompt = '''
+Review {bookmark} against {main}. Follow AGENTS.md and docs/development.md.
+Look for correctness bugs, regressions, and missing test coverage in the branch's
+changes. Report actionable findings with file and line references, ordered by
+severity, and note any remaining validation gaps. Do not modify files.
+'''
+
+[actions.check]
+prompt = '''
+Run the tests and development checks for {bookmark}, following AGENTS.md and
+docs/development.md. Run uv sync --locked, scripts/test.sh, uv run ruff check .,
+uv run ruff format --check ., uv run ty check, and uv build. Report the result
+of each command and summarize failures or missing prerequisites. Do not modify
+source files or update dependencies.
+'''
+
+[actions.e2e]
+prompt = '''
+Run the real-container end-to-end smoke test for {bookmark}, following AGENTS.md
+and the real container smoke test section of docs/development.md. Check that
+project-sandbox, jj, and a supported container runtime are available, then run:
+scripts/test.sh -n 0 -v -s tests/test_container_smoke.py --container-smoke --container-runtime auto
+Follow the documented temporary-directory isolation rules. Report the outcome
+and any failure log paths; if prerequisites are unavailable, report the blocker
+without claiming the test passed. Do not modify source files.
+'''
+timeout = 3600
+
+[leader]
+rv = "review"
+rc = "check"
+re = "e2e"

@@ -749,6 +749,10 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
 
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].status == "completed")
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
+        # Refresh can yield after notification, before it redraws the table.
+        await wait_until(
+            pilot, lambda: any(r[1] == "feature/x" and r[0] == "✓" for r in row_texts(app))
+        )
         row = next(r for r in row_texts(app) if r[1] == "feature/x")
         assert row[0] == "✓"
         assert row[6].startswith("completed · ") and row[6].endswith(" ago")
@@ -1028,7 +1032,8 @@ def test_jj_working_copy_alongside_bookmarks(
         assert "--branch=main" in argv
 
         app.jobs.cancel("@", app.sessions)
-        await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
+        # A run that finished during the form interaction is forgotten by cancel.
+        await wait_until(pilot, lambda: "@" not in app.jobs.jobs or not app.jobs.jobs["@"].running)
 
     run_app(jj_repo, fake_cfg(), scenario)
 

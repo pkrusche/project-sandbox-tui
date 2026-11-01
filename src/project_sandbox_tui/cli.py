@@ -9,7 +9,7 @@ import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 
-from project_sandbox_tui import __version__
+from project_sandbox_tui import __version__, initialization
 from project_sandbox_tui import config as config_mod
 from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.config import ConfigError
@@ -31,8 +31,8 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--init",
         action="store_true",
-        help="write a commented .project-sandbox-tui.toml into the repo (and the global "
-        "config if missing), download the model list if there is none yet, then exit",
+        help="detect the project type and write missing config templates, install a "
+        "gitignored configuration skill, download the model list if missing, then exit",
     )
     p.add_argument(
         "--update-models",
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         gpath = args.config or config_mod.global_config_path()
         for path, template in (
             (gpath, config_mod.GLOBAL_TEMPLATE),
-            (config_mod.project_config_path(repo), config_mod.PROJECT_TEMPLATE),
+            (config_mod.project_config_path(repo), initialization.project_template(repo)),
         ):
             try:
                 written = config_mod.write_template(path, template)
@@ -152,6 +152,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"sbx-tui: could not write {path}: {exc}", file=sys.stderr)
                 return 2
             print(f"{'wrote' if written else 'exists'}: {path}")
+        try:
+            template = initialization.skill_template()
+            updated = initialization.ignore_skills(repo)
+            print(f"{'updated' if updated else 'exists'}: {repo / '.gitignore'}")
+            for directory in initialization.SKILL_DIRS:
+                path = repo / directory / "SKILL.md"
+                written = config_mod.write_template(path, template)
+                print(f"{'wrote' if written else 'exists'}: {path}")
+        except (OSError, ValueError) as exc:
+            print(f"sbx-tui: could not install configuration skill: {exc}", file=sys.stderr)
+            return 2
         if models_mod.load_store() is None:
             # not fatal: the launch form works without it
             _update_models(models_mod.DEFAULT_SOURCE, required=False)
