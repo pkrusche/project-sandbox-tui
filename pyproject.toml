@@ -67,6 +67,8 @@ include = [
     "/tests",
     "/docs",
     "/scripts/test.sh",
+    "/scripts/make-release.sh",
+    "/scripts/update-pins.py",
     "/pyproject.toml",
     "/README.md",
     "/LICENSE",

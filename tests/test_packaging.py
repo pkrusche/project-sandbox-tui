@@ -24,6 +24,7 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         ".devcontainer/credentials.json",
         ".project-sandbox/session.json",
         ".project-sandbox-tui.toml",
+        ".release-status/1.0.0-deadbeef/hashes",
         "private-notes.txt",
     ):
         path = source / name
@@ -56,6 +57,8 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         assert Path("src/project_sandbox_tui/cli.py") in names
         assert Path("src/project_sandbox_tui/skills/sbx-tui-config/SKILL.md") in names
         assert Path("scripts/test.sh") in names
+        assert Path("scripts/make-release.sh") in names
+        assert Path("scripts/update-pins.py") in names
         assert Path("LICENSE") in names
     with zipfile.ZipFile(
         tmp_path / "dist" / f"project_sandbox_tui-{version}-py3-none-any.whl"

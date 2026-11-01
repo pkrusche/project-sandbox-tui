@@ -86,6 +86,22 @@ for the underlying sandbox behavior.
 
 ## Dependency updates
 
+Run `uv run scripts/update-pins.py` to review updates interactively, or add
+`--dry-run` to list candidates without changing files. `--yes` accepts all
+updates. Stable releases must be at least 24 hours old by default;
+`--min-age-hours HOURS` changes that threshold. The script checks exact Python
+pins, registry packages in `uv.lock`, CI's uv version, action SHAs and version
+comments, jj and its archive checksum, and the project-sandbox smoke-test pin
+(including its documentation). Optional `GH_TOKEN`/`GITHUB_TOKEN` authentication
+avoids GitHub's anonymous API rate limit.
+
+Lockfile updates retain the project's dependency bounds, so the resolver may
+select an older compatible release than the displayed upstream candidate, or
+leave a package unchanged. The release-age cutoff also applies during resolution.
+Review the diff and run the checks above after updates. The script does not
+change runtime compatibility bounds or `[tool.uv] required-version`; check that
+the selected CI uv version remains compatible when changing that requirement.
+
 - Runtime bounds in `pyproject.toml` exclude untested major versions:
   `uv tool install` ignores the lockfile.
 - Ruff and ty are pinned exactly; `uv.lock` locks the rest. Run `uv lock` and
@@ -93,5 +109,33 @@ for the underlying sandbox behavior.
 - CI pins uv (`UV_VERSION`; keep `[tool.uv] required-version` compatible),
   actions by SHA, and jj by `JJ_VERSION` plus `JJ_SHA256` (update together).
 - [Dependabot](../.github/dependabot.yml) proposes monthly action and lockfile updates.
+
+## Releases
+
+Run `scripts/make-release.sh` from a checkout with uv, git, jj, and an authenticated
+GitHub CLI (`gh`) on PATH. For Git, start on clean `main` matching `origin/main`.
+For jj (including non-colocated workspaces), start with an empty working copy
+whose parent is immutable `main` and `main@origin`. The script also checks the
+live remote main commit.
+
+Choose a version bump or leave the version unchanged. A bump updates the project
+and lockfile and records a Git commit or jj change, then stops. Move the jj
+`main` bookmark to that change if needed, push main, and rerun the script.
+It runs the locked install, Ruff lint and formatting, ty, and `scripts/test.sh`,
+then asks you to confirm the real container smoke test described above was run
+for that commit. It builds the sdist and wheel and checks the installed CLI and
+application import in a separate environment before creating a GitHub release
+at the verified commit. GitHub release creation, TestPyPI, and PyPI each require
+confirmation; registry tokens are read without echo and passed only to uv.
+
+Progress and artifacts are kept under `.release-status/<version>-<commit>/`.
+Rerun to resume after a declined prompt or failed step; completed steps are
+skipped only for the same version and commit. Artifact hashes are checked before
+publishing, and only that release's wheel and sdist are uploaded. Existing remote
+tags/releases are rejected rather than overwritten. If a remote operation succeeds
+but its local progress marker is not saved, inspect the remote result before
+reconciling the corresponding marker; blindly restarting can attempt a duplicate
+upload. Keep the state directory until the release is complete. It is ignored by
+version control and excluded from distribution archives.
 
 See [architecture](architecture.md) for modules and job handling.

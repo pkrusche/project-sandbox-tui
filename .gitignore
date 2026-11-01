@@ -8,5 +8,6 @@ build/
 .ruff_cache/
 .mypy_cache/
 .project-sandbox/
+.release-status/
 # project-sandbox — do not commit agent secrets
 .devcontainer/
