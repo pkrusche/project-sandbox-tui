@@ -47,10 +47,18 @@ Install `project-sandbox` ≥ 0.2.2 and jj ≥ 0.46, start Docker, Podman, or Ap
 Containers, then run:
 
 ```sh
-uv tool install project-sandbox==0.2.2  # version used by the manual CI smoke job
+uv tool install project-sandbox==0.3.0  # version used by the manual CI smoke job
 scripts/test.sh -n 0 -v -s tests/test_container_smoke.py \
   --container-smoke --container-runtime docker
 ```
+
+Or let `scripts/e2e-test.sh` check jj and project-sandbox against the minimums
+in `doctor.py`, pick the first responding runtime (Apple container on macOS,
+then Docker, then Podman), and run the command above. `--runtime NAME` (or
+`SBX_E2E_RUNTIME`) overrides detection, `--install` installs the CI-pinned
+project-sandbox when it is missing or too old, `--command CMD` tests another
+project-sandbox command, and arguments after `--` go to pytest. For Apple
+Containers it creates the `--basetemp` directory described below.
 
 Use `--container-runtime podman`, `apple-container`, or `auto` as appropriate.
 `--container-command 'uv run --project /path/to/project-sandbox project-sandbox'`
@@ -81,7 +89,7 @@ Downloaded base images and shared build-cache layers are retained.
 In GitHub Actions, manually run **CI** with **container_smoke** enabled to run
 the Docker smoke on Python 3.12. This does not add container builds to normal
 pushes or pull requests. See the upstream
-[bash-agent workflow](https://github.com/pkrusche/project-sandbox/blob/v0.2.2/scripts/e2e-jj-workflow.sh)
+[bash-agent workflow](https://github.com/pkrusche/project-sandbox/blob/v0.3.0/scripts/e2e-jj-workflow.sh)
 for the underlying sandbox behavior.
 
 ## Dependency updates

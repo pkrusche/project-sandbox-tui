@@ -45,8 +45,8 @@ sbx-tui = "project_sandbox_tui.cli:main"
 dev = [
     "pytest>=9.1,<10",
     "pytest-xdist>=3.8,<4",  # parallel runs: uv run pytest -n auto
-    "ruff==0.17.1",
-    "ty==0.0.90",
+    "ruff==0.17.3",
+    "ty==0.0.95",
 ]
 
 [build-system]
