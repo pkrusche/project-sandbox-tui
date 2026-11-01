@@ -136,7 +136,7 @@ def assert_responsive(tui: Tui) -> None:
 def test_tui_takes_keys_after_interactive_session(repo: Path, mode: str, exit_code: str) -> None:
     tui = start_tui(repo, f"{sys.executable} {AGENT}", FAKE_MODE=mode, FAKE_EXIT=exit_code)
     try:
-        tui.send(b"i")
+        tui.send(b"ji")
         tui.pump(1.0)
         tui.send(b"\r")  # launch from the form
         assert tui.wait_for(b"FAKE-AGENT-READY"), "agent did not start"
@@ -168,7 +168,7 @@ def test_tui_responds_to_pty_resize(repo: Path) -> None:
 def test_tui_recovers_when_sandbox_command_is_missing(repo: Path, tmp_path: Path) -> None:
     tui = start_tui(repo, str(tmp_path / "no-such-project-sandbox"))
     try:
-        tui.send(b"i")
+        tui.send(b"ji")
         tui.pump(1.0)
         tui.send(b"\r")
         assert tui.wait_for(b"could not start project-sandbox", 10)
@@ -197,7 +197,7 @@ def test_tui_survives_ctrl_c(repo: Path, launch: str, interrupt_at: str) -> None
                 tui.pump(0.5)  # let the command input mount before typing
                 tui.send(f"!exec {command}".encode())
             else:
-                tui.send(b"i")
+                tui.send(b"ggji")
             tui.pump(0.5)
             tui.send(b"\r")
             assert tui.wait_for(b"INTERRUPTIBLE-READY"), tui.buf.decode(errors="replace")

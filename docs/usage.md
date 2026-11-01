@@ -28,9 +28,11 @@ See [configuration](configuration.md), [models](models.md) and
 ## Bookmark list
 
 `@ working copy` appears first, then bookmarks in [history](#bookmark-history)
-order. The cheat-sheet collapses to one line in small terminals. In narrow ones
-the header shows the repository's name instead of its path, then abbreviated
-counts, and the subject column narrows to keep the status in view.
+order. The main bookmark and `@` are greyed out: create a bookmark with `n`
+before starting a session. The cheat-sheet collapses to one line in small
+terminals. In narrow ones the header shows the repository's name instead of its
+path, then abbreviated counts, and the subject column narrows to keep the status
+in view.
 
 The `vs main` heading names the baseline: `project.main_branch`, or the first
 existing bookmark main/master/trunk; below 80 columns it is just `main`. Counts
@@ -55,7 +57,7 @@ diffs or the comparison is unavailable. Counts follow the saved marks from
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
 | `/` | Filter (`enter` keeps it, `esc` clears) |
 | `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
-| `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout; asks first on the main bookmark |
+| `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout; main and `@` require a new bookmark |
 | `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark) or running [tasks](#tasks): repeat to cancel harder, a third time to forget a run; clears a finished status at once; asks first before signalling several |
 | `l` / `enter` | [Logs](#log-viewer) and the latest task output, or run details while a bookmark has neither |
 | `P` | Last run details (agent, times, IDs, log, command line), history, recent tasks and the interactive command |
@@ -219,8 +221,9 @@ An [`[actions]`](configuration.md#agent-actions) entry names a prompt: `:review`
 starts it as an unsupervised sandbox run on each target, like `r` with the
 prompt filled in. Words after the name are appended to the prompt, e.g.
 `:review focus on error handling`. Targets already running a session are
-skipped. sbx-tui asks first for several targets or the main bookmark. Action
-runs use the launch defaults unless the action sets its own agent, model,
+skipped, as are the protected main bookmark and `@`. sbx-tui asks first for
+several runnable targets. Action runs use the launch defaults unless the action
+sets its own agent, model,
 effort or timeout. They don't change the remembered defaults or the prompt
 history.
 

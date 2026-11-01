@@ -340,7 +340,6 @@ def test_each_rejects_builtins(repo: Path, fake_cfg: Callable[..., Config]) -> N
 
 def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     from project_sandbox_tui.config import Action, LastUsed
-    from project_sandbox_tui.screens.dialogs import ConfirmScreen
     from tests.test_app import wait_until
 
     cfg = fake_cfg()
@@ -349,21 +348,20 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
     cfg.leader = {"rc": "chores sleep:1"}
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        mark(app, "@", "feature/x")
+        mark(app, "@", "main", "feature/x")
         await type_line(pilot, "chores sleep:0.2")
         await pilot.press("enter")
         await pilot.pause()
-        screen = app.screen
-        assert (
-            isinstance(screen, ConfirmScreen)
-            and "start :chores on 2 bookmarks?" in screen.title_text
-        )
-        await pilot.press("y")
-        await wait_until(pilot, lambda: {"@", "feature/x"} <= set(app.jobs.jobs))
+        assert app.screen is app.main
+        await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+        assert set(app.jobs.jobs) == {"feature/x"}
+        for target in ("@", "main"):
+            assert any(
+                f"skipped: {target} is protected; create a bookmark" in m for m in messages(app)
+            )
         job = app.jobs.jobs["feature/x"]
         assert job.mode == "background" and (job.spec.agent, job.spec.effort) == ("bash", "low")
         assert job.spec.prompt_text == "chores on feature/x vs main\n\nsleep:0.2\n"
-        assert app.jobs.jobs["@"].spec.prompt_text.startswith("chores on @ vs main")
         assert app.selection() == []  # cleared, as after a merge
         assert app.prompt_history.newest_first() == []  # actions are not typed prompts
         assert LastUsed.load(repo).agent == ""  # nor launch-form choices
@@ -381,13 +379,13 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
         await pilot.pause()
         assert any("skipped: feature/x already has" in m for m in messages(app))
 
-        # The main bookmark always asks.
+        # The main bookmark is blocked even when it is the only target.
         await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
         app.table.move_cursor(row=names.index("main"))
         await pilot.press("backslash", "r", "c")
         await pilot.pause()
-        assert isinstance(app.screen, ConfirmScreen) and "main bookmark" in app.screen.body
-        await pilot.press("n")
+        assert app.screen is app.main
+        assert any("main is protected; create a bookmark" in m for m in messages(app))
         assert "main" not in app.jobs.jobs
 
     run_app(repo, cfg, scenario)

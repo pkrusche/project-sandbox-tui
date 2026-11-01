@@ -50,7 +50,7 @@ class Branch:
     timestamp: int  # committer time (unix seconds), 0 if unknown
     is_current: bool = False  # on the working-copy commit or its parent
     # The pseudo-branch for the working copy (``@``), always listed first;
-    # sessions on it run in the repository's own workspace.
+    # external sessions on it use the repository's own workspace.
     working_copy: bool = False
     comparison: MainComparison | None = None
     commit: str = ""  # full commit id; empty for a conflicted bookmark
@@ -666,7 +666,7 @@ class JjBackend:
 
     def default_start(self) -> str:
         names = {b.name for b in self.list_branches() if not b.working_copy}
-        # With no bookmarks, sessions have been working in @: bookmark that.
+        # With no bookmarks, use the working copy as the first bookmark's base.
         return main_branch(names) or ("@-" if names else "@")
 
 
@@ -675,6 +675,16 @@ def main_branch(names: Collection[str], configured: str = "") -> str | None:
     if configured:
         return configured if configured in names else None
     return next((c for c in ("main", "master", "trunk") if c in names), None)
+
+
+def session_target_error(name: str, names: Collection[str], configured: str = "") -> str:
+    """Explain why a revision is protected from sandbox sessions, if it is."""
+    # Include a new target: creating the first main/master/trunk bookmark must
+    # not bypass the protection just because it does not exist yet.
+    main = main_branch([*names, name], configured) or configured or "main"
+    if name in (WORKING_COPY, main):
+        return f"{name} is protected; create a bookmark for changes before starting a session"
+    return ""
 
 
 def detect(path: Path) -> JjBackend:

@@ -2,7 +2,7 @@
 
 ## One sandbox per bookmark
 
-Bookmark sessions use separate jj workspaces; `@` uses the repository itself.
+Bookmark sessions use separate jj workspaces.
 A workspace is busy while any TUI instance or project-sandbox session uses it,
 including sessions started from a shell.
 
@@ -11,8 +11,10 @@ at project-sandbox's location, on a new change on top of the bookmark; later
 sessions reuse it with `keep_workspace`. Rows with a starting session wait for
 the session's own workspace.
 
-A background run on the main bookmark asks for confirmation first: its changes
-land on main unreviewed. Declining keeps the prompt as a draft.
+The main bookmark and `@` are greyed out and protected from sessions, including
+interactive runs, background runs and configured agent actions. Press `n` to
+create a bookmark for changes, then start a session there. Main follows
+`project.main_branch`, or the first existing bookmark main/master/trunk.
 
 Background jobs survive quitting; restarting re-adopts them and announces any
 that finished. Quitting (`q` or `ctrl+q`) while jobs or sessions are running

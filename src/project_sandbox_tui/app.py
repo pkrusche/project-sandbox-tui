@@ -87,6 +87,7 @@ from project_sandbox_tui.vcs import (
     StaleWorkingCopyError,
     VcsError,
     main_branch,
+    session_target_error,
     sort_branches,
     workspace_path,
 )
@@ -129,14 +130,15 @@ class Row:
     graph: tuple[str, int] | None = None  # history graph line and its node position
     review: tuple[int, int] | None = None  # reviewed files, total files against main
     tasks: list[TaskRecord] = dataclasses.field(default_factory=list)  # host tasks, newest first
+    protected: bool = False
 
     def name_cell(self, selected: bool = False) -> Text:
         b = self.branch
         if selected:
-            return Text(f"+ {b.label}", style="bold magenta")
-        name = Text(b.label, style="bold" if b.is_current else "")
+            return Text(f"+ {b.label}", style="dim" if self.protected else "bold magenta")
+        name = Text(b.label, style="dim" if self.protected else "bold" if b.is_current else "")
         if b.is_current:
-            name.append(" ●", style="green")
+            name.append(" ●", style="dim" if self.protected else "green")
         return name
 
     def status(self) -> tuple[str, str, str]:
@@ -750,6 +752,7 @@ class SandboxTUI(App[None]):
                 lines.get(n),
                 self._reviews.get(n),
                 self.tasks.for_bookmark(n),
+                protected=bool(self._session_target_error(n)),
             )
             for n in names
         ]
@@ -1249,6 +1252,9 @@ class SandboxTUI(App[None]):
         name = selected[0] if selected else self._require_branch()  # one mark wins, as for f
         if name is None:
             return
+        if reason := self._session_target_error(name):
+            self.notify(reason, severity="warning")
+            return
         reason = self.jobs.busy_reason(name, self.sessions)
         if reason:
             self.notify(reason, severity="warning")
@@ -1352,29 +1358,8 @@ class SandboxTUI(App[None]):
             self.call_after_refresh(self._integrate, spec, draft_key)
             return
 
-        def start() -> None:
-            self.call_after_refresh(
-                self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
-            )
-
-        if spec.mode != "background" or spec.branch != self.main_name():
-            start()
-            return
-
-        def decided(confirmed: bool | None) -> None:
-            if confirmed:
-                start()
-            elif draft_key in self._drafts:
-                self.notify("prompt kept as a draft: r brings it back")
-
-        body = (
-            f"{spec.branch} is the main bookmark. The agent's changes land on it "
-            "unsupervised, with no separate bookmark to review first.\n\n"
-            "Run it on a new bookmark instead to review the diff (=) and "
-            "fast-forward main (f) later."
-        )
-        self.push_screen(
-            ConfirmScreen(f"start an unsupervised run on {spec.branch}?", body, "start"), decided
+        self.call_after_refresh(
+            self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
         )
 
     @work(group="octopus")  # not exclusive: see _create_branch
@@ -1386,6 +1371,10 @@ class SandboxTUI(App[None]):
         try:
             async with self._history_lock:
                 branches = await asyncio.to_thread(self.backend.list_branches)
+                if reason := session_target_error(
+                    spec.branch, [b.name for b in branches], self.cfg.project.main_branch
+                ):
+                    raise VcsError(reason)
                 octopus.validate(plan, {b.name for b in branches if not b.working_copy})
                 reason = self.jobs.busy_reason(spec.branch, self.sessions)
                 if reason:
@@ -1426,6 +1415,12 @@ class SandboxTUI(App[None]):
         await self.refresh_data()  # the result branch exists now
         self._start_launch(spec, history_text=typed, banner=state.report(), draft_key=draft_key)
 
+    def _session_target_error(self, name: str) -> str:
+        reason = session_target_error(
+            name, [b.name for b in self.branches], self.cfg.project.main_branch
+        )
+        return f"{reason} (n)" if reason else ""
+
     def _start_launch(
         self,
         spec: LaunchSpec,
@@ -1442,6 +1437,8 @@ class SandboxTUI(App[None]):
             # Bookmarks and external sessions may have changed while the
             # launch form was open. Recheck immediately before starting.
             self.branches = sort_branches(self.backend.list_branches())
+            if reason := self._session_target_error(spec.branch):
+                raise VcsError(reason)
             if new_branch_start is not None:
                 known = {b.name for b in self.branches if not b.working_copy}
                 since = time.time()
@@ -2463,7 +2460,7 @@ class SandboxTUI(App[None]):
             return
         idle, busy = [], []
         for name in targets:
-            reason = self.jobs.busy_reason(name, self.sessions)
+            reason = self._session_target_error(name) or self.jobs.busy_reason(name, self.sessions)
             (busy if reason else idle).append(reason or name)
         for reason in busy:
             self.notify(f"skipped: {reason}", severity="warning")
@@ -2495,12 +2492,7 @@ class SandboxTUI(App[None]):
                 self.call_after_refresh(self._start_launch, spec, remember_defaults=False)
 
         body = f"Each starts :{command.action} as an unsupervised {specs[0].label()} run."
-        if main in idle:
-            body += (
-                f"\n\n{main} is the main bookmark: the agent's changes land on it "
-                "with no separate bookmark to review first."
-            )
-        if len(idle) == 1 and main not in idle:
+        if len(idle) == 1:
             go()
             return
         title = f"start :{command.action} on {len(idle)} bookmark{'s' * (len(idle) != 1)}?"

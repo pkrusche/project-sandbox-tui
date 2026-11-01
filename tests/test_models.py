@@ -493,7 +493,7 @@ def run_form(repo: Path, cfg: Config, check: Any, size: tuple[int, int] = (120, 
     async def scenario() -> None:
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
-            await pilot.press("i")
+            await pilot.press("j", "i")  # feature/x: sessions need a change bookmark
             form = app.screen
             assert isinstance(form, LaunchScreen)
             await check(form, pilot)

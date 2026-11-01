@@ -685,6 +685,7 @@ def test_launch_inputs_remain_visible_when_focused(
     repo: Path, fake_cfg: Callable[..., Config], mode: str, multiple: bool
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         if multiple:
             await pilot.press("v", "G")
         await pilot.press(mode)
@@ -874,6 +875,7 @@ def test_quit_confirms_while_runs_continue(
 
 def test_launch_rejects_model_name_with_spaces(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("i")
         form = app.screen
         assert isinstance(form, LaunchScreen)
@@ -893,6 +895,7 @@ def test_launch_form_keys_do_not_trigger_list_actions(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("i")
         assert isinstance(app.screen, LaunchScreen)
         await pilot.press("q", "r", "n")  # on the agent CycleField: no quit / no new form
@@ -905,6 +908,7 @@ def test_launch_form_keys_do_not_trigger_list_actions(
 
 def test_missing_image_config_is_reported(repo: Path) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
@@ -912,7 +916,7 @@ def test_missing_image_config_is_reported(repo: Path) -> None:
         form.query_one("#prompt", TextArea).text = "go"
         await pilot.press("ctrl+enter")
         await pilot.pause(0.1)
-        assert "@" not in app.jobs.jobs
+        assert "feature/x" not in app.jobs.jobs
 
     run_app(repo, Config(), scenario)
     assert LastUsed.load(repo).agent == ""  # failed launch did not become the default
@@ -943,6 +947,7 @@ def test_enter_does_not_launch_unsupervised_run(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
@@ -960,28 +965,55 @@ def test_enter_does_not_launch_unsupervised_run(
     run_app(repo, fake_cfg(), scenario)
 
 
-def test_unsupervised_run_on_main_asks_first(repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        app.marked = ["main"]
-        await pilot.press("r")
-        form = app.screen
-        assert isinstance(form, LaunchScreen)
-        form.query_one("#prompt", TextArea).text = "exit:0"
-        await pilot.press("ctrl+s")
-        assert isinstance(app.screen, ConfirmScreen)
-        assert "main is the main bookmark" in app.screen.body
-        await pilot.press("n")  # declined: nothing starts, the prompt is kept
-        await pilot.pause()
-        assert app.screen is app.main and "main" not in app.jobs.jobs
-        assert app._drafts == {("main",): "exit:0"}
+@pytest.mark.parametrize("key", ["r", "i"])
+@pytest.mark.parametrize("target", ["@", "main", "master", "release"])
+def test_protected_revisions_reject_sessions(
+    repo: Path, fake_cfg: Callable[..., Config], key: str, target: str
+) -> None:
+    if target in ("master", "release"):
+        jj(repo, "bookmark", "rename", "main", target)
+    cfg = fake_cfg(main_branch="release" if target == "release" else "")
 
-        await pilot.press("r")
-        form = app.screen
-        assert isinstance(form, LaunchScreen)
-        assert form.query_one("#prompt", TextArea).text == "exit:0"
-        await pilot.press("ctrl+s", "y")
-        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
-        assert app._drafts == {}
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        rows = {r.branch.name: r for r in app.visible_rows()}
+        assert rows[target].name_cell().style == "dim"
+        assert rows[target].name_cell(selected=True).style == "dim"
+        assert rows["feature/x"].name_cell().style != "dim"
+        # A mark takes precedence over the cursor on an ordinary bookmark.
+        app.table.move_cursor(row=list(rows).index("feature/x"))
+        app.marked = [target]
+        await pilot.press(key)
+        assert app.screen is app.main and not app.jobs.jobs
+        assert any(
+            f"{target} is protected; create a bookmark" in str(n.message)
+            for n in app._notifications
+        )
+        app.clear_branch_selection()
+        app.table.move_cursor(row=list(rows).index(target))
+        await pilot.press(key)
+        assert app.screen is app.main and not app.jobs.jobs
+
+    run_app(repo, cfg, scenario)
+
+
+@pytest.mark.parametrize("target", ["@", "main", "feature/x"])
+@pytest.mark.parametrize("mode", ["background", "interactive"])
+def test_launch_rechecks_protected_target(
+    repo: Path, fake_cfg: Callable[..., Config], target: str, mode: str
+) -> None:
+    from project_sandbox_tui.sandbox import LaunchSpec, Mode
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j", "r")
+        assert isinstance(app.screen, LaunchScreen)
+        await pilot.press("escape")
+        if target == "feature/x":
+            app.cfg.project.main_branch = target  # config changed after opening the form
+        app._start_launch(LaunchSpec(target, "bash", mode=cast(Mode, mode), prompt_text="exit:0"))
+        await pilot.pause()
+        assert not app.jobs.jobs
+        assert any(f"{target} is protected" in str(n.message) for n in app._notifications)
+        assert LastUsed.load(repo).agent == ""
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -990,13 +1022,16 @@ def test_unsupervised_run_launches_with_ctrl_s_or_button(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         form.query_one("#prompt", TextArea).text = "sleep:0.1"
         await pilot.click("#launch")
         assert not isinstance(app.screen, LaunchScreen)
-        await wait_until(pilot, lambda: "@" in app.jobs.jobs and not app.jobs.jobs["@"].running)
+        await wait_until(
+            pilot, lambda: "feature/x" in app.jobs.jobs and not app.jobs.jobs["feature/x"].running
+        )
 
         await pilot.press("r")
         form = app.screen
@@ -1016,13 +1051,14 @@ def test_external_launch_rechecks_busy_state(repo: Path, fake_cfg: Callable[...,
     cfg.ui.terminal_command = "true {cmd}"
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("i")
         assert isinstance(app.screen, LaunchScreen)
         other = JobManager(repo, cfg)
-        reserved = other.record_external(LaunchSpec(branch="@", agent="codex"), ["other"])
+        reserved = other.record_external(LaunchSpec(branch="feature/x", agent="codex"), ["other"])
         await pilot.press("enter")
-        assert app.jobs.jobs["@"].started_at == reserved.started_at
-        assert app.jobs.jobs["@"].spec.agent == "codex"
+        assert app.jobs.jobs["feature/x"].started_at == reserved.started_at
+        assert app.jobs.jobs["feature/x"].spec.agent == "codex"
         assert LastUsed.load(repo).agent == ""
 
     run_app(repo, cfg, scenario)
@@ -1035,67 +1071,42 @@ def test_failed_external_launch_releases_reservation(
     cfg.ui.terminal_command = "definitely-not-an-installed-terminal {cmd}"
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("i", "enter")
-        assert "@" not in app.jobs.jobs
+        assert "feature/x" not in app.jobs.jobs
         assert LastUsed.load(repo).agent == ""
 
     run_app(repo, cfg, scenario)
 
 
-def test_jj_repo_without_bookmarks_runs_in_working_copy(
+def test_jj_repo_without_bookmarks_requires_new_bookmark(
     jj_repo_no_bookmarks: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         assert [r[1] for r in row_texts(app)] == ["@ working copy ●"]
         await pilot.press("r")
-        form = app.screen
-        assert isinstance(form, LaunchScreen) and form.current_spec().main_checkout
-        assert form.query_one("#branch", Input).value == "@"
-        # Outlasts a loaded test machine: cancelled below, and cancelling a run
-        # that already finished would forget its record.
-        form.query_one("#prompt", TextArea).text = "sleep:60"
-        await pilot.press("ctrl+enter")
-        await wait_until(pilot, lambda: "@" in app.jobs.jobs)
-        assert not [a for a in app.jobs.jobs["@"].argv if a.startswith("--branch")]
-        await wait_until(pilot, lambda: "@" in app.sessions)  # session in the repo itself
-        app.jobs.cancel("@", app.sessions)
-        await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
+        assert app.screen is app.main and not app.jobs.jobs
+        assert any("create a bookmark" in str(n.message) for n in app._notifications)
+        await pilot.press("n")
+        assert isinstance(app.screen, NewBranchScreen)
+        app.screen.query_one("#name", Input).value = "topic"
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: app.selected_branch_name() == "topic")
+        await pilot.press("r")
+        assert isinstance(app.screen, LaunchScreen)
+        app.screen.query_one("#prompt", TextArea).text = "exit:0"
+        for protected in ("main", "master", "trunk"):
+            app.screen.query_one("#branch", Input).value = protected
+            await pilot.press("ctrl+s")
+            assert isinstance(app.screen, LaunchScreen) and not app.jobs.jobs
+            assert app.branch(protected) is None
+        app.screen.query_one("#branch", Input).value = "topic"
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "topic" in app.jobs.jobs)
+        assert "--branch=topic" in app.jobs.jobs["topic"].argv
+        assert "@" not in app.jobs.jobs
 
     run_app(jj_repo_no_bookmarks, fake_cfg(), scenario)
-
-
-def test_jj_working_copy_alongside_bookmarks(
-    jj_repo: Path, fake_cfg: Callable[..., Config]
-) -> None:
-    async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        assert [r[1] for r in row_texts(app)] == ["@ working copy ●", "main ●"]
-        assert "1 bookmark ·" in str(app.main.query_one("#header", Static).content)
-        await pilot.press("r")  # on @: runs in the repo's own workspace
-        form = app.screen
-        assert isinstance(form, LaunchScreen) and form.current_spec().main_checkout
-        # Outlasts a loaded test machine: cancelled below, and cancelling a run
-        # that already finished would forget its record.
-        form.query_one("#prompt", TextArea).text = "sleep:60"
-        await pilot.press("ctrl+enter")
-        await wait_until(pilot, lambda: "@" in app.jobs.jobs)
-        assert not [a for a in app.jobs.jobs["@"].argv if a.startswith("--branch")]
-        await wait_until(pilot, lambda: "@" in app.sessions)
-        assert "main" not in app.sessions  # the bookmark stays free for its own sandbox
-
-        await pilot.press("j", "r")  # on the bookmark: a separate jj workspace via --branch
-        form = app.screen
-        assert isinstance(form, LaunchScreen) and not form.current_spec().main_checkout
-        form.query_one("#prompt", TextArea).text = "sleep:0.1"
-        await pilot.press("ctrl+enter", "y")  # y: confirm main
-        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
-        argv = app.jobs.jobs["main"].argv
-        assert "--branch=main" in argv
-
-        app.jobs.cancel("@", app.sessions)
-        # A run that finished during the form interaction is forgotten by cancel.
-        await wait_until(pilot, lambda: "@" not in app.jobs.jobs or not app.jobs.jobs["@"].running)
-
-    run_app(jj_repo, fake_cfg(), scenario)
 
 
 def test_prompt_history_completion_browse_and_search(
@@ -1258,6 +1269,7 @@ def test_launch_form_layout_survives_resizing(
     from textual.containers import Vertical
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press(mode)
         form = app.screen
         assert isinstance(form, LaunchScreen)
@@ -1299,16 +1311,17 @@ def test_enter_that_launches_interactive_session_does_not_leak(
         monkeypatch.delenv(variable, raising=False)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         # headless drivers cannot suspend; the session itself is what we stub out
         monkeypatch.setattr(app, "suspend", contextlib.nullcontext)
         await pilot.press("i")
         assert isinstance(app.screen, LaunchScreen)
         assert "opens in" not in str(app.screen.query_one(".title").render())
         await pilot.press("enter")  # launch from the agent field
-        await wait_until(pilot, lambda: "@" in app.jobs.jobs)
-        await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
-        assert not app.jobs.jobs["@"].external
-        assert app.jobs.jobs["@"].exit_code == 0
+        await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+        await wait_until(pilot, lambda: not app.jobs.jobs["feature/x"].running)
+        assert not app.jobs.jobs["feature/x"].external
+        assert app.jobs.jobs["feature/x"].exit_code == 0
         await pilot.pause(0.3)
         assert app.screen is app.main, f"stray screen after session: {app.screen!r}"
         assert not isinstance(app.screen, LogScreen)
@@ -1331,23 +1344,23 @@ def test_interactive_session_in_tmux_window(
     cfg = fake_cfg()
     cfg.sandbox.command = f"{sys.executable} {agent}"
     cfg.ui.terminal = "tmux"
-    name = "host:main"
+    name = "host:feature/x"
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        await pilot.press("G")  # main is below its descendants in history order
-        assert app.selected_branch_name() == "main"
+        await pilot.press("j")  # feature/x
+        assert app.selected_branch_name() == "feature/x"
         await pilot.press("i")
         form = app.screen
         assert isinstance(form, LaunchScreen)
         assert "opens in tmux" in str(form.query_one(".title").render())
         await pilot.press("enter")
-        await wait_until(pilot, lambda: "main" in app.jobs.jobs)
-        job = app.jobs.jobs["main"]
+        await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+        job = app.jobs.jobs["feature/x"]
         assert job.external and job.running
 
         def window_exists() -> bool:
             return (
-                "main"
+                "feature/x"
                 in subprocess.check_output(
                     ["tmux", "list-windows", "-t", "host", "-F", "#{window_name}"], text=True
                 ).splitlines()
@@ -1454,6 +1467,7 @@ def test_untrusted_project_config_is_reviewed_at_start(repo: Path) -> None:
 
 def test_modifier_hints(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("left_control")
         assert "ctrl+l reload" in str(app.main.query_one("#cheatsheet", Static).content)
         await pilot.press("right_shift")
@@ -1740,9 +1754,11 @@ def test_launch_branch_field(repo: Path, fake_cfg: Callable[..., Config], target
         assert form.current_spec().branch == target
         assert form.current_spec().main_checkout == (target == "@")
         await pilot.press("ctrl+enter")
-        if target == "main":  # an unsupervised run on main asks first
-            assert isinstance(app.screen, ConfirmScreen)
-            await pilot.press("y")
+        if target in ("@", "main"):
+            assert app.screen is form and not app.jobs.jobs
+            assert form.query_one("#prompt", TextArea).text == "exit:0"
+            assert any(f"{target} is protected" in str(n.message) for n in app._notifications)
+            return
         await wait_until(pilot, lambda: target in app.jobs.jobs)
         assert app.jobs.jobs[target].spec.branch == target
         if target.startswith("topic/"):
@@ -1768,6 +1784,7 @@ def test_launch_form_rejects_empty_bookmark(repo: Path, fake_cfg: Callable[..., 
 
 def test_launch_command_preview_scrolls(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")  # select feature/x for sessions
         await pilot.press("r")
         form = app.screen
         assert isinstance(form, LaunchScreen)
@@ -2409,10 +2426,16 @@ def test_unsent_prompt_is_kept_as_a_draft(repo: Path, fake_cfg: Callable[..., Co
         form = app.screen
         assert isinstance(form, LaunchScreen)
         assert form.query_one("#prompt", TextArea).text == "fix it"
-        await pilot.press("escape", "k", "r")  # drafts belong to their bookmark
+        await pilot.press("escape")
+        app.backend.create_branch("other", "main")
+        await app.refresh_data()
+        app.marked = ["other"]
+        await pilot.press("r")  # drafts belong to their bookmark
         assert isinstance(app.screen, LaunchScreen)
         assert app.screen.query_one("#prompt", TextArea).text == ""
-        await pilot.press("escape", "j", "r")
+        await pilot.press("escape")
+        app.marked = ["feature/x"]
+        await pilot.press("r")
         area = app.screen.query_one("#prompt", TextArea)
         area.text = "exit:0"
         await pilot.press("ctrl+s")
@@ -2466,7 +2489,7 @@ def test_launch_form_flags_a_new_bookmark_name(repo: Path, fake_cfg: Callable[..
         assert hint() == "new bookmark feature/typo, created from feature/x"
         form.query_one("#branch", Input).value = "main"
         await pilot.pause()
-        assert "existing name selects it" in hint()
+        assert "main is protected; create a bookmark" in hint()
 
     run_app(repo, fake_cfg(), scenario)
 

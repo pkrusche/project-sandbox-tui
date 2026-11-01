@@ -29,7 +29,7 @@ from project_sandbox_tui.config import resolve_model as _resolve_model
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import LaunchSpec, Mode
 from project_sandbox_tui.screens.history import HistorySearchScreen
-from project_sandbox_tui.vcs import validate_branch_name
+from project_sandbox_tui.vcs import session_target_error, validate_branch_name
 from project_sandbox_tui.widgets import CycleField, KeyHints, PromptArea, modifier_key
 
 CUSTOM_MODEL = "custom (enter model name)"
@@ -157,8 +157,11 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                     yield Static("bookmark", classes="field-label")
                     yield Input(
                         value=self.branch,
-                        placeholder="select a bookmark or @, or enter a new name",
-                        suggester=SuggestFromList(self.branches, case_sensitive=True),
+                        placeholder="select a bookmark, or enter a new name",
+                        suggester=SuggestFromList(
+                            [b for b in self.branches if not self._target_error(b)],
+                            case_sensitive=True,
+                        ),
                         select_on_focus=False,
                         id="branch",
                     )
@@ -309,7 +312,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             return
         name = self.query_one("#branch", Input).value.strip()
         hint = self.query_one("#branch-hint", Static)
-        if name and name not in self.branches and not validate_branch_name(name):
+        if error := self._target_error(name):
+            hint.update(Text(error, "yellow"))
+        elif name and name not in self.branches and not validate_branch_name(name):
             hint.update(Text(f"new bookmark {name}, created from {self.branch_label}", "yellow"))
         else:
             hint.update(KeyHints("existing name selects it · new name creates it from base"))
@@ -469,7 +474,16 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         else:
             self.focus_next()
 
+    def _target_error(self, name: str) -> str:
+        names = self.octopus.existing if self.octopus is not None else self.branches
+        return session_target_error(name, names, self.cfg.project.main_branch)
+
     def action_launch(self) -> None:
+        target = self._value("#result" if self.octopus else "#branch", "")
+        if error := self._target_error(target):
+            self.notify(error, severity="warning")
+            self.query_one("#result" if self.octopus else "#branch").focus()
+            return
         if self.octopus is not None:
             operation = self._value("#operation", "merge")
             plan = octopus_mod.OctopusPlan(
