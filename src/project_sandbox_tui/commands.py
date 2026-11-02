@@ -7,6 +7,7 @@
 - ``:NAME [ARGS]`` for an ``[actions]`` entry starts its prompt as a background
   sandbox run on each target bookmark, with ``ARGS`` appended to the prompt.
 - Built-in commands control the TUI itself (:data:`BUILTINS`).
+- ``:host AGENT [ARGS]`` runs an agent CLI directly in each target workspace.
 - A leading ``*`` runs a shell command once in each target workspace instead
   of once in the repository: ``:*!pytest -x``, ``:*test``. Actions run per
   target anyway, so ``*`` changes nothing for them.
@@ -30,6 +31,7 @@ from pathlib import Path
 
 BUILTINS: dict[str, str] = {
     "help": "full key reference",
+    "host": "run a host agent: :host AGENT [ARGS...]",
     "quit": "quit (asks while runs continue)",
     "refresh": "refresh the bookmark list",
     "reload": "reload configuration",
@@ -52,6 +54,7 @@ class Command:
     action: str = ""  # an [actions] name: a sandbox run on each target
     args: str = ""  # an action's extra words, appended to its prompt
     name: str = ""  # the [commands] entry that supplied ``script``, if any
+    argv: tuple[str, ...] = ()  # :host agent executable and CLI arguments
 
 
 def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ()) -> Command:
@@ -78,6 +81,14 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
             raise CommandError(f":{name} cannot run per workspace")
         if background:
             raise CommandError(f":{name} cannot run in the background")
+        if builtin == "host":
+            try:
+                argv = tuple(shlex.split(args))
+            except ValueError as exc:
+                raise CommandError(f":host: {exc}") from exc
+            if not argv or not argv[0]:
+                raise CommandError(":host needs an agent, e.g. :host codex --model my-model")
+            return Command(line, builtin=builtin, argv=argv)
         if args:
             raise CommandError(f":{name} takes no arguments")
         return Command(line, builtin=builtin)

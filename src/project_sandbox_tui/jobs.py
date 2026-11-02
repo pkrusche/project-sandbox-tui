@@ -1,4 +1,4 @@
-"""Background / interactive job tracking — at most one sandbox per branch.
+"""Background / interactive job tracking — at most one agent per branch.
 
 Every job has a JSON record in ``<state>/<repo>/jobs/<branch-slug>.json`` so a
 restarted TUI re-adopts running background sessions and still notifies about
@@ -53,7 +53,7 @@ HISTORY_PER_BRANCH = 50
 
 
 class BusyError(RuntimeError):
-    """The branch already has a sandbox session."""
+    """The branch already has an agent session."""
 
 
 def branch_slug(branch: str) -> str:
@@ -100,6 +100,7 @@ class JobRecord:
     external: bool = False  # interactive session launched in another terminal
     session_seen: bool = False  # external only: a project-sandbox session was observed
     runtime: str = ""
+    host: bool = False
 
     @property
     def mode(self) -> str:
@@ -144,6 +145,7 @@ class JobRecord:
             "external": self.external,
             "session_seen": self.session_seen,
             "runtime": self.runtime,
+            "host": self.host,
         }
 
     @classmethod
@@ -174,6 +176,7 @@ class JobRecord:
             external=bool(raw.get("external")),
             session_seen=bool(raw.get("session_seen")),
             runtime=str(raw.get("runtime") or ""),
+            host=bool(raw.get("host")),
         )
 
 
@@ -321,7 +324,8 @@ class JobManager:
     def _busy_reason(self, branch: str, sessions: dict[str, SessionRecord]) -> str | None:
         job = self.jobs.get(branch)
         if job is not None and job.running:
-            return f"{branch} already has a {job.mode} session (pid {job.pid})"
+            kind = "host agent" if job.host else job.mode
+            return f"{branch} already has a {kind} session (pid {job.pid})"
         if branch in sessions:
             rec = sessions[branch]
             return f"{branch} already has a running project-sandbox session {rec.session_id}"
@@ -403,7 +407,12 @@ class JobManager:
 
     @contextlib.contextmanager
     def interactive(
-        self, spec: LaunchSpec, sessions: dict[str, SessionRecord]
+        self,
+        spec: LaunchSpec,
+        sessions: dict[str, SessionRecord],
+        *,
+        argv: list[str] | None = None,
+        host: bool = False,
     ) -> Generator[JobRecord, None, None]:
         """Hold the branch for the duration of an in-terminal session."""
         with self._locked():
@@ -416,8 +425,9 @@ class JobManager:
                 spec=spec,
                 pid=os.getpid(),  # the TUI itself holds the terminal
                 started_at=_now(),
-                argv=build_argv(self.cfg, self.repo, spec),
+                argv=argv if argv is not None else build_argv(self.cfg, self.repo, spec),
                 notified=True,  # nothing to notify: the user is watching
+                host=host,
             )
             self._archive(spec.branch)
             self.jobs[spec.branch] = job
@@ -444,13 +454,19 @@ class JobManager:
             return None
 
     def record_external(
-        self, spec: LaunchSpec, argv: list[str], sessions: dict[str, SessionRecord] | None = None
+        self,
+        spec: LaunchSpec,
+        argv: list[str],
+        sessions: dict[str, SessionRecord] | None = None,
+        *,
+        host: bool = False,
     ) -> JobRecord:
         """Note an interactive session started in another terminal window.
 
         Its liveness comes from project-sandbox session records afterwards, so
         the record is closed on the next refresh in which no session is seen
-        for the branch (after a grace period covering the image build).
+        for the branch (after a grace period covering the image build). Host
+        sessions instead report their runner PID and exit code in a summary.
         """
         with self._locked():
             self.load()
@@ -463,9 +479,14 @@ class JobManager:
                 pid=0,
                 started_at=_now(),
                 argv=argv,
-                notified=True,
+                notified=not host,
                 external=True,
+                host=host,
             )
+            if host:
+                paths = self.new_run_paths(spec.branch)
+                private_dir(paths.summary.parent)
+                job.summary_path = str(paths.summary)
             self._archive(spec.branch)
             self.jobs[spec.branch] = job
             self.save(job)
@@ -527,7 +548,7 @@ class JobManager:
                 if not job.notified:
                     finished.append(job)  # finished while the TUI was closed
                 continue
-            rec = sessions.get(job.branch)
+            rec = sessions.get(job.branch) if not job.host else None
             if rec is not None:
                 ids = (job.session_id, job.container_name, job.runtime)
                 job.session_id = job.session_id or rec.session_id
@@ -535,6 +556,28 @@ class JobManager:
                 job.runtime = job.runtime or rec.runtime
                 if (job.session_id, job.container_name, job.runtime) != ids:
                     self.save(job)
+
+            if job.external and job.host:
+                summary = self._read_summary(job) or {}
+                pid = job.pid or summary.get("pid")
+                if type(pid) is int and 0 < pid < 2**31:
+                    if job.pid != pid:
+                        job.pid = pid
+                        self.save(job)
+                    # The runner writes its outcome before exiting. Keep the
+                    # workspace reserved until teardown has actually finished.
+                    if pid_alive(pid):
+                        continue
+                elif now - _parse_ts(job.started_at) <= external_grace_s:
+                    continue  # the terminal has not started the runner yet
+                code = summary.get("exit_code")
+                job.exit_code = code if type(code) is int else None
+                job.status = status_for_exit(job.exit_code)
+                job.ended_at = _now()
+                self.save(job)
+                if not job.notified:
+                    finished.append(job)
+                continue
 
             if job.external:
                 run = (job.branch, job.started_at)

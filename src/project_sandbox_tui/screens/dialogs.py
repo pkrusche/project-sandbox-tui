@@ -461,7 +461,8 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
         (
             "sessions (one sandbox per bookmark)",
             (
-                ("i", "interactive (ui.terminal)"),
+                ("i / I", "interactive / host agent"),
+                (":host agent args", "host agent with CLI options"),
                 ("r", "unsupervised run"),
                 ("x", "cancel · 3×: forget"),
                 ("l / enter", "log, else details"),

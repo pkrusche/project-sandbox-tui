@@ -624,3 +624,94 @@ def test_discarded_launch_stays_out_of_history(tmp_path: Path) -> None:
     jobs.discard(failed)  # the terminal launcher failed: the run never started
     assert "topic" not in jobs.jobs
     assert [j.argv for j in jobs.history("topic")] == [["first"]]
+
+
+@pytest.mark.parametrize("code", [0, 7, 130])
+def test_external_host_session_lifetime_and_adoption(tmp_path: Path, code: int) -> None:
+    from project_sandbox_tui.launchers import host_command
+
+    first = JobManager(tmp_path, Config())
+    gate = tmp_path / "finish"
+    argv = [
+        sys.executable,
+        "-c",
+        "import pathlib, sys, time; "
+        "gate = pathlib.Path(sys.argv[1]); "
+        "exec('while not gate.exists(): time.sleep(0.01)'); "
+        "sys.exit(int(sys.argv[2]))",
+        str(gate),
+        str(code),
+    ]
+    job = first.record_external(LaunchSpec("topic", "codex"), argv, host=True)
+    second = JobManager(tmp_path, Config())
+    assert second.busy_reason("topic", {})
+    # No sandbox session, even after its usual external grace period.
+    proc = subprocess.Popen(host_command(argv, job.summary_path), cwd=tmp_path)
+    wait_for(lambda: Path(job.summary_path).exists())
+    second.refresh({}, external_grace_s=-1)
+    adopted = second.jobs["topic"]
+    assert adopted.running and adopted.host and adopted.pid == proc.pid
+    with pytest.raises(BusyError):
+        second.start_background(bg("topic", "go"), {})
+    with pytest.raises(BusyError):
+        second.record_external(LaunchSpec("topic", "claude"), ["claude"], host=True)
+    with pytest.raises(BusyError), second.interactive(LaunchSpec("topic", "claude"), {}):
+        pass
+    # Once observed, a live runner stays busy even if its summary is unavailable.
+    Path(job.summary_path).unlink()
+    assert second.refresh({}, external_grace_s=-1) == [] and adopted.running
+    gate.touch()
+    assert proc.wait(timeout=5) == code
+    [finished] = second.refresh({})
+    assert finished.exit_code == code and finished.status == status_for_exit(code)
+    assert not second.busy_reason("topic", {})
+    assert second.mark_notified(finished)
+    assert first.refresh({}) == []
+    assert second.clear("topic")
+    assert second.history("topic")[0].host
+    assert second.history("topic")[0].argv == argv
+
+
+def test_external_host_runner_launch_failure_and_missing_runner(tmp_path: Path) -> None:
+    from project_sandbox_tui.launchers import host_command
+
+    jobs = JobManager(tmp_path, Config())
+    job = jobs.record_external(LaunchSpec("topic", "codex"), [str(tmp_path / "missing")], host=True)
+    proc = subprocess.Popen(host_command(job.argv, job.summary_path), cwd=tmp_path)
+    assert proc.wait(timeout=5) == 127
+    [finished] = jobs.refresh({})
+    assert (finished.status, finished.exit_code) == ("failed", 127)
+    jobs.mark_notified(finished)
+    missing = jobs.record_external(LaunchSpec("topic", "codex"), ["codex"], host=True)
+    assert jobs.refresh({}) == [] and missing.running
+    [finished] = jobs.refresh({}, external_grace_s=-1)
+    assert finished.status == "orphaned"
+
+
+def test_external_host_runner_disappears_without_outcome(tmp_path: Path) -> None:
+    jobs = JobManager(tmp_path, Config())
+    job = jobs.record_external(LaunchSpec("topic", "codex"), ["codex"], host=True)
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=5)
+    Path(job.summary_path).write_text(json.dumps({"pid": proc.pid}))
+    [finished] = jobs.refresh({})
+    assert finished.status == "orphaned" and finished.exit_code is None
+
+
+def test_inline_host_reservation_uses_host_command_and_ignores_sandbox_metadata(
+    tmp_path: Path,
+) -> None:
+    jobs = JobManager(tmp_path, Config())  # host sessions need no sandbox image
+    spec = LaunchSpec("topic", "codex")
+    with jobs.interactive(spec, {}, argv=["codex", "--host-option"], host=True) as job:
+        assert job.host and job.argv == ["codex", "--host-option"]
+        other = JobManager(tmp_path, Config())
+        assert "host agent session" in (other.busy_reason("topic", {}) or "")
+        rec = SessionRecord("sid", "container", "", "", "codex", "running", 1, "")
+        other.refresh({"topic": rec})
+        job.exit_code = 7
+    done = JobManager(tmp_path, Config()).jobs["topic"]
+    assert (done.status, done.exit_code) == ("failed", 7)
+    assert not done.session_id and not done.container_name
+    assert not jobs.busy_reason("topic", {})
+    assert jobs.refresh({}) == []  # inline runs do not notify

@@ -152,6 +152,8 @@ class Row:
                 status = "interactive" if job.mode == "interactive" else "running"
                 if job.external:
                     status = "interactive (ext)"
+                if job.host:
+                    status = "host agent (ext)" if job.external else "host agent"
                 if job.spec.operation:  # an integration of several branches
                     verb = "merging" if job.spec.operation == "merge" else "rebasing"
                     status = verb if job.mode == "background" else f"{verb} ({status})"
@@ -248,6 +250,7 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("space", "app.toggle_mark", show=False),
     Binding("escape", "app.clear_filter", show=False),
     Binding("i", "app.launch('interactive')", show=False),
+    Binding("I", "app.open_host_agent", show=False),
     Binding("r", "app.launch('background')", show=False),
     Binding("n", "app.new_branch", show=False),
     Binding("e", "app.edit_description", show=False),
@@ -291,6 +294,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         "sessions",
         (
             ("i", "interactive"),
+            ("I", "host agent"),
             ("r", "unsupervised run"),
             ("x", "cancel · 3×: forget"),
             ("l ⏎", "log / transcript"),
@@ -1782,6 +1786,8 @@ class SandboxTUI(App[None]):
         if job.exit_code is not None:
             status += f" (exit {job.exit_code})"
         lines = [f"last run    {status}", f"agent       {job.spec.label()} · {job.mode}"]
+        if job.host:
+            lines[-1] += " · host"
         if job.external:
             lines[-1] += " · external terminal"
         started = _ts(job.started_at)
@@ -1919,6 +1925,105 @@ class SandboxTUI(App[None]):
 
         body = "\n".join(chosen) + "\n\nEach one opens in its own editor."
         self.push_screen(ConfirmScreen(f"open {len(chosen)} workspaces?", body, "open"), decided)
+
+    def action_open_host_agent(self) -> None:
+        self._open_host_agents()
+
+    def _open_host_agents(self, argv: tuple[str, ...] = ()) -> None:
+        chosen = self._action_branches()
+        if not chosen:
+            return
+
+        def go() -> None:
+            for name in chosen:
+                self._open_host_agent(name, argv)
+
+        self._confirm_targets(
+            chosen,
+            f"open host agents in {len(chosen)} workspaces?",
+            "Each opens its own host agent session." if len(chosen) > EDITOR_BATCH else "",
+            "open",
+            go,
+        )
+
+    def _open_host_agent(self, name: str, command: tuple[str, ...] = ()) -> None:
+        """Reserve the workspace and open a tracked host agent session."""
+        if reason := self._session_target_error(name):
+            self.notify(reason, severity="warning")
+            return
+        if reason := self.jobs.busy_reason(name, self._sessions_now([name])):
+            self.notify(reason, severity="warning")
+            return
+        path = self._ensure_workspace(name)
+        if path is None:
+            return
+        agent = (
+            command[0]
+            if command
+            else resolve_launch_defaults(self.cfg, LastUsed.load(self.repo)).agent
+        )
+        try:
+            argv = (
+                list(command)
+                if command
+                else launchers.fill_command(
+                    self.cfg.ui.host_agent_command or "{agent}",
+                    {"agent": agent, "path": str(path), "branch": name},
+                )
+            )
+            if not argv:
+                raise ValueError("ui.host_agent_command is empty")
+            spec = LaunchSpec(branch=name, agent=agent)
+            mode = launchers.effective_mode(self.cfg.ui.terminal_mode())
+            if mode != "inline":
+                job = self.jobs.record_external(spec, argv, self._sessions_now([name]), host=True)
+                try:
+                    launch = launchers.external_launch(
+                        mode,
+                        launchers.host_command(argv, job.summary_path),
+                        name,
+                        path,
+                        self.cfg.ui.terminal_command,
+                    )
+                    launchers.start(launch, cwd=path)
+                except (OSError, ValueError, launchers.LaunchError):
+                    self.jobs.discard(job)
+                    raise
+                self._record_run(job)
+                self.notify(f"{name}: host agent {launch.message}", timeout=8)
+                self.call_later(self.refresh_data)
+                return
+            with (
+                self.jobs.interactive(
+                    spec, self._sessions_now([name]), argv=argv, host=True
+                ) as job,
+                self._suspended(),
+            ):
+                self._record_run(job)
+                print(f"\n── sbx-tui: host agent on {name} ──\n{shlex.join(argv)}\n", flush=True)
+                with terminal.preserved():
+                    try:
+                        proc = subprocess.Popen(argv, cwd=path)
+                    except OSError:
+                        job.exit_code = 127
+                        raise
+                    while True:
+                        try:
+                            job.exit_code = proc.wait()
+                            break
+                        except KeyboardInterrupt:
+                            continue
+                if job.exit_code:
+                    with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
+                        input(
+                            f"\n── host agent exited with {job.exit_code}; "
+                            "press Enter to return to sbx-tui ──"
+                        )
+            self.call_later(self.refresh_data)
+        except BusyError as exc:
+            self.notify(str(exc), severity="warning")
+        except (OSError, ValueError, launchers.LaunchError) as exc:
+            self.notify(f"{name}: could not start host agent: {exc}", severity="error")
 
     def _workspace_dir(self, name: str) -> Path:
         """The repository for the working copy, else the bookmark's sandbox workspace."""
@@ -2349,6 +2454,8 @@ class SandboxTUI(App[None]):
             await self.refresh_data()
         elif command.builtin == "reload":
             await self.action_reload_config()
+        elif command.builtin == "host":
+            self._open_host_agents(command.argv)
         else:
             self._run_shell(command)
 
@@ -2403,7 +2510,7 @@ class SandboxTUI(App[None]):
             return
         self.notify(f":{command.line} started in repository (T shows tasks, x on @ cancels)")
         if self.jobs.busy_reason(WORKING_COPY, self.sessions):
-            self.notify("@: a sandbox session is still changing these files", severity="warning")
+            self.notify("@: an agent session is still changing these files", severity="warning")
         self._render_table()
 
     def _confirm_targets(
@@ -2452,7 +2559,7 @@ class SandboxTUI(App[None]):
                 self.notify(f":{command.line} started in {where} (l shows output, x cancels)")
             if busy:
                 self.notify(
-                    f"{', '.join(busy)}: a sandbox session is still changing these files",
+                    f"{', '.join(busy)}: an agent session is still changing these files",
                     severity="warning",
                 )
             self._render_table()

@@ -103,7 +103,10 @@ Actions use the selected agent's remembered fast-mode choice, falling back to
 `defaults.fast`; `fast` is not an action-specific setting.
 
 For host commands, use quoted environment variables such as `"$SBX_WORKSPACE"`.
-For `ui.editor_command`, `ui.terminal_command`, and `ui.notify_command`,
+`ui.host_agent_command` customizes `I`, the interactive host agent shortcut.
+It defaults to the last-used agent executable, runs in the selected workspace,
+and accepts `{agent}`, `{path}` and `{branch}`. `ui.terminal` controls where it opens.
+For `ui.editor_command`, `ui.host_agent_command`, `ui.terminal_command`, and `ui.notify_command`,
 placeholders must be whole arguments. A custom terminal needs
 `ui.terminal = "custom"` and a command such as `wezterm start -- sh -c {cmd}`.
 Edit these dependent settings together if setting either alone fails validation.

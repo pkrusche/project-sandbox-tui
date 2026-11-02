@@ -12,6 +12,7 @@
 
 External launches return to the branch list immediately; the session's
 liveness then comes from project-sandbox's session record (see jobs.py).
+Host agents use a runner that records its PID and exit code for jobs.py.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +45,11 @@ class ExternalLaunch:
     argv: list[str]
     message: str  # shown in the TUI once the session has been handed off
     detached: bool  # True: run detached (custom); False: wait briefly and check the exit code
+
+
+def host_command(argv: list[str], summary_path: str) -> list[str]:
+    """Wrap an external host command with durable lifetime reporting."""
+    return [sys.executable, str(Path(__file__).with_name("host_session.py")), summary_path, *argv]
 
 
 def fill_command(template: str, values: Mapping[str, str]) -> list[str]:
@@ -88,7 +95,7 @@ def shell_script(cmd: list[str], cwd: str | None = None) -> str:
     return (
         f"{prefix}{shlex.join(cmd)}; status=$?; "
         'if [ "$status" -ne 0 ]; then '
-        "printf '\\n── project-sandbox exited with %s; press Enter to close ──' \"$status\"; "
+        "printf '\\n── command exited with %s; press Enter to close ──' \"$status\"; "
         "read -r _; fi; exit $status"
     )
 
@@ -113,7 +120,7 @@ def external_launch(
     env: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] = shutil.which,
 ) -> ExternalLaunch:
-    """Build the command that starts ``cmd`` (the project-sandbox argv) elsewhere."""
+    """Build the command that starts ``cmd`` in another terminal or pane."""
     env = os.environ if env is None else env
     repo_s = str(repo)
     shell_cmd = shell_script(cmd)

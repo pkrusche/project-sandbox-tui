@@ -128,6 +128,7 @@ notify_command = ""     # "" = platform default; {title} {message}
 terminal = "inline"     # inline | tmux | zellij | screen | custom
 terminal_command = ""   # with terminal = "custom"; {cmd} {branch} {repo}
 editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this terminal
+host_agent_command = "" # I: last-used agent executable; {agent} {path} {branch}
 refresh_seconds = 3
 bell = true
 cheatsheet = true
@@ -169,7 +170,7 @@ as `eval` can execute them even when passed safely.
 `:name args` runs the command with `sh -c` in the repository foreground, with `args`
 appended (`:test -k merge` runs `uv run pytest -k merge`). Names start with a
 letter and use letters, digits, `_` and `-`; built-in commands (`help`, `quit`,
-`q`, `refresh`, `reload`) cannot be redefined. Unlike `ui.*_command`, these are
+`q`, `refresh`, `reload`, `host`) cannot be redefined. Unlike `ui.*_command`, these are
 shell code: use `SBX_REPO`, `SBX_BOOKMARK` and `SBX_WORKSPACE` rather than
 placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 

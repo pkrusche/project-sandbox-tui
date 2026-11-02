@@ -6,7 +6,7 @@ Bookmark sessions use separate jj workspaces.
 A workspace is busy while any TUI instance or project-sandbox session uses it,
 including sessions started from a shell.
 
-`o` creates a missing workspace before opening it, named after the bookmark
+`o` and `I` create a missing workspace before opening it, named after the bookmark
 at project-sandbox's location, on a new change on top of the bookmark; later
 sessions reuse it with `keep_workspace`. Rows with a starting session wait for
 the session's own workspace.
@@ -90,6 +90,44 @@ If an exited agent's row stays busy, press `x` three times to forget its TUI
 record, then `i` to restart. Interactive records are forgotten without sending a
 signal. Launches that fail before writing a session record may stay busy for 10
 minutes unless cleared.
+
+## Host agent sessions
+
+Press `I` to launch an interactive agent directly on the host in each selected
+workspace, or in the current checkout for `@`. Missing workspaces are created
+as with `o`. More than three selections ask for confirmation; inline sessions
+run one after another, while external terminals open separately.
+
+The command defaults to the last-used agent executable (or `defaults.agent`).
+The agent uses its own host configuration for model, permissions and other
+options. Set `ui.host_agent_command` to customize it, for example
+`'my-agent --directory {path}'` or `'{agent} --model my-model'`.
+`{agent}`, `{path}` and `{branch}` must each occupy a whole argument. The working
+directory is always the target workspace; no path argument is appended.
+
+Use `:host AGENT [ARGS...]` to choose an executable and pass its CLI arguments
+directly, for example `:host codex --model my-model` or
+`:host claude 'review the current changes'`. Shell quoting groups arguments;
+shell operators and expansions are passed literally. This form uses the named
+executable instead of `ui.host_agent_command` and does not change remembered
+launch choices. Like `I`, it runs in each marked workspace, or the highlighted
+workspace when none are marked. The `*` and `&` prefixes are not accepted.
+
+`ui.terminal` controls where the session opens, with the same inline fallback
+as `i`. For custom terminals, `{repo}` is the target workspace and `{cmd}` is
+the host command. Host sessions run without project-sandbox or its container
+settings. Main and targets with active agent sessions are protected.
+
+Host sessions appear as `host agent` or `host agent (ext)` and reserve their
+workspace just like sandbox sessions, including across TUI instances and
+restarts. While one runs, another host or sandbox session cannot start there,
+and quitting asks for confirmation. Their commands and exit status are kept in
+job history. External host sessions report completion and send the usual
+notifications; inline sessions return when the agent exits.
+
+Stop a host agent in its terminal, as with other interactive sessions. `x`
+clears a finished status, or forgets a stuck record after three presses without
+signalling the agent. Host sessions do not capture logs or sandbox transcripts.
 
 ## Notifications and exit codes
 

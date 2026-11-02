@@ -2505,6 +2505,141 @@ def test_open_many_workspaces_asks_first(
     run_app(repo, fake_cfg(), scenario)
 
 
+@pytest.mark.parametrize("target", ["@", "feature/x"])
+@pytest.mark.parametrize("mode", ["tmux", "custom"])
+def test_host_agent_opens_in_target_workspace(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    mode: str,
+) -> None:
+    import shlex
+    from functools import partial
+
+    from project_sandbox_tui import launchers
+    from project_sandbox_tui.config import remember
+
+    cfg = fake_cfg(worktree_dir=str(repo.parent / "workspaces with 'quotes"))
+    cfg.ui.terminal = mode
+    if mode == "custom":
+        cfg.ui.terminal_command = "terminal --cwd {repo} -- sh -c {cmd}"
+        cfg.ui.host_agent_command = "wrapper {agent} --directory {path} --bookmark {branch}"
+    monkeypatch.setenv("TMUX", "private-test-session")
+    monkeypatch.setattr(
+        launchers,
+        "external_launch",
+        partial(launchers.external_launch, which=lambda _: "/bin/tmux"),
+    )
+    opened: list[tuple[launchers.ExternalLaunch, Path]] = []
+    monkeypatch.setattr(launchers, "start", lambda launch, cwd: opened.append((launch, cwd)))
+    remember(repo, "codex", "sandbox-model", "high", 300)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        path = app._workspace_dir(target)
+        assert path.exists() == (target == "@")
+        app.marked = [target]
+        await pilot.press("I")
+        assert app.screen is app.main
+        assert path.is_dir()
+        launch, cwd = opened.pop()
+        assert cwd == path
+        job = app.jobs.jobs[target]
+        argv = ["codex"]
+        if mode == "custom":
+            argv = ["wrapper", "codex", "--directory", str(path), "--bookmark", target]
+        assert job.host and job.external and job.running and job.argv == argv
+        wrapped = launchers.host_command(argv, job.summary_path)
+        if mode == "custom":
+            assert launch.argv == [
+                "terminal", "--cwd", str(path), "--", "sh", "-c",
+                shlex.join(wrapped),
+            ]  # fmt: skip
+        else:
+            assert launch.argv == [
+                "tmux", "new-window", "-n", target, "-c", str(path),
+                launchers.shell_script(wrapped),
+            ]  # fmt: skip
+        assert app.tasks.tasks == {}
+        assert (
+            next(r for r in app.visible_rows() if r.branch.name == target).status()[2]
+            == "host agent (ext)"
+        )
+        assert " · host" in "\n".join(app._job_details(job))
+        if target != "@":
+            assert "host codex" in "\n".join(app._history_lines(target))
+        # A duplicate host launch is refused and quitting sees the reservation.
+        await pilot.press("I")
+        assert not opened
+        await pilot.press("q")
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.press("escape")
+        job.status = "completed"
+        app.jobs.save(job)
+        # A later host launch reuses the workspace and archives the old run.
+        await pilot.press("I")
+        assert opened.pop()[1] == path
+        assert app.jobs.history(target)[0].host
+
+    run_app(repo, cfg, scenario)
+
+
+def test_open_many_host_agents_asks_first(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str] = []
+    add_bookmark(repo, "a", "a2.txt", "a\n")
+    add_bookmark(repo, "b", "b2.txt", "b\n")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_open_host_agent", lambda name, argv=(): opened.append(name))
+        app.marked = ["a", "b", "feature/x", "@"]
+        await pilot.press("I")
+        assert isinstance(app.screen, ConfirmScreen) and opened == []
+        await pilot.press("escape")
+        assert opened == []
+        await pilot.press("I", "y")
+        assert opened == ["a", "b", "feature/x", "@"]
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_host_agent_rejects_protected_or_busy_targets_and_reports_launch_failure(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from project_sandbox_tui import launchers
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    cfg = fake_cfg()
+    cfg.ui.terminal = "custom"
+    cfg.ui.terminal_command = "terminal {cmd}"
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("terminal not found")
+
+    monkeypatch.setattr(launchers, "start", fail)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        notices: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda message, **_kw: notices.append(message))
+        app.marked = ["main"]
+        await pilot.press("I")
+        assert "main is protected" in notices[-1]
+        assert not app._workspace_dir("main").exists()
+        reservation = app.jobs.record_external(LaunchSpec("feature/x", "claude"), ["other"])
+        app.marked = ["feature/x"]
+        await pilot.press("I")
+        assert "feature/x" in notices[-1] and "host agent" not in notices[-1]
+        assert not app._workspace_dir("feature/x").exists()
+        app.jobs.discard(reservation)
+        await pilot.press("I")
+        assert notices[-1] == "feature/x: could not start host agent: terminal not found"
+        assert app.jobs.jobs == {}
+
+    run_app(repo, cfg, scenario)
+
+
 def test_log_key_without_runs_shows_details(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j", "l")
@@ -2643,3 +2778,96 @@ def test_workspace_creation_rechecks_sessions(repo: Path, fake_cfg: Callable[...
         assert not path.exists()
 
     run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("target", ["@", "feature/x"])
+@pytest.mark.parametrize("code", [0, 7, 127])
+def test_inline_host_agent_is_tracked_until_return(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    code: int,
+) -> None:
+    import shlex
+    import subprocess
+    import sys
+    from contextlib import nullcontext
+
+    from project_sandbox_tui import terminal
+
+    cfg = fake_cfg()
+    cfg.ui.terminal = "inline"
+    marker = repo.parent / "host-cwd"
+    argv = [str(repo.parent / "missing-host-agent")] if code == 127 else [
+        sys.executable, "-c",
+        "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(str(pathlib.Path.cwd())); "
+        "sys.exit(int(sys.argv[2]))",
+        str(marker), str(code),
+    ]  # fmt: skip
+    cfg.ui.host_agent_command = shlex.join(argv)
+    spawn = subprocess.Popen
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_suspended", nullcontext)
+        monkeypatch.setattr(terminal, "preserved", nullcontext)
+        monkeypatch.setattr("builtins.input", lambda *_args: "")
+        spawned: list[bool] = []
+
+        def checked_spawn(args, *args_, **kwargs):
+            if args == argv:
+                other = JobManager(repo, cfg)
+                assert other.busy_reason(target, {})
+                assert other.jobs[target].host and other.jobs[target].running
+                assert kwargs["cwd"] == app._workspace_dir(target)
+                spawned.append(True)
+            return spawn(args, *args_, **kwargs)
+
+        monkeypatch.setattr(subprocess, "Popen", checked_spawn)
+        app.marked = [target]
+        await pilot.press("I")
+        assert spawned == [True]
+        done = JobManager(repo, cfg).jobs[target]
+        assert done.host and not done.external and done.exit_code == code
+        assert done.status == ("completed" if code == 0 else "failed")
+        assert not app.jobs.busy_reason(target, {})
+        if code != 127:
+            assert marker.read_text() == str(app._workspace_dir(target))
+
+    run_app(repo, cfg, scenario)
+
+
+@pytest.mark.parametrize("mode", ["inline", "custom"])
+def test_host_launch_rechecks_reservation_after_creating_workspace(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from project_sandbox_tui import launchers
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    cfg = fake_cfg()
+    cfg.ui.terminal = mode
+    cfg.ui.terminal_command = "terminal {cmd}"
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        ensure = app._ensure_workspace
+        other = JobManager(repo, cfg)
+        notices: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda message, **_kw: notices.append(message))
+
+        def reserve(name: str) -> Path | None:
+            path = ensure(name)
+            other.record_external(LaunchSpec(name, "claude"), ["other"])
+            return path
+
+        def unexpected(*_args, **_kwargs):
+            pytest.fail("busy target must not launch a host agent")
+
+        monkeypatch.setattr(app, "_ensure_workspace", reserve)
+        monkeypatch.setattr(app, "_suspended", unexpected)
+        monkeypatch.setattr(launchers, "start", unexpected)
+        app.marked = ["feature/x"]
+        await pilot.press("I")
+        assert "already has a interactive session" in notices[-1]
+        assert app.jobs.jobs["feature/x"].argv == ["other"]
+
+    run_app(repo, cfg, scenario)

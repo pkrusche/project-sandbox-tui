@@ -88,6 +88,8 @@ def test_project_overrides_global(tmp_path: Path) -> None:
         ('[ui]\nterminal = "custom"\n', "needs ui.terminal_command"),
         ('[ui]\nterminal = "tmux"\nterminal_command = "x {cmd}"\n', "only used with"),
         ('[ui]\neditor_command = " "\n', "ui.editor_command"),
+        ('[ui]\nhost_agent_command = " "\n', "ui.host_agent_command"),
+        ('[ui]\nhost_agent_command = "\'unclosed"\n', "ui.host_agent_command"),
         ("commands = []\n", "must be a table of name"),
         ("[commands]\ntest = 1\n", "commands.test must be a string"),
         ('[commands]\nhelp = "x"\n', "built-in"),
@@ -350,7 +352,14 @@ def test_failed_trust_write_keeps_review_pending(
 
 @pytest.mark.parametrize(
     ("key", "placeholder"),
-    [("terminal_command", "branch"), ("notify_command", "message"), ("editor_command", "path")],
+    [
+        ("terminal_command", "branch"),
+        ("notify_command", "message"),
+        ("editor_command", "path"),
+        ("host_agent_command", "path"),
+        ("host_agent_command", "agent"),
+        ("host_agent_command", "branch"),
+    ],
 )
 def test_config_rejects_placeholders_embedded_in_shell_code(key: str, placeholder: str) -> None:
     cfg = c.Config()

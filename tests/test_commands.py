@@ -45,6 +45,29 @@ def test_parse_errors(line: str, message: str) -> None:
         cmd.parse(line, CONFIGURED)
 
 
+def test_parse_host_agent_arguments() -> None:
+    command = cmd.parse(':host "/opt/my agent" --model "a b" "" \'$HOME; echo hi\'', {})
+    assert command.builtin == "host"
+    assert command.argv == ("/opt/my agent", "--model", "a b", "", "$HOME; echo hi")
+    assert not command.script and not command.each and not command.background
+    cmd.validate({}, "\\", {"c": "host codex --model my-model"})
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("host", "needs an agent"),
+        ('host "" --model x', "needs an agent"),
+        ('host codex "unfinished', "No closing quotation"),
+        ("*host codex", "cannot run per workspace"),
+        ("&host codex", "cannot run in the background"),
+    ],
+)
+def test_parse_host_errors(line: str, message: str) -> None:
+    with pytest.raises(cmd.CommandError, match=message):
+        cmd.parse(line, {})
+
+
 @pytest.mark.parametrize(
     ("line", "script"),
     [
@@ -91,6 +114,7 @@ def test_validate_accepts_mappings_to_any_command_line() -> None:
         ({"1x": "true"}, "\\", {}, "must start with a letter"),
         ({"a b": "true"}, "\\", {}, "must start with a letter"),
         ({"quit": "true"}, "\\", {}, "built-in"),
+        ({"host": "true"}, "\\", {}, "built-in"),
         ({"q": "true"}, "\\", {}, "built-in"),
         ({"x": "  "}, "\\", {}, "must not be empty"),
         ({}, "ab", {}, "ui.leader"),

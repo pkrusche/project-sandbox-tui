@@ -15,6 +15,7 @@ require a `.jj/` directory.
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
 | `tasks.py` | `:&` / `:*` host commands: detached, output and exit status captured |
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
+| `host_session.py` | External host agent runner: persistent PID and exit status |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
 | `commands.py` | `:` command parsing (`:!`, `:&`, `:*`, `[actions]`), completion and leader-key mappings |
@@ -47,7 +48,10 @@ handed to the same waiters so their children are collected even without another
 refresh. Waiters do not stop live processes or delay quitting the TUI.
 
 Inline sessions use temporary job records to mark workspaces busy across
-instances. Job records keep only each bookmark's latest run; `opgraph.json`
+instances. Host agents use the same reservations. External host agents report
+their runner PID and exit code in an atomic summary file, so they can be
+tracked without project-sandbox session records. Job records keep only each
+bookmark's latest run; `opgraph.json`
 keeps every run as a node of the [bookmark history](usage.md#bookmark-history),
 finalised with the bookmark's commit on the first refresh that lists bookmarks
 after the run ended. See [sessions](sessions.md) for terminal behavior and
@@ -85,6 +89,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 |---|---|---|
 | Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks | Adopt new bookmarks and record finished runs; poll jobs and claim their notifications; the same for tasks |
 | `r` / `i`, `:NAME` actions | jobs, graph | Recheck busy, spawn and write the job record; add the run node. A new bookmark typed into the form is recorded first, under graph |
+| `I` | jobs, graph | Create a missing workspace; recheck busy and reserve the target before launching the host agent; add the run node |
 | `r` / `i` with bookmarks selected | history → (jobs, graph); then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark |
 | `n` | history → graph | Create with jj, then record the creation and its undo entry |
 | `dd` | history → graph → jobs | Busy check, delete, undo entry |

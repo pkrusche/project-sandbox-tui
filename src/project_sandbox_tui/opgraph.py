@@ -354,7 +354,7 @@ class State:
             [head.id],
             time.time(),
             agent=job.spec.label(),
-            mode=job.mode,
+            mode="host" if job.host else job.mode,
             prompt=prompt,
             command=shlex.join(job.argv),
             job=job.started_at,

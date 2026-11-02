@@ -59,6 +59,7 @@ diffs or the comparison is unavailable. Counts follow the saved marks from
 | `/` | Filter (`enter` keeps it, `esc` clears) |
 | `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
 | `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout; `@` uses the current checkout, main requires a new bookmark |
+| `I` | [Host agent](sessions.md#host-agent-sessions) in each selected workspace, creating missing ones; uses `ui.terminal` |
 | `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark) or running [tasks](#tasks): repeat to cancel harder, a third time to forget a run; clears a finished status at once; asks first before signalling several |
 | `l` / `enter` | [Logs](#log-viewer) and the latest task output, or run details while a bookmark has neither |
 | `P` | Last run details (agent, times, IDs, log, command line), history, recent tasks and the interactive command |
@@ -132,6 +133,7 @@ removes the workspace instead.
 | `:&!cmd` · `:&name args` | Run once in the repository as a [background task](#background-commands) |
 | `:*!cmd` · `:*name args` | Run a background task in [each target workspace](#running-in-each-workspace) at once |
 | `:action args` | Start the [`[actions]`](configuration.md#agent-actions) prompt on each target, with `args` appended |
+| `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
 
 | Key | Action in the command line |

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import json
+import shlex
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -94,6 +97,86 @@ def test_configured_commands_take_arguments(
         assert app.screen.extra == (("configured commands", ((":save", "printf '%s\\n' >out"),)),)
 
     run_app(repo, cfg, scenario)
+
+
+@pytest.mark.parametrize("mode", ["inline", "custom"])
+def test_host_command_launches_cli_with_arguments(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: list[str],
+    mode: str,
+) -> None:
+    from project_sandbox_tui import launchers
+    from project_sandbox_tui.config import LastUsed, remember
+
+    cfg = fake_cfg()
+    cfg.ui.terminal = mode
+    cfg.ui.terminal_command = "terminal {cmd}"
+    cfg.ui.host_agent_command = "unused-wrapper {agent}"
+    script = repo.parent / "fake host agent.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "with open('host-args.json', 'w') as out:\n"
+        "    json.dump([os.getcwd(), sys.argv[1:]], out)\n"
+    )
+    argv = [sys.executable, str(script), "--model", "my model", "", "$HOME; echo literal"]
+    opened: list[tuple[launchers.ExternalLaunch, Path]] = []
+    monkeypatch.setattr(launchers, "start", lambda launch, cwd: opened.append((launch, cwd)))
+    remember(repo, "claude", "sandbox-model", "high", 300)
+    last = LastUsed.load(repo)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
+        await pilot.press("j")  # feature/x; create its workspace on demand
+        path = app._workspace_dir("feature/x")
+        assert not path.exists()
+        await type_line(pilot, "host " + shlex.join(argv))
+        await pilot.press("enter")
+        await pilot.pause()
+        job = app.jobs.jobs["feature/x"]
+        assert job.host and job.external == (mode == "custom")
+        assert job.spec.agent == sys.executable and job.argv == argv
+        assert path.is_dir()
+        assert LastUsed.load(repo) == last
+        assert app.tasks.tasks == {}
+        if mode == "inline":
+            assert job.exit_code == 0 and not job.running
+            assert json.loads((path / "host-args.json").read_text()) == [str(path), argv[2:]]
+        else:
+            launch, cwd = opened.pop()
+            assert cwd == path
+            assert launch.argv == [
+                "terminal",
+                shlex.join(launchers.host_command(argv, job.summary_path)),
+            ]
+            # The command uses the same busy reservation as the shortcut.
+            await app.run_command("host other-agent")
+            assert not opened
+            assert app.jobs.jobs["feature/x"] is job
+            job.status = "completed"
+            app.jobs.save(job)
+
+    run_app(repo, cfg, scenario)
+
+
+def test_host_command_uses_marked_targets(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[tuple[str, tuple[str, ...]]] = []
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        monkeypatch.setattr(app, "_open_host_agent", lambda name, argv: opened.append((name, argv)))
+        app.marked = ["@", "feature/x"]
+        await type_line(pilot, "host my-agent --option 'two words'")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == [
+            ("@", ("my-agent", "--option", "two words")),
+            ("feature/x", ("my-agent", "--option", "two words")),
+        ]
+
+    run_app(repo, fake_cfg(), scenario)
 
 
 def test_default_command_warns_before_running(

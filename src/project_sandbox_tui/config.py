@@ -101,6 +101,7 @@ class UI:
     terminal: str = ""
     terminal_command: str = ""  # ui.terminal = "custom"; tokens may use {cmd} {branch} {repo}
     editor_command: str = ""  # "" = $EDITOR; tokens may use {path}
+    host_agent_command: str = ""  # "" = last-used agent; tokens may use {agent} {path} {branch}
     refresh_seconds: float = 3.0
     bell: bool = True
     cheatsheet: bool = True  # auto-collapses in small terminals; toggle with H
@@ -222,6 +223,7 @@ class Config:
             "notify_command": ("title", "message"),
             "terminal_command": ("cmd", "branch", "repo"),
             "editor_command": ("path",),
+            "host_agent_command": ("agent", "path", "branch"),
         }
         for key, names in placeholders.items():
             command = getattr(self.ui, key)
@@ -767,6 +769,7 @@ runtime = "auto"              # auto | apple-container | docker | podman
 #                             # after) | tmux | zellij | screen | custom (terminal_command)
 # terminal_command = ""       # with terminal = "custom", e.g. 'wezterm start -- sh -c {cmd}'
 # editor_command = ""         # e.g. 'code {path}'
+# host_agent_command = ""     # I: last-used agent on host; e.g. '{agent}' or 'my-agent {path}'
 refresh_seconds = 3
 bell = true
 cheatsheet = true             # auto-collapses in small terminals (H toggles)
