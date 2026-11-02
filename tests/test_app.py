@@ -1306,11 +1306,13 @@ def test_narrow_terminal_shortens_headings(repo: Path, fake_cfg: Callable[..., C
         await pilot.pause()
         assert "repo   2 bm · 0 run" in header(app)
 
-        await pilot.resize_terminal(120, 30)
+        await pilot.resize_terminal(wide, 30)
         await pilot.pause()
         assert "vs main" in shot(app) and str(repo) in header(app)
 
-    run_app(repo, fake_cfg(), scenario)
+    # Room for the full path beside the cheat-sheet: macOS temp paths are longer than Linux ones.
+    wide = 120 + len(str(repo))
+    run_app(repo, fake_cfg(), scenario, size=(wide, 30))
 
 
 @pytest.mark.parametrize("mode", ["i", "r"])

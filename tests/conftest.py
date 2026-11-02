@@ -97,11 +97,17 @@ def child_processes(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, No
             # Signal all children before waiting; one stuck child must not prevent
             # cleanup of the others. Only detached groups belong wholly to this test.
             for proc, group in reversed(children):
-                with contextlib.suppress(ProcessLookupError):
+                try:
                     if group:
                         killpg(proc.pid, signal.SIGKILL)
                     elif proc.poll() is None:
                         kill(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    # macOS: EPERM when every member is a zombie, e.g. our unreaped leader.
+                    if sys.platform != "darwin":
+                        raise
             for proc, _group in children:
                 proc.wait(timeout=5)
             if prctl is not None:

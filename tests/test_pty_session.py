@@ -93,9 +93,12 @@ class Tui:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.proc.pid, signal.SIGKILL)  # also stop an interrupted test's agent
             self.proc.kill()  # also works if startup failed before login_tty created a session
-            self.proc.wait(timeout=5)
         finally:
+            # Hang up before waiting. On macOS an exiting session leader waits in
+            # the kernel for its terminal's output to drain, and SIGKILL cannot
+            # interrupt that. If nobody reads the master, it never exits.
             os.close(self.fd)
+        self.proc.wait(timeout=5)
 
 
 def start_tui(repo: Path, command: str, *, host_agent_command: str = "", **env_extra: str) -> Tui:
