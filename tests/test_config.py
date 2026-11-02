@@ -193,6 +193,25 @@ def test_fast_mode_defaults_and_remembered_choices(tmp_path: Path) -> None:
         assert not c.resolve_fast(cfg, last, agent)
 
 
+def test_remembered_host_command_keeps_sandbox_choices_separate(tmp_path: Path) -> None:
+    command = ["/opt/my agent", "--model", "a b", "", "$HOME; echo literal"]
+    last = c.LastUsed(host_command=command)
+    last.save(tmp_path)
+    c.remember(tmp_path, "codex", "sandbox-model", "high", 300)
+    loaded = c.LastUsed.load(tmp_path)
+    assert loaded.host_command == command
+    assert loaded.agent == "codex" and loaded.model_by_agent == {"codex": "sandbox-model"}
+
+
+@pytest.mark.parametrize("command", [None, "codex", [], [""], [2], ["codex", None], ["bad\0"]])
+def test_invalid_remembered_host_command_is_ignored(tmp_path: Path, command: object) -> None:
+    write(
+        c.repo_state_dir(tmp_path) / "last_used.json",
+        json.dumps({"agent": "codex", "host_command": command}),
+    )
+    assert c.LastUsed.load(tmp_path) == c.LastUsed(agent="codex")
+
+
 def test_state_dir_is_per_repo(tmp_path: Path) -> None:
     a = c.repo_state_dir(tmp_path / "x" / "repo")
     b = c.repo_state_dir(tmp_path / "y" / "repo")

@@ -1223,6 +1223,26 @@ def test_cheatsheet_shown_on_start_and_toggles(repo: Path, fake_cfg: Callable[..
     run_app(repo, cfg, hidden)
 
 
+@pytest.mark.parametrize("command", ["", "my-agent --model example"])
+def test_host_agent_hint_and_preview_match_command(
+    repo: Path, fake_cfg: Callable[..., Config], command: str
+) -> None:
+    from project_sandbox_tui.config import remember
+
+    cfg = fake_cfg()
+    cfg.ui.host_agent_command = command
+    remember(repo, "codex", "sandbox-model", "high", 300)
+    executable = "my-agent" if command else "codex"
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        assert f"host agent ({executable})" in app.export_screenshot().replace("&#160;", " ")
+        await pilot.press("j", "P")
+        assert isinstance(app.screen, MessageScreen)
+        assert f"host agent command (I)\n{command or executable}" in app.screen.body
+
+    run_app(repo, cfg, scenario)
+
+
 @pytest.mark.parametrize("size", [(80, 24), (40, 12), (120, 12)])
 def test_small_window_keeps_bookmarks_and_help_visible(
     repo: Path, fake_cfg: Callable[..., Config], size: tuple[int, int]
@@ -2636,6 +2656,8 @@ def test_host_agent_rejects_protected_or_busy_targets_and_reports_launch_failure
         await pilot.press("I")
         assert notices[-1] == "feature/x: could not start host agent: terminal not found"
         assert app.jobs.jobs == {}
+        await app.run_command("host my-agent --model example")
+        assert LastUsed.load(repo).host_command == []
 
     run_app(repo, cfg, scenario)
 

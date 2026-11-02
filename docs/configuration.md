@@ -128,7 +128,7 @@ notify_command = ""     # "" = platform default; {title} {message}
 terminal = "inline"     # inline | tmux | zellij | screen | custom
 terminal_command = ""   # with terminal = "custom"; {cmd} {branch} {repo}
 editor_command = ""     # GUI editor, e.g. 'code {path}'; "" = $EDITOR in this terminal
-host_agent_command = "" # I: last-used agent executable; {agent} {path} {branch}
+host_agent_command = "" # I before first :host: last-used agent; {agent} {path} {branch}
 refresh_seconds = 3
 bell = true
 cheatsheet = true

@@ -98,7 +98,13 @@ workspace, or in the current checkout for `@`. Missing workspaces are created
 as with `o`. More than three selections ask for confirmation; inline sessions
 run one after another, while external terminals open separately.
 
-The command defaults to the last-used agent executable (or `defaults.agent`).
+The `I` hint shows the executable that will run; `P` shows the full host command
+for each selected workspace. After a successful `:host` launch, `I` reuses that
+command, including its arguments, across TUI restarts. This host choice is
+remembered separately from sandbox launch choices.
+
+Until a `:host` command is remembered, the command defaults to the last-used
+sandbox agent executable (or `defaults.agent`).
 The agent uses its own host configuration for model, permissions and other
 options. Set `ui.host_agent_command` to customize it, for example
 `'my-agent --directory {path}'` or `'{agent} --model my-model'`.
@@ -109,8 +115,9 @@ Use `:host AGENT [ARGS...]` to choose an executable and pass its CLI arguments
 directly, for example `:host codex --model my-model` or
 `:host claude 'review the current changes'`. Shell quoting groups arguments;
 shell operators and expansions are passed literally. This form uses the named
-executable instead of `ui.host_agent_command` and does not change remembered
-launch choices. Like `I`, it runs in each marked workspace, or the highlighted
+executable instead of `ui.host_agent_command` and becomes the command for future
+`I` launches. Failed or cancelled launches keep the previous choice.
+Like `I`, it runs in each marked workspace, or the highlighted
 workspace when none are marked. The `*` and `&` prefixes are not accepted.
 
 `ui.terminal` controls where the session opens, with the same inline fallback

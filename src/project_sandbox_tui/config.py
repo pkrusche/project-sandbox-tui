@@ -101,7 +101,7 @@ class UI:
     terminal: str = ""
     terminal_command: str = ""  # ui.terminal = "custom"; tokens may use {cmd} {branch} {repo}
     editor_command: str = ""  # "" = $EDITOR; tokens may use {path}
-    host_agent_command: str = ""  # "" = last-used agent; tokens may use {agent} {path} {branch}
+    host_agent_command: str = ""  # before first :host; tokens may use {agent} {path} {branch}
     refresh_seconds: float = 3.0
     bell: bool = True
     cheatsheet: bool = True  # auto-collapses in small terminals; toggle with H
@@ -603,13 +603,14 @@ def write_state(path: Path, data: Any, *, durable: bool = False) -> None:
 
 @dataclass
 class LastUsed:
-    """Launch-form values remembered per repository ("defaults that update")."""
+    """Launch choices remembered per repository ("defaults that update")."""
 
     agent: str = ""
     effort: str | None = None  # None = never chosen; "" = explicitly agent default
     timeout: int | None = None
     model_by_agent: dict[str, str] = field(default_factory=dict)
     fast_by_agent: dict[str, bool] = field(default_factory=dict)
+    host_command: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, repo: Path) -> LastUsed:
@@ -637,6 +638,14 @@ class LastUsed:
                 for k, v in raw["fast_by_agent"].items()
                 if k in FAST_AGENTS and type(v) is bool
             }
+        host_command = raw.get("host_command")
+        if (
+            isinstance(host_command, list)
+            and host_command
+            and all(isinstance(arg, str) and "\0" not in arg for arg in host_command)
+            and host_command[0]
+        ):
+            out.host_command = host_command
         return out
 
     def save(self, repo: Path) -> None:
@@ -769,7 +778,7 @@ runtime = "auto"              # auto | apple-container | docker | podman
 #                             # after) | tmux | zellij | screen | custom (terminal_command)
 # terminal_command = ""       # with terminal = "custom", e.g. 'wezterm start -- sh -c {cmd}'
 # editor_command = ""         # e.g. 'code {path}'
-# host_agent_command = ""     # I: last-used agent on host; e.g. '{agent}' or 'my-agent {path}'
+# host_agent_command = ""     # I before first :host; e.g. '{agent}' or 'my-agent {path}'
 refresh_seconds = 3
 bell = true
 cheatsheet = true             # auto-collapses in small terminals (H toggles)

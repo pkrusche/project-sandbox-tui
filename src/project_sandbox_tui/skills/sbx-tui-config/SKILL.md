@@ -103,7 +103,9 @@ Actions use the selected agent's remembered fast-mode choice, falling back to
 `defaults.fast`; `fast` is not an action-specific setting.
 
 For host commands, use quoted environment variables such as `"$SBX_WORKSPACE"`.
-`ui.host_agent_command` customizes `I`, the interactive host agent shortcut.
+`ui.host_agent_command` customizes `I`, the interactive host agent shortcut,
+until a successful `:host AGENT [ARGS...]` remembers a command for that repository.
+`I` then reuses the full remembered command, independently of sandbox defaults.
 It defaults to the last-used agent executable, runs in the selected workspace,
 and accepts `{agent}`, `{path}` and `{branch}`. `ui.terminal` controls where it opens.
 For `ui.editor_command`, `ui.host_agent_command`, `ui.terminal_command`, and `ui.notify_command`,

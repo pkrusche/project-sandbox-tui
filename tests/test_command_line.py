@@ -138,7 +138,11 @@ def test_host_command_launches_cli_with_arguments(
         assert job.host and job.external == (mode == "custom")
         assert job.spec.agent == sys.executable and job.argv == argv
         assert path.is_dir()
-        assert LastUsed.load(repo) == last
+        remembered = LastUsed.load(repo)
+        assert remembered.host_command == argv
+        remembered.host_command = []
+        assert remembered == last
+        assert Path(argv[0]).name == app.main.cheatsheet().host_agent
         assert app.tasks.tasks == {}
         if mode == "inline":
             assert job.exit_code == 0 and not job.running
@@ -154,10 +158,36 @@ def test_host_command_launches_cli_with_arguments(
             await app.run_command("host other-agent")
             assert not opened
             assert app.jobs.jobs["feature/x"] is job
+            assert LastUsed.load(repo).host_command == argv
             job.status = "completed"
             app.jobs.save(job)
+        # I reuses the exact command, including quoted and empty arguments,
+        # even with a configured wrapper. It also survives a TUI restart.
+        await pilot.press("I")
+        await pilot.pause()
+        repeated = app.jobs.jobs["feature/x"]
+        assert repeated is not job
+        assert repeated.argv == argv and repeated.spec.agent == argv[0]
+        assert LastUsed.load(repo).host_command == argv
+        repeated.status = "completed"
+        app.jobs.save(repeated)
 
     run_app(repo, cfg, scenario)
+
+    async def restarted(app: SandboxTUI, pilot: Any) -> None:
+        from project_sandbox_tui.screens.dialogs import MessageScreen
+
+        monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
+        assert Path(argv[0]).name == app.main.cheatsheet().host_agent
+        await pilot.press("j", "P")
+        assert isinstance(app.screen, MessageScreen)
+        assert f"host agent command (I)\n{shlex.join(argv)}" in app.screen.body
+        await pilot.press("escape", "I")
+        assert app.jobs.jobs["feature/x"].argv == argv
+        app.jobs.jobs["feature/x"].status = "completed"
+        app.jobs.save(app.jobs.jobs["feature/x"])
+
+    run_app(repo, cfg, restarted)
 
 
 def test_host_command_uses_marked_targets(

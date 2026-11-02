@@ -351,12 +351,19 @@ class Cheatsheet:
 
     GAP = 3
 
+    def __init__(self, host_agent: str) -> None:
+        self.host_agent = host_agent
+
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         # Each row is its own grid: a column shared between rows would be as wide
         # as its widest section, and cut off the sections beside it.
         rows: list[list[Text]] = []
         used = 0
         for title, keys in CHEATSHEET:
+            keys = tuple(
+                (key, f"host agent ({self.host_agent})" if key == "I" else what)
+                for key, what in keys
+            )
             section = _cheatsheet_section(title, keys)
             width = max(cell_len(line) for line in section.plain.splitlines())
             if rows and used + self.GAP + width <= options.max_width:
@@ -384,7 +391,7 @@ class MainScreen(Screen[None]):
         yield Static("", id="header")
         table: DataTable[Text] = DataTable(cursor_type="row", zebra_stripes=False)
         yield table
-        yield Static(Cheatsheet(), id="cheatsheet")
+        yield Static(self.cheatsheet(), id="cheatsheet")
         yield Input(placeholder="filter", id="filter")
         yield Static(_footer(FOOTER, *SHORT_FOOTERS), id="footer")
 
@@ -394,6 +401,14 @@ class MainScreen(Screen[None]):
         if app.table.columns:  # column headings and widths depend on the width
             app._render_table()
 
+    def cheatsheet(self) -> Cheatsheet:
+        app = cast("SandboxTUI", self.app)
+        try:
+            agent = Path(app._host_argv(WORKING_COPY)[0]).name
+        except ValueError:
+            agent = "invalid command"
+        return Cheatsheet(agent)
+
     def update_help_layout(self) -> None:
         """Collapse the sheet before it crowds out the working copy and a bookmark."""
         sheet = self.query_one("#cheatsheet", Static)
@@ -401,7 +416,9 @@ class MainScreen(Screen[None]):
         width = max(1, self.size.width - gutter.width)
         console = self.app.console
         options = console.options.update(width=width, height=None)
-        sheet_height = len(console.render_lines(Cheatsheet(), options)) + gutter.height
+        content = self.cheatsheet()
+        sheet.update(content)
+        sheet_height = len(console.render_lines(content, options)) + gutter.height
         # Header, table header + working copy + bookmark + horizontal scrollbar,
         # and room for the filter even before it opens.
         app = cast("SandboxTUI", self.app)
@@ -431,7 +448,7 @@ class MainScreen(Screen[None]):
             self.query_one("#footer", Static).update(_footer(f"? full help · {hint}", hint))
             event.stop()
         else:
-            self.query_one("#cheatsheet", Static).update(Cheatsheet())
+            self.query_one("#cheatsheet", Static).update(self.cheatsheet())
             self.query_one("#footer", Static).update(_footer(FOOTER, *SHORT_FOOTERS))
 
 
@@ -1493,6 +1510,7 @@ class SandboxTUI(App[None]):
                 spec.timeout if spec.mode == "background" else None,
                 fast=spec.fast,
             )
+            self.main.update_help_layout()
         self.call_later(self.refresh_data)
 
     @contextlib.contextmanager
@@ -1929,6 +1947,26 @@ class SandboxTUI(App[None]):
     def action_open_host_agent(self) -> None:
         self._open_host_agents()
 
+    def _host_argv(self, name: str) -> list[str]:
+        last = LastUsed.load(self.repo)
+        if last.host_command:
+            return last.host_command
+        agent = resolve_launch_defaults(self.cfg, last).agent
+        argv = launchers.fill_command(
+            self.cfg.ui.host_agent_command or "{agent}",
+            {"agent": agent, "path": str(self._workspace_dir(name)), "branch": name},
+        )
+        if not argv or not argv[0]:
+            raise ValueError("ui.host_agent_command is empty")
+        return argv
+
+    def _remember_host_command(self, command: tuple[str, ...]) -> None:
+        if command:
+            last = LastUsed.load(self.repo)
+            last.host_command = list(command)
+            last.save(self.repo)
+            self.main.update_help_layout()
+
     def _open_host_agents(self, argv: tuple[str, ...] = ()) -> None:
         chosen = self._action_branches()
         if not chosen:
@@ -1957,22 +1995,14 @@ class SandboxTUI(App[None]):
         path = self._ensure_workspace(name)
         if path is None:
             return
-        agent = (
-            command[0]
-            if command
-            else resolve_launch_defaults(self.cfg, LastUsed.load(self.repo)).agent
-        )
         try:
-            argv = (
-                list(command)
-                if command
-                else launchers.fill_command(
-                    self.cfg.ui.host_agent_command or "{agent}",
-                    {"agent": agent, "path": str(path), "branch": name},
-                )
+            argv = list(command) if command else self._host_argv(name)
+            last = LastUsed.load(self.repo)
+            agent = (
+                argv[0]
+                if command or last.host_command
+                else resolve_launch_defaults(self.cfg, last).agent
             )
-            if not argv:
-                raise ValueError("ui.host_agent_command is empty")
             spec = LaunchSpec(branch=name, agent=agent)
             mode = launchers.effective_mode(self.cfg.ui.terminal_mode())
             if mode != "inline":
@@ -1989,8 +2019,11 @@ class SandboxTUI(App[None]):
                 except (OSError, ValueError, launchers.LaunchError):
                     self.jobs.discard(job)
                     raise
+                self._remember_host_command(command)
                 self._record_run(job)
-                self.notify(f"{name}: host agent {launch.message}", timeout=8)
+                self.notify(
+                    f"{name}: host agent ({Path(argv[0]).name}) {launch.message}", timeout=8
+                )
                 self.call_later(self.refresh_data)
                 return
             with (
@@ -2007,6 +2040,7 @@ class SandboxTUI(App[None]):
                     except OSError:
                         job.exit_code = 127
                         raise
+                    self._remember_host_command(command)
                     while True:
                         try:
                             job.exit_code = proc.wait()
@@ -2118,6 +2152,11 @@ class SandboxTUI(App[None]):
             except ConfigError as exc:
                 command = f"! {exc}"
             parts.append(f"interactive command\n{command}")
+            try:
+                host_command = shlex.join(self._host_argv(name))
+            except ValueError as exc:
+                host_command = f"! {exc}"
+            parts.append(f"host agent command (I)\n{host_command}")
             body = "\n\n".join(parts)
             sections.append(f"── {name} ──\n{body}" if len(chosen) > 1 else body)
         branch = self.branch(chosen[0])
