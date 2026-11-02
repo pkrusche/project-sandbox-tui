@@ -19,7 +19,7 @@ require a `.jj/` directory.
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
 | `commands.py` | `:` command parsing (`:!`, `:&`, `:*`, `[actions]`), completion and leader-key mappings |
-| `review.py` | Diff review: files marked seen per bookmark |
+| `review.py` | Diff review: per-commit and direct-comparison file marks per bookmark |
 | `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
 

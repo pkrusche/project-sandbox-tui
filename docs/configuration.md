@@ -248,7 +248,7 @@ sbx-tui config set --project actions.chores.effort low
 | `<repo>-<hash>/prompt_history.json` | Prompt history |
 | `<repo>-<hash>/command_history.json` | Command-line history |
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
-| `<repo>-<hash>/diff_review.json` | Files marked seen in the [diff review](usage.md#diff-review) |
+| `<repo>-<hash>/diff_review.json` | File changes marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
 | `<repo>-<hash>/jobs/history/<bookmark>-<hash>/` | [Replaced and cleared job records](sessions.md#one-sandbox-per-bookmark), the last 50 per bookmark |

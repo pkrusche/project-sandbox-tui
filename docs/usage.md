@@ -42,16 +42,17 @@ omit zeros:
 | Symbol | Meaning |
 |---|---|
 | `↑N` / `↓N` | Commits only in this revision / main; both appear for diverged histories |
-| `ΔN` | Files differing between tips, as with `=` |
+| `ΔN` | Files differing between tips |
 | `=` | Matching tips |
 | `?` | Comparison unavailable, e.g. missing main or conflicted bookmark |
 
 `@` includes edits captured on refresh; its commit counts toward `↑N` even if empty.
 
-The `reviewed` column (`seen` in narrow terminals) shows reviewed files out of
-the total differing from main, for example `2/5`. It is blank when there are no
-diffs or the comparison is unavailable. Counts follow the saved marks from
-[diff review](#diff-review) and update when a file's diff changes.
+The `reviewed` column (`seen` in narrow terminals) shows reviewed file changes
+out of all file changes in commits outside main, for example `2/5`. A file
+changed in two commits counts twice. It is blank when there are no file changes
+to review or the comparison is unavailable. Counts follow the saved marks from
+[diff review](#diff-review); empty commits contribute no files.
 
 | Key | Action |
 |---|---|
@@ -331,32 +332,43 @@ bookmark's latest task.
 
 ## Diff review
 
-`=` lists the files that differ between the two revisions: status
-(`A`dded, `M`odified, `D`eleted, `R`enamed, `C`opied), lines added and removed,
-and the file's size in the target revision. The header totals them.
+For a single bookmark (or `@`), `=` opens a file review for each commit in
+`main..bookmark`, oldest first. Use `[` and `]` to move between commits; the
+header shows the current position, commit ID and description. Each commit's
+table lists its changed files with status (`A`dded, `M`odified, `D`eleted,
+`R`enamed, `C`opied), line counts and target sizes. This includes changes that
+a later commit reverts, and every side of a merge. Empty commits show an empty
+file table and can be passed with `]`.
 
 | Key | Action |
 |---|---|
-| `enter` / `l` | View the file's diff |
+| `[` / `]` | Previous / next commit |
+| `enter` / `l` | View the selected file's diff in this commit |
 | `space` | Mark the file seen (`✓`) or unseen (`●`), then move down |
-| `=` | View the diff of all unseen files, or of every file once all are seen |
-| `A` | Mark all files seen, or all unseen once all are seen |
+| `=` | View unseen files in this commit, or all its files once all are seen |
+| `A` | Mark all files in this commit seen, or all unseen once all are seen |
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
-| `q` / `esc` / `h` | Back to the list |
+| `q` / `esc` / `h` | Back to the bookmark list |
 
-Diffs use `jj diff --from BASE --to TARGET` with the host's formatter and pager
-(including delta). Each viewing starts with a cleared terminal. Exit the viewer,
-then press Enter to return to the file list.
-The list pins both revisions when it opens, so the viewer shows the change
-that was listed even if a run moves the bookmark meanwhile; press `=` on the
-bookmark list again to see later changes.
+Diffs use `jj diff -r COMMIT` restricted to the selected files, with the host's
+formatter and pager (including delta). Merge diffs show changes relative to the
+automatic merge of their parents. Each viewing starts with a cleared terminal.
+Exit the viewer, then press Enter to return to the file table. The review pins
+commit IDs when it opens, so files and diffs stay the same even if a run moves
+the bookmark meanwhile; reopen the review to see later changes.
 
-Seen marks are remembered per bookmark (the second revision, or `@`) and per
-change to the file: both sides' contents, type and path. A file marked seen
-stays seen while later runs change only other files, and becomes unseen again
-when its own diff changes, including when main changes it. Marks are kept in
-the [state directory](configuration.md#state-directory) and shared by TUI
-instances.
+Seen marks are remembered per bookmark, commit ID and file change. Reviewing a
+file in one commit leaves it unseen in other commits that change it. Adding
+commits keeps earlier marks; rewriting a commit makes its files unseen again.
+Advancing main removes commits it now includes from the review and counts.
+Marks are kept in the [state directory](configuration.md#state-directory) and
+shared by TUI instances.
+
+Selecting two revisions keeps the direct comparison of their tips, using
+`jj diff --from BASE --to TARGET`. This uses the same file table and controls,
+without commit navigation. These marks are stored per second revision and file
+change (contents, type and paths), independently of per-commit file marks and
+the bookmark list's reviewed count.
 
 ## Log viewer
 
