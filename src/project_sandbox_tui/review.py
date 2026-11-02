@@ -1,6 +1,7 @@
 """Diff review: which file changes have been seen, kept per bookmark.
 
-A mark is a file change's key (both sides' content, type and path), so a file
+Per-commit file marks include the full commit ID and the file change's key.
+Direct-comparison marks use a file change's key (content, type and path), so a file
 stays seen while later runs change only other files, and shows up again once
 its own diff changes. Stored as JSON in the repo's state directory; every
 write re-reads the file under a lock so TUI instances merge their marks.

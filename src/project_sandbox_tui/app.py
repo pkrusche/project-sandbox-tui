@@ -76,7 +76,7 @@ from project_sandbox_tui.screens.dialogs import (
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
-from project_sandbox_tui.screens.review import DiffReviewScreen
+from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen
 from project_sandbox_tui.screens.tasks import TasksScreen
 from project_sandbox_tui.tasks import TaskManager, TaskRecord
 from project_sandbox_tui.vcs import (
@@ -85,6 +85,7 @@ from project_sandbox_tui.vcs import (
     FileChange,
     HeldByWorkspaceError,
     JjBackend,
+    ReviewCommit,
     StaleWorkingCopyError,
     VcsError,
     main_branch,
@@ -129,7 +130,7 @@ class Row:
     job: JobRecord | None
     session: SessionRecord | None
     graph: tuple[str, int] | None = None  # history graph line and its node position
-    review: tuple[int, int] | None = None  # reviewed files, total files against main
+    review: tuple[int, int] | None = None  # seen/total file changes across commits outside main
     tasks: list[TaskRecord] = dataclasses.field(default_factory=list)  # host tasks, newest first
     protected: bool = False
 
@@ -637,7 +638,7 @@ class SandboxTUI(App[None]):
             self._state_errors.pop(area, None)
 
     def _review_counts(self) -> dict[str, tuple[int, int]]:
-        """Count current marks, caching file identities until either commit changes."""
+        """Count seen files across commits, caching identities until either tip changes."""
         seen = SeenFiles.for_repo(self.repo)
         main = self.main_name()
         base = next((b.commit for b in self.branches if b.name == main), "")
@@ -645,20 +646,21 @@ class SandboxTUI(App[None]):
         keys: dict[tuple[str, str], set[str]] = {}
         for branch in self.branches:
             comparison = branch.comparison
-            if not base or comparison is None or not comparison.changed_files:
+            if not base or comparison is None or not comparison.ahead:
                 continue
             marks = seen.seen(branch.name)
-            if not marks:
-                counts[branch.name] = (0, comparison.changed_files)
-                continue
             pair = (base, branch.commit)
             current = keys.get(pair, self._review_keys.get(pair))
             if current is None:
                 try:
-                    changes = self.backend.changed_files(*pair)
+                    commits = self.backend.review_commits(*pair, snapshot=False)
+                    current = {
+                        f.key
+                        for commit in commits
+                        for f in self.backend.changed_files_for_commit(commit).files
+                    }
                 except VcsError:
                     continue  # retry on refresh; don't show a stale reviewed count
-                current = {f.key for f in changes.files}
             keys[pair] = current
             if current:
                 counts[branch.name] = (len(marks & current), len(current))
@@ -1213,7 +1215,40 @@ class SandboxTUI(App[None]):
             target = chosen[0]
         else:
             base, target = chosen
-        self._review_diff(base, target)
+        if len(chosen) == 1:
+            self._review_commits(base, target)
+        else:
+            self._review_diff(base, target)
+
+    @work(exclusive=True, group="diff")
+    async def _review_commits(self, base: str, target: str) -> None:
+        """Review files separately in each of the bookmark's pinned commits."""
+        try:
+            commits = await asyncio.to_thread(self.backend.review_commits, base, target)
+            changes = await asyncio.to_thread(
+                lambda: [self.backend.changed_files_for_commit(commit) for commit in commits]
+            )
+        except VcsError as exc:
+            self.notify(f"could not diff {base} and {target}: {exc}", severity="error")
+            return
+        if not commits:
+            self.notify(f"no commits to review from {base} to {target}")
+            return
+        seen = await asyncio.to_thread(SeenFiles.for_repo, self.repo)
+        title = f"{base} → {target}"
+
+        def view(commit: ReviewCommit, files: Sequence[FileChange]) -> None:
+            shown = files[0].display if len(files) == 1 else f"{len(files)} files"
+            paths = [path for change in files for path in change.paths]
+            self._show_diff(
+                f"{title}: {commit.commit[:12]}: {shown}",
+                self.backend.diff_commit_files_command(commit, paths),
+            )
+
+        async def closed(_: None) -> None:
+            await self.refresh_data()
+
+        self.push_screen(CommitReviewScreen(title, target, commits, changes, seen, view), closed)
 
     @work(exclusive=True, group="diff")
     async def _review_diff(self, base: str, target: str) -> None:

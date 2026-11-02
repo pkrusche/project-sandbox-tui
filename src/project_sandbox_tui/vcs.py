@@ -83,9 +83,21 @@ class FileChange:
 class FileChanges:
     """Changed files between two revisions, pinned to the commits they were read from."""
 
-    base: str  # commit id
+    base: str  # commit id; empty for a commit diff against its automatically merged parents
     target: str  # commit id
     files: list[FileChange]
+
+
+@dataclass(frozen=True)
+class ReviewCommit:
+    """A pinned commit on a bookmark's path from main."""
+
+    commit: str
+    subject: str
+
+    @property
+    def key(self) -> str:
+        return f"commit:{self.commit}"
 
 
 def _run(args: list[str], cwd: Path) -> str:
@@ -467,6 +479,49 @@ class JjBackend:
         """Interactive diff of some files, as ``diff_command``."""
         return [*self.diff_command(base, target), " | ".join(map(_file_pattern, paths)) or "none()"]
 
+    def review_commits(
+        self, base: str, target: str, *, snapshot: bool = True
+    ) -> list[ReviewCommit]:
+        """Commits reachable from target but not base, parents before children.
+
+        Pin both tips after snapshotting once, including edits to the working copy.
+        Refresh counts can skip the snapshot when they already have pinned tips.
+        """
+        if snapshot:
+            _run(["jj", "--no-pager", "--color=never", "status"], self.root)
+        base_commit, target_commit = (
+            self._jj("log", "--no-graph", "-r", revset_symbol(name), "-T", "commit_id").strip()
+            for name in (base, target)
+        )
+        out = self._jj(
+            "log",
+            "--no-graph",
+            "--reversed",
+            "-r",
+            f"{base_commit}..{target_commit}",
+            "-T",
+            # Descriptions can themselves contain NULs; encode them before framing.
+            'commit_id ++ "\\x00" ++ json(description.first_line()) ++ "\\x00"',
+        )
+        fields = out.split("\0")[:-1]
+        return [
+            ReviewCommit(fields[i], json.loads(fields[i + 1])) for i in range(0, len(fields), 2)
+        ]
+
+    def diff_commit_files_command(self, commit: ReviewCommit, paths: Collection[str]) -> list[str]:
+        """Interactive file diffs relative to the commit's automatically merged parents."""
+        return [
+            "jj",
+            "diff",
+            "-r",
+            commit.commit,
+            " | ".join(map(_file_pattern, paths)) or "none()",
+        ]
+
+    def changed_files_for_commit(self, commit: ReviewCommit) -> FileChanges:
+        """Files in a pinned commit, with independent seen keys for each commit and file."""
+        return self._changed_files("", commit.commit, ("-r", commit.commit), f"{commit.key}:file:")
+
     def changed_files(self, base: str, target: str) -> FileChanges:
         """Files differing between ``base`` and ``target``, with line counts and sizes."""
         # Snapshot once and pin both sides: the list, its seen marks and the
@@ -476,7 +531,13 @@ class JjBackend:
             self._jj("log", "--no-graph", "-r", revset_symbol(name), "-T", "commit_id").strip()
             for name in (base, target)
         )
-        span = ("--from", base_commit, "--to", target_commit)
+        return self._changed_files(
+            base_commit, target_commit, ("--from", base_commit, "--to", target_commit)
+        )
+
+    def _changed_files(
+        self, base_commit: str, target_commit: str, span: tuple[str, ...], key_prefix: str = ""
+    ) -> FileChanges:
         fields = self._jj_bytes("diff", *span, "-T", _JJ_DIFF_TEMPLATE).split(b"\0")[:-1]
         width = len(_DIFF_FIELDS)
         headers = [
@@ -507,7 +568,7 @@ class JjBackend:
                     source_path=_decode_path(source),
                     display=display.decode(errors="replace"),
                     status=status.decode(),
-                    key=hashlib.sha256(identity).hexdigest()[:32],
+                    key=key_prefix + hashlib.sha256(identity).hexdigest()[:32],
                     added=added,
                     removed=removed,
                     size=None if status == b"D" else size,

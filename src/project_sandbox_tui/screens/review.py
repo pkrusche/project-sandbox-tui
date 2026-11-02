@@ -1,4 +1,4 @@
-"""``=``: the files a diff changes, to view one by one and mark as seen."""
+"""``=``: review changed files in each commit or in a direct comparison."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
 from project_sandbox_tui.review import SeenFiles
-from project_sandbox_tui.vcs import FileChange, FileChanges
+from project_sandbox_tui.vcs import FileChange, FileChanges, ReviewCommit
 from project_sandbox_tui.widgets import KeyHints, PrefixKeys
 
 STATUS_STYLES = {"A": "green", "D": "red", "M": "yellow", "R": "cyan", "C": "cyan"}
@@ -75,6 +75,11 @@ class DiffReviewScreen(Screen[None]):
         Binding("equals_sign", "view_unseen", show=False),
     ]
 
+    HINTS = (
+        "q back · j/k move · enter/l view file · space seen · "
+        "= view unseen (all once seen) · A all seen / unseen"
+    )
+
     def __init__(
         self,
         title: str,
@@ -96,13 +101,7 @@ class DiffReviewScreen(Screen[None]):
         yield Static("", id="review-title")
         table: DataTable[Text] = DataTable(cursor_type="row", zebra_stripes=False)
         yield table
-        yield Static(
-            KeyHints(
-                "q back · j/k move · enter/l view file · space seen · "
-                "= view unseen (all once seen) · A all seen / unseen"
-            ),
-            id="review-hint",
-        )
+        yield Static(KeyHints(self.HINTS), id="review-hint")
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
@@ -182,7 +181,8 @@ class DiffReviewScreen(Screen[None]):
             self.view([self.files[row]])
 
     def action_view_unseen(self) -> None:
-        self.view([f for f in self.files if f.key not in self.seen] or self.files)
+        if self.files:
+            self.view([f for f in self.files if f.key not in self.seen] or self.files)
 
     def action_cursor(self, step: int) -> None:
         table = self.query_one(DataTable)
@@ -198,3 +198,64 @@ class DiffReviewScreen(Screen[None]):
     def action_g_prefix(self) -> None:
         if self._prefix.press("g"):
             self.action_cursor(-len(self.files))
+
+
+class CommitReviewScreen(DiffReviewScreen):
+    """The file review view, repeated for each commit from main to a bookmark."""
+
+    DEFAULT_CSS = """
+    CommitReviewScreen #review-commit { height: 1; background: $panel; padding: 0 1; }
+    """
+
+    BINDINGS = [
+        Binding("left_square_bracket", "commit(-1)", show=False),
+        Binding("right_square_bracket", "commit(1)", show=False),
+    ]
+
+    HINTS = "[ / ] previous / next commit · " + DiffReviewScreen.HINTS
+
+    def __init__(
+        self,
+        title: str,
+        bookmark: str,
+        commits: Sequence[ReviewCommit],
+        changes: Sequence[FileChanges],
+        seen: SeenFiles,
+        view: Callable[[ReviewCommit, Sequence[FileChange]], None],
+    ) -> None:
+        self.commits = commits
+        self.changes = changes
+        self.commit_index = 0
+        super().__init__(
+            title, bookmark, changes[0], seen, lambda files: view(self.current_commit, files)
+        )
+
+    @property
+    def current_commit(self) -> ReviewCommit:
+        return self.commits[self.commit_index]
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="review-commit")
+        yield from super().compose()
+
+    def _title(self) -> None:
+        super()._title()
+        commit = self.current_commit
+        title = Text(f"commit {self.commit_index + 1}/{len(self.commits)}  ", style="bold")
+        title.append(commit.commit[:12], style="cyan")
+        title.append(f"  {commit.subject or '(no description set)'}", style="")
+        self.query_one("#review-commit", Static).update(title)
+
+    def action_commit(self, step: int) -> None:
+        index = min(max(self.commit_index + step, 0), len(self.commits) - 1)
+        if index == self.commit_index:
+            return
+        self.commit_index = index
+        self.files = self.changes[index].files
+        self.seen = self.seen_files.seen(self.bookmark) & {f.key for f in self.files}
+        table = self.query_one(DataTable)
+        table.clear()
+        for row, change in enumerate(self.files):
+            table.add_row(*self._cells(change), key=str(row))
+        table.move_cursor(row=0)
+        self._title()
