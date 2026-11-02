@@ -671,7 +671,8 @@ def test_fast_forward_rechecks_at_mutation(
     assert backend._bookmark_commit("main") == (side if changed == "main" else old)
 
 
-def test_changed_files_counts_sizes_and_statuses(repo: Path) -> None:
+@pytest.mark.parametrize("per_commit", [False, True])
+def test_changed_files_counts_sizes_and_statuses(repo: Path, per_commit: bool) -> None:
     from tests.conftest import jj
 
     (repo / "a.txt").write_text("a\nB\nc\nd")  # modified, no final newline
@@ -686,7 +687,12 @@ def test_changed_files_counts_sizes_and_statuses(repo: Path) -> None:
     (repo / "new file ü.txt").write_text("newer\nlines\n")
     (repo / "old.txt").rename(repo / "renamed.txt")
     (repo / "gone.txt").unlink()
-    changes = vcs.detect(repo).changed_files("main", "@")
+    backend = vcs.detect(repo)
+    if per_commit:
+        [commit] = backend.review_commits("main", "@")
+        changes = backend.changed_files_for_commit(commit)
+    else:
+        changes = backend.changed_files("main", "@")
     files = {f.path: f for f in changes.files}
     assert sorted(files) == ["a.txt", "bin.dat", "gone.txt", "new file ü.txt", "renamed.txt"]
     a = files["a.txt"]
@@ -699,7 +705,15 @@ def test_changed_files_counts_sizes_and_statuses(repo: Path) -> None:
     assert renamed.display == "{old.txt => renamed.txt}"
     assert len({f.key for f in changes.files}) == 5
     # Pinned to the commits the list was read from.
-    assert changes.base == jj(repo, "log", "--no-graph", "-r", "main", "-T", "commit_id")
+    if per_commit:
+        assert changes.base == ""  # automatic merge of the commit's parents
+        from tests.conftest import run
+
+        jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":summary")
+        patch = run(*backend.diff_commit_files_command(commit, renamed.paths), cwd=repo)
+        assert "R {old.txt => renamed.txt}" in patch and "bin.dat" not in patch
+    else:
+        assert changes.base == jj(repo, "log", "--no-graph", "-r", "main", "-T", "commit_id")
     assert changes.target == jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id")
 
 
@@ -785,3 +799,120 @@ def test_stale_working_copy_is_detected_and_updated(repo: Path, tmp_path: Path) 
     backend.update_stale()
     assert not (repo / "wip.txt").exists()  # @ was abandoned elsewhere
     assert backend.list_branches(compare_to_main="")[0].working_copy
+
+
+def test_review_commits_keeps_reverted_changes_and_pins_patches(repo: Path) -> None:
+    from tests.conftest import jj, run
+
+    backend = vcs.detect(repo)
+    jj(repo, "new", "feature/x")
+    (repo / "b.txt").unlink()
+    jj(repo, "describe", "-m", "remove b")
+    jj(repo, "bookmark", "create", vcs.revset_symbol("topic-"), "-r", "@")
+    jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":summary")
+    assert backend.changed_files("main", "topic-").files == []
+    commits = backend.review_commits("main", "topic-")
+    assert [c.subject for c in commits] == ["add b", "remove b"]
+    patch = "\n".join(
+        run(*backend.diff_commit_files_command(commit, ["b.txt"]), cwd=repo) for commit in commits
+    )
+    assert "A b.txt" in patch and "D b.txt" in patch
+    assert patch.index("A b.txt") < patch.index("D b.txt")
+    # Rewriting the tip cannot change a review that is already open.
+    (repo / "b.txt").write_text("replacement\n")
+    backend.list_branches(compare_to_main="main")
+    pinned = "\n".join(
+        run(*backend.diff_commit_files_command(commit, ["b.txt"]), cwd=repo) for commit in commits
+    )
+    assert "A b.txt" in pinned and "D b.txt" in pinned
+    assert "replacement" not in pinned
+    assert backend.review_commits("main", "topic-")[-1].key != commits[-1].key
+    assert backend.review_commits("topic-", "topic-") == []
+    with pytest.raises(vcs.VcsError):
+        backend.review_commits("missing", "topic-")
+
+
+def test_review_commits_merge_and_diverged_main(repo: Path) -> None:
+    from tests.conftest import add_bookmark, jj, run
+
+    backend = vcs.detect(repo)
+    add_bookmark(repo, "side", "side.txt", "side\n")
+    jj(repo, "new", "feature/x", "side", "-m", "merge changes")
+    (repo / "merge.txt").write_text("merge only\n")
+    jj(repo, "bookmark", "create", "merged", "-r", "@")
+    add_bookmark(repo, "new-main", "main-only.txt", "main only\n")
+    jj(repo, "bookmark", "move", "main", "--to", "new-main")
+    commits = backend.review_commits("main", "merged")
+    assert {c.subject for c in commits[:-1]} == {"add b", "side: side.txt"}
+    assert commits[-1].subject == "merge changes"
+    changes = backend.changed_files_for_commit(commits[-1])
+    assert [(f.path, f.status, f.added, f.size) for f in changes.files] == [
+        ("merge.txt", "A", 1, len("merge only\n"))
+    ]
+    jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":summary")
+    patch = run(*backend.diff_commit_files_command(commits[-1], ["merge.txt"]), cwd=repo)
+    assert "A merge.txt" in patch
+    assert "A b.txt" not in patch and "A side.txt" not in patch
+    assert "main-only.txt" not in patch
+
+
+def test_review_commits_snapshots_empty_and_dirty_working_copy(repo: Path) -> None:
+    from tests.conftest import jj, run
+
+    backend = vcs.detect(repo)
+    empty = backend.review_commits("main", "@")
+    assert len(empty) == 1 and empty[0].subject == ""
+    assert len(empty[0].commit) == 40
+    assert backend.changed_files_for_commit(empty[0]).files == []
+    (repo / "dirty.txt").write_text("unsnapshotted\n")
+    dirty = backend.review_commits("main", "@")
+    assert len(dirty) == 1 and dirty[0].key != empty[0].key
+    assert dirty[0].commit == jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id")
+    jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":summary")
+    assert "A dirty.txt" in run(
+        *backend.diff_commit_files_command(dirty[0], ["dirty.txt"]), cwd=repo
+    )
+
+
+def test_review_commits_with_nul_in_ancestor_description(repo: Path) -> None:
+    from tests.conftest import jj
+
+    subject = "before\0after"
+    subprocess.run(
+        ["jj", "describe", "--stdin"],
+        input=subject,
+        text=True,
+        capture_output=True,
+        check=True,
+        cwd=repo,
+    )
+    jj(repo, "new", "-m", "follow-up")
+    commits = vcs.detect(repo).review_commits("main", "@")
+    assert [c.subject for c in commits] == [subject, "follow-up"]
+    assert all(len(c.commit) == 40 for c in commits)
+
+
+def test_commit_file_keys_are_independent_and_diffs_are_filtered(repo: Path) -> None:
+    from tests.conftest import jj, run
+
+    backend = vcs.detect(repo)
+    jj(repo, "new", "feature/x", "-m", "remove b")
+    (repo / "b.txt").unlink()
+    jj(repo, "new", "-m", "add b again")
+    (repo / "b.txt").write_text("b\n")
+    (repo / "other.txt").write_text("other\n")
+    commits = backend.review_commits("main", "@")
+    changes = [backend.changed_files_for_commit(commit) for commit in commits]
+    assert [[(f.path, f.status) for f in change.files] for change in changes] == [
+        [("b.txt", "A")],
+        [("b.txt", "D")],
+        [("b.txt", "A"), ("other.txt", "A")],
+    ]
+    # Identical edits in distinct commits require independent review.
+    assert changes[0].files[0].key != changes[2].files[0].key
+    assert changes[2].files[0].added == 1 and changes[2].files[0].size == 2
+    assert backend.changed_files_for_commit(commits[2]) == changes[2]
+    jj(repo, "config", "set", "--repo", "ui.diff-formatter", ":summary")
+    patch = run(*backend.diff_commit_files_command(commits[2], ["b.txt"]), cwd=repo)
+    assert "A b.txt" in patch and "other.txt" not in patch
+    assert run(*backend.diff_commit_files_command(commits[2], []), cwd=repo) == ""

@@ -25,7 +25,7 @@ from project_sandbox_tui.screens.dialogs import (
 )
 from project_sandbox_tui.screens.launch import CUSTOM_MODEL, LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
-from project_sandbox_tui.screens.review import DiffReviewScreen
+from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen
 from project_sandbox_tui.vcs import detect
 from project_sandbox_tui.widgets import CycleField
 from tests.conftest import add_bookmark, jj
@@ -2094,6 +2094,9 @@ def test_diff_selection(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         monkeypatch.setattr(app, "_review_diff", lambda base, target: shown.append((base, target)))
+        monkeypatch.setattr(
+            app, "_review_commits", lambda base, target: shown.append((base, target))
+        )
         await pilot.press("j", "equals_sign")
         assert shown[-1] == ("main", "feature/x")
         app.marked = ["feature/x"]
@@ -2136,7 +2139,8 @@ def test_diff_viewer_failure_recovers(
         monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
         monkeypatch.setattr("subprocess.call", viewer)
         monkeypatch.setattr("builtins.input", lambda _: "")
-        await pilot.press("j", "equals_sign")
+        app.marked = ["main", "feature/x"]
+        await pilot.press("equals_sign")
         await wait_until(pilot, lambda: isinstance(app.screen, DiffReviewScreen))
         await pilot.press("enter")
         if not isinstance(failure, KeyboardInterrupt):
@@ -2167,6 +2171,8 @@ def test_diff_review_marks_files_seen(
         return [[str(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
 
     async def open_review(app: SandboxTUI, pilot: Any, *keys: str) -> DiffReviewScreen:
+        if keys:
+            app.marked = ["main", "@"]
         await pilot.press(*keys, "equals_sign")
         await wait_until(
             pilot,
@@ -2186,7 +2192,7 @@ def test_diff_review_marks_files_seen(
         assert str(app.table.get_cell("feature/x", "reviewed")) == "0/1"
         assert str(app.table.get_cell("main", "reviewed")) == ""
         app._refresh_timer.pause()  # returning from review must refresh immediately
-        screen = await open_review(app, pilot, "g", "g")  # @ against main
+        screen = await open_review(app, pilot, "g", "g")  # direct comparison: main to @
         assert review_rows(app) == [
             ["●", "M", "a.txt", "+1 −1", "8 B"],
             ["●", "A", "c.txt", "+3", "6 B"],
@@ -2200,18 +2206,18 @@ def test_diff_review_marks_files_seen(
         await pilot.press("A")
         assert [r[0] for r in review_rows(app)] == ["✓", "✓"]
         await app.refresh_data()
-        assert str(app.table.get_cell("@", "reviewed")) == "2/2"
+        assert str(app.table.get_cell("@", "reviewed")) == "0/2"
         await pilot.press("equals_sign")  # all seen: every file
         assert viewed[-1] == ['root-file:"a.txt" | root-file:"c.txt"']
         await pilot.press("A", "k", "space", "q")
         assert app.screen is app.main
-        await wait_until(pilot, lambda: str(app.table.get_cell("@", "reviewed")) == "1/2")
+        await wait_until(pilot, lambda: str(app.table.get_cell("@", "reviewed")) == "0/2")
         # Only c.txt changes: a.txt stays seen.
         (repo / "c.txt").write_text("c\n")
         await open_review(app, pilot, "g", "g")
         assert [r[:3] for r in review_rows(app)] == [["✓", "M", "a.txt"], ["●", "A", "c.txt"]]
         await pilot.press("q")
-        # Rewriting the reviewed file invalidates its mark in the main view too.
+        # Direct-comparison marks do not count toward per-commit file review.
         (repo / "a.txt").write_text("changed again\n")
         await app.refresh_data()
         assert str(app.table.get_cell("@", "reviewed")) == "0/2"
@@ -2238,23 +2244,24 @@ def test_bookmark_review_counts_persist_and_follow_main(
     from project_sandbox_tui.review import SeenFiles
 
     backend = detect(repo)
-    changes = backend.changed_files("main", "feature/x")
+    commits = backend.review_commits("main", "feature/x")
+    key = backend.changed_files_for_commit(commits[0]).files[0].key
     seen = SeenFiles.for_repo(repo)
-    seen.mark("feature/x", [changes.files[0].key, "obsolete-diff"], True)
+    seen.mark("feature/x", [key, "obsolete-diff"], True)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         assert str(app.table.get_cell("feature/x", "reviewed")) == "1/1"
 
-        # Changing marks in another instance refreshes counts without rereading diffs.
-        def unexpected_diff(*args: str) -> None:
-            raise AssertionError("unchanged commits should reuse file identities")
+        # Changing marks in another instance refreshes counts without rereading the commit path.
+        def unexpected_diff(*args: str, **kwargs: Any) -> None:
+            raise AssertionError("unchanged tips should reuse commit identities")
 
         with monkeypatch.context() as patch:
-            patch.setattr(app.backend, "changed_files", unexpected_diff)
-            seen.mark("feature/x", [changes.files[0].key], False)
+            patch.setattr(app.backend, "review_commits", unexpected_diff)
+            seen.mark("feature/x", [key], False)
             await app.refresh_data()
             assert str(app.table.get_cell("feature/x", "reviewed")) == "0/1"
-            seen.mark("feature/x", [changes.files[0].key], True)
+            seen.mark("feature/x", [key], True)
             await app.refresh_data()
             assert str(app.table.get_cell("feature/x", "reviewed")) == "1/1"
 
@@ -2262,7 +2269,7 @@ def test_bookmark_review_counts_persist_and_follow_main(
         jj(repo, "bookmark", "move", "main", "--to", "feature/x")
         await app.refresh_data()
         assert str(app.table.get_cell("feature/x", "reviewed")) == ""
-        assert str(app.table.get_cell("@", "reviewed")) == "0/1"
+        assert str(app.table.get_cell("@", "reviewed")) == ""
         app.cfg.project.main_branch = "missing"
         await app.refresh_data()
         assert str(app.table.get_cell("@", "reviewed")) == ""
@@ -2895,3 +2902,136 @@ def test_host_launch_rechecks_reservation_after_creating_workspace(
         assert app.jobs.jobs["feature/x"].argv == ["other"]
 
     run_app(repo, cfg, scenario)
+
+
+def test_commit_review_groups_persists_and_invalidates_rewritten_commits(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from project_sandbox_tui.review import SeenFiles
+
+    jj(repo, "new", "feature/x", "-m", "remove b, add c")
+    (repo / "b.txt").unlink()
+    (repo / "c.txt").write_text("c\n" * 3)
+    jj(repo, "bookmark", "move", "feature/x", "--to", "@")
+    backend = detect(repo)
+    original = backend.review_commits("main", "feature/x")
+    changes = [backend.changed_files_for_commit(commit) for commit in original]
+    viewed: list[list[str]] = []
+
+    async def open_review(app: SandboxTUI, pilot: Any) -> CommitReviewScreen:
+        await pilot.press("equals_sign")
+        await wait_until(
+            pilot,
+            lambda: (
+                isinstance(app.screen, CommitReviewScreen) and isinstance(app.focused, DataTable)
+            ),
+        )
+        return cast(CommitReviewScreen, app.screen)
+
+    def rows(screen: CommitReviewScreen) -> list[list[str]]:
+        table = screen.query_one(DataTable)
+        return [[str(cell) for cell in table.get_row_at(i)] for i in range(table.row_count)]
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        app.marked = ["feature/x"]
+        monkeypatch.setattr(app, "_show_diff", lambda title, argv: viewed.append(argv))
+        # The reverted b.txt remains reviewable in both commits.
+        assert str(app.table.get_cell("feature/x", "reviewed")) == "0/3"
+        screen = await open_review(app, pilot)
+        assert rows(screen) == [["●", "A", "b.txt", "+1", "2 B"]]
+        header = str(screen.query_one("#review-commit", Static).render())
+        assert "commit 1/2" in header and "add b" in header
+        await pilot.press("enter", "space", "right_square_bracket")
+        assert viewed[-1] == app.backend.diff_commit_files_command(original[0], ["b.txt"])
+        assert rows(screen) == [
+            ["●", "D", "b.txt", "−1", "deleted"],
+            ["●", "A", "c.txt", "+3", "6 B"],
+        ]
+        header = str(screen.query_one("#review-commit", Static).render())
+        assert "commit 2/2" in header and "remove b, add c" in header
+        await pilot.press("space", "l", "equals_sign")
+        assert (
+            viewed[-1]
+            == viewed[-2]
+            == app.backend.diff_commit_files_command(original[1], ["c.txt"])
+        )
+        await pilot.press("A", "equals_sign")
+        assert viewed[-1] == app.backend.diff_commit_files_command(original[1], ["b.txt", "c.txt"])
+        await pilot.press("left_square_bracket")
+        assert rows(screen)[0][0] == "✓"
+        await pilot.press("q")
+        await wait_until(pilot, lambda: str(app.table.get_cell("feature/x", "reviewed")) == "3/3")
+        keys = {f.key for change in changes for f in change.files}
+        assert keys <= SeenFiles.for_repo(repo).seen("feature/x")
+        screen = await open_review(app, pilot)
+        assert screen.seen == {changes[0].files[0].key}
+        # An open review keeps its pinned files and patches after a rewrite.
+        (repo / "d.txt").write_text("later edit\n")
+        jj(repo, "status")
+        await pilot.press("right_square_bracket", "equals_sign")
+        assert rows(screen) == [
+            ["✓", "D", "b.txt", "−1", "deleted"],
+            ["✓", "A", "c.txt", "+3", "6 B"],
+        ]
+        assert viewed[-1] == app.backend.diff_commit_files_command(original[1], ["b.txt", "c.txt"])
+        await pilot.press("q")
+        await wait_until(pilot, lambda: str(app.table.get_cell("feature/x", "reviewed")) == "1/4")
+        screen = await open_review(app, pilot)
+        await pilot.press("right_square_bracket")
+        assert not screen.seen and len(screen.files) == 3
+        await pilot.press("q")
+        await wait_until(pilot, lambda: app.screen is app.main)
+        # Advancing main drops the ancestor's files from the path and count.
+        jj(repo, "bookmark", "move", "main", "--to", original[0].commit)
+        await app.refresh_data()
+        assert str(app.table.get_cell("feature/x", "reviewed")) == "0/3"
+        screen = await open_review(app, pilot)
+        assert len(screen.commits) == 1 and screen.commits[0].subject == "remove b, add c"
+        await pilot.press("A", "q")
+        await wait_until(pilot, lambda: str(app.table.get_cell("feature/x", "reviewed")) == "3/3")
+        # Appending a commit preserves marks in unchanged ancestors.
+        jj(repo, "new", "feature/x", "-m", "follow-up")
+        (repo / "c.txt").write_text("follow-up\n")
+        jj(repo, "bookmark", "move", "feature/x", "--to", "@")
+        await app.refresh_data()
+        assert str(app.table.get_cell("feature/x", "reviewed")) == "3/4"
+        screen = await open_review(app, pilot)
+        assert len(screen.seen) == 3 and len(screen.commits) == 2
+        await pilot.press("right_square_bracket")
+        assert rows(screen) == [["●", "M", "c.txt", "+1 −3", "10 B"]]
+        await pilot.press("q")
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_commit_review_empty_commits_and_no_path(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        viewed = []
+        monkeypatch.setattr(app, "_show_diff", lambda title, argv: viewed.append(argv))
+        await pilot.press("equals_sign")  # empty @ has no files to review
+        await wait_until(
+            pilot,
+            lambda: (
+                isinstance(app.screen, CommitReviewScreen) and isinstance(app.focused, DataTable)
+            ),
+        )
+        screen = cast(CommitReviewScreen, app.screen)
+        assert screen.query_one(DataTable).row_count == 0
+        assert "(no description set)" in str(screen.query_one("#review-commit", Static).render())
+        await pilot.press("space", "A", "equals_sign", "enter", "right_square_bracket")
+        assert not viewed and not screen.seen
+        await pilot.press("q")
+        await wait_until(pilot, lambda: app.screen is app.main)
+        assert str(app.table.get_cell("@", "reviewed")) == ""
+        app.marked = ["main"]
+        await pilot.press("equals_sign")
+        await wait_until(
+            pilot, lambda: any("no commits to review" in str(n.message) for n in app._notifications)
+        )
+        assert app.screen is app.main
+
+    run_app(repo, fake_cfg(), scenario)
