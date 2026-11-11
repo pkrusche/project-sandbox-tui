@@ -83,17 +83,15 @@ class DiffReviewScreen(Screen[None]):
     def __init__(
         self,
         title: str,
-        bookmark: str,
         changes: FileChanges,
         seen: SeenFiles,
         view: Callable[[Sequence[FileChange]], None],
     ) -> None:
         super().__init__()
         self.title_text = title
-        self.bookmark = bookmark
         self.files = changes.files
         self.seen_files = seen
-        self.seen = seen.seen(bookmark) & {f.key for f in self.files}
+        self.seen = seen.seen() & {f.key for f in self.files}
         self.view = view
         self._prefix = PrefixKeys()
 
@@ -153,7 +151,7 @@ class DiffReviewScreen(Screen[None]):
         else:
             self.seen.difference_update(keys)
         try:
-            self.seen_files.mark(self.bookmark, keys, seen)
+            self.seen_files.mark(keys, seen)
         except OSError as exc:
             self.notify(f"could not save seen files: {exc}", severity="error", markup=False)
         table = self.query_one(DataTable)
@@ -217,7 +215,6 @@ class CommitReviewScreen(DiffReviewScreen):
     def __init__(
         self,
         title: str,
-        bookmark: str,
         commits: Sequence[ReviewCommit],
         changes: Sequence[FileChanges],
         seen: SeenFiles,
@@ -226,9 +223,7 @@ class CommitReviewScreen(DiffReviewScreen):
         self.commits = commits
         self.changes = changes
         self.commit_index = 0
-        super().__init__(
-            title, bookmark, changes[0], seen, lambda files: view(self.current_commit, files)
-        )
+        super().__init__(title, changes[0], seen, lambda files: view(self.current_commit, files))
 
     @property
     def current_commit(self) -> ReviewCommit:
@@ -252,7 +247,7 @@ class CommitReviewScreen(DiffReviewScreen):
             return
         self.commit_index = index
         self.files = self.changes[index].files
-        self.seen = self.seen_files.seen(self.bookmark) & {f.key for f in self.files}
+        self.seen = self.seen_files.seen() & {f.key for f in self.files}
         table = self.query_one(DataTable)
         table.clear()
         for row, change in enumerate(self.files):

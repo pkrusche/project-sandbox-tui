@@ -1,4 +1,4 @@
-"""Diff review: which file changes have been seen, kept per bookmark.
+"""Diff review: which file changes have been seen across the repository.
 
 Per-commit file marks include the full commit ID and the file change's key.
 Direct-comparison marks use a file change's key (content, type and path), so a file
@@ -24,35 +24,46 @@ from project_sandbox_tui.config import (
     write_state,
 )
 
-MAX_MARKS = 5000  # per bookmark; the oldest go first
+MAX_MARKS = 5000  # per repository; the oldest go first
 
 
 class SeenFiles:
     def __init__(self, path: Path, max_marks: int = MAX_MARKS) -> None:
         self.path = path
         self.max_marks = max_marks
-        self.marks: dict[str, list[str]] = self._read()  # bookmark → keys, oldest first
+        self.marks: list[str] = self._read()  # keys, oldest first
 
     @classmethod
     def for_repo(cls, repo: Path) -> SeenFiles:
         return cls(repo_state_dir(repo) / "diff_review.json")
 
-    def _read(self) -> dict[str, list[str]]:
+    def _read(self) -> list[str]:
         try:
             return self._parse(json.loads(self.path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
-            return {}
+            return []
 
     @staticmethod
-    def _parse(raw: Any) -> dict[str, list[str]]:
-        bookmarks = raw.get("bookmarks") if isinstance(raw, dict) else None
+    def _parse(raw: Any) -> list[str]:
+        if not isinstance(raw, dict):
+            return []
+        marks = raw.get("marks")
+        if isinstance(marks, list):
+            return list(dict.fromkeys(k for k in marks if isinstance(k, str)))
+        # Older versions stored the same change separately under each bookmark.
+        # Carry every seen mark forward, including marks on deleted bookmarks.
+        bookmarks = raw.get("bookmarks")
         if not isinstance(bookmarks, dict):
-            return {}
-        return {
-            name: [k for k in keys if isinstance(k, str)]
-            for name, keys in bookmarks.items()
-            if isinstance(name, str) and isinstance(keys, list)
-        }
+            return []
+        return list(
+            dict.fromkeys(
+                k
+                for name, keys in bookmarks.items()
+                if isinstance(name, str) and isinstance(keys, list)
+                for k in keys
+                if isinstance(k, str)
+            )
+        )
 
     @contextlib.contextmanager
     def _locked(self) -> Generator[None, None, None]:
@@ -64,11 +75,11 @@ class SeenFiles:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    def seen(self, bookmark: str) -> set[str]:
-        return set(self.marks.get(bookmark, ()))
+    def seen(self) -> set[str]:
+        return set(self.marks)
 
-    def mark(self, bookmark: str, keys: Collection[str], seen: bool) -> None:
-        """Mark (or unmark) file changes on ``bookmark`` as seen.
+    def mark(self, keys: Collection[str], seen: bool) -> None:
+        """Mark (or unmark) file changes as seen wherever they occur.
 
         Raises OSError if the marks cannot be saved; they still apply in memory.
         """
@@ -76,21 +87,16 @@ class SeenFiles:
             with self._locked():
                 # Strict: an unreadable file must not be replaced by these marks alone.
                 marks = self._parse(read_state_for_update(self.path))
-                self._update(marks, bookmark, keys, seen)
-                write_state(self.path, {"version": STATE_VERSION, "bookmarks": marks})
+                self._update(marks, keys, seen)
+                write_state(self.path, {"version": STATE_VERSION, "marks": marks})
         except OSError:
-            self._update(self.marks, bookmark, keys, seen)
+            self._update(self.marks, keys, seen)
             raise
         self.marks = marks
 
-    def _update(
-        self, marks: dict[str, list[str]], bookmark: str, keys: Collection[str], seen: bool
-    ) -> None:
+    def _update(self, marks: list[str], keys: Collection[str], seen: bool) -> None:
         changed = dict.fromkeys(keys)  # ordered, fast membership
-        kept = [k for k in marks.get(bookmark, []) if k not in changed]
+        kept = [k for k in marks if k not in changed]
         if seen:
             kept.extend(changed)
-        if kept:
-            marks[bookmark] = kept[-self.max_marks :]
-        else:
-            marks.pop(bookmark, None)
+        marks[:] = kept[-self.max_marks :]

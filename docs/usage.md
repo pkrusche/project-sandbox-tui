@@ -359,8 +359,10 @@ stopped by `Ctrl+Z` is closed so the TUI can reclaim the terminal. The review pi
 commit IDs when it opens, so files and diffs stay the same even if a run moves
 the bookmark meanwhile; reopen the review to see later changes.
 
-Seen marks are remembered per bookmark, commit ID and file change. Reviewing a
-file in one commit leaves it unseen in other commits that change it. Adding
+Seen marks are remembered across bookmarks by commit ID and file change. Marking
+a file seen or unseen applies to every bookmark containing that commit, including
+bookmarks created later. Existing saved marks are shared automatically. Reviewing
+a file in one commit leaves it unseen in other commits that change it. Adding
 commits keeps earlier marks; rewriting a commit makes its files unseen again.
 Advancing main removes commits it now includes from the review and counts.
 Marks are kept in the [state directory](configuration.md#state-directory) and
@@ -368,9 +370,9 @@ shared by TUI instances.
 
 Selecting two revisions keeps the direct comparison of their tips, using
 `jj diff --from BASE --to TARGET`. This uses the same file table and controls,
-without commit navigation. These marks are stored per second revision and file
-change (contents, type and paths), independently of per-commit file marks and
-the bookmark list's reviewed count.
+without commit navigation. These marks are shared by file change (contents, type
+and paths) across revisions, independently of per-commit file marks and the
+bookmark list's reviewed count.
 
 ## Log viewer
 
