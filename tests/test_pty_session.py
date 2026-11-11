@@ -359,6 +359,10 @@ def test_short_diff_stays_in_pager_and_tui_recovers(
             tui.buf.clear()
             tui.send(b"\r")
             assert tui.wait_for(b"diff --git"), tui.buf.decode(errors="replace")
+            # A pending file-table redraw can arrive after clear() but before
+            # the pager starts. Drop only that prefix, retaining any return to
+            # the table after the diff, even within the same PTY read.
+            del tui.buf[: tui.buf.index(b"diff --git")]
             tui.pump(0.5)
             assert b"0/1 seen" not in tui.buf, "short diff exited without waiting for q"
             tui.send(b"\x04")  # half-page in the pager, never EOF for a return prompt
@@ -381,8 +385,14 @@ def test_short_diff_stays_in_pager_and_tui_recovers(
         tui.send(b"q")  # close help
         tui.pump(0.2)
         tui.send(b"\x11")  # Textual's quit key; Ctrl+C shows a quit hint
-        tui.pump(1)
-        assert tui.proc.poll() == 0, "the TUI should exit on the first quit key"
+        # Shutdown can take longer when other xdist workers are busy. Keep
+        # draining output so the terminal cannot block the exiting process.
+        deadline = time.monotonic() + 10
+        while tui.proc.poll() is None and time.monotonic() < deadline:
+            tui.pump(0.1)
+        assert tui.proc.poll() == 0, (
+            f"the TUI should exit on the first quit key:\n{tui.buf.decode(errors='replace')}"
+        )
     finally:
         tui.close()
 
