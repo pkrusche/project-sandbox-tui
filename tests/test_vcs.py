@@ -916,3 +916,69 @@ def test_commit_file_keys_are_independent_and_diffs_are_filtered(repo: Path) -> 
     patch = run(*backend.diff_commit_files_command(commits[2], ["b.txt"]), cwd=repo)
     assert "A b.txt" in patch and "other.txt" not in patch
     assert run(*backend.diff_commit_files_command(commits[2], []), cwd=repo) == ""
+
+
+def test_review_file_keys_use_one_query_without_patches(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.conftest import jj
+
+    jj(repo, "new", "feature/x")
+    (repo / "old.txt").write_text("rename me\n")
+    (repo / "binary").write_bytes(b"\x00binary")
+    (repo / "link").symlink_to("old.txt")
+    jj(repo, "new", "-m", "file types")
+    (repo / "old.txt").rename(repo / "line\nbreak.txt")
+    (repo / "binary").write_bytes(b"\x00changed")
+    (repo / "link").unlink()
+    (repo / "link").symlink_to("line\nbreak.txt")
+    (repo / "a.txt").chmod(0o755)
+    (repo / "b.txt").unlink()
+    jj(repo, "new", "-m", "rename and delete")
+    (repo / "b.txt").write_text("b\n")  # restored changes still count in both commits
+    jj(repo, "new", "-m", "restore b")  # include an empty tip too
+    backend = vcs.detect(repo)
+    commits = backend.review_commits("main", "@")
+    base = backend._bookmark_commit("main")
+    target = commits[-1].commit
+    expected = {
+        file.key for commit in commits for file in backend.changed_files_for_commit(commit).files
+    }
+    original = backend._jj_bytes
+    calls: list[tuple[str, ...]] = []
+
+    def record(*args: str) -> bytes:
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(backend, "_jj_bytes", record)
+    assert backend.review_file_keys(base, target) == expected
+    assert len(calls) == 1 and calls[0][0] == "log"
+    assert backend.review_file_keys(base, base) == set()
+    # Full commit IDs keep the count pinned even after the working copy changes.
+    (repo / "later.txt").write_text("not in the pinned review\n")
+    backend.list_branches(compare_to_main="main")
+    assert backend.review_file_keys(base, target) == expected
+
+
+@pytest.mark.parametrize("conflicted", [False, True])
+def test_review_file_keys_match_merge_diffs(repo: Path, conflicted: bool) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    add_bookmark(repo, "left", "a.txt", "left\n")
+    add_bookmark(repo, "right", "a.txt" if conflicted else "side.txt", "right\n")
+    jj(repo, "new", "left", "right")
+    (repo / "merge.txt").write_text("merge only\n")
+    jj(repo, "bookmark", "create", "merged", "-r", "@")
+    add_bookmark(repo, "next-main", "main-only.txt", "not on merged\n")
+    jj(repo, "bookmark", "move", "main", "--to", "next-main")
+    backend = vcs.detect(repo)
+    commits = backend.review_commits("main", "merged")
+    assert len(commits) == 3
+    expected = {
+        file.key for commit in commits for file in backend.changed_files_for_commit(commit).files
+    }
+    assert expected
+    assert (
+        backend.review_file_keys(backend._bookmark_commit("main"), commits[-1].commit) == expected
+    )

@@ -652,12 +652,7 @@ class SandboxTUI(App[None]):
             current = keys.get(pair, self._review_keys.get(pair))
             if current is None:
                 try:
-                    commits = self.backend.review_commits(*pair, snapshot=False)
-                    current = {
-                        f.key
-                        for commit in commits
-                        for f in self.backend.changed_files_for_commit(commit).files
-                    }
+                    current = self.backend.review_file_keys(*pair)
                 except VcsError:
                     continue  # retry on refresh; don't show a stale reviewed count
             keys[pair] = current

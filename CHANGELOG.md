@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Faster startup and bookmark refreshes: review counts read commit metadata in
+  one query per distinct tip instead of generating full patches for every commit.
 - Short diffs stay open in the pager, and closing the viewer returns directly
   to the file table without an Enter prompt. Diff viewers run in their own
   foreground process group; interrupting or stopping a viewer cleans up its

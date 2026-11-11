@@ -219,6 +219,17 @@ _DIFF_FIELDS = (
     "(source.conflict() || target.conflict())",
 )
 _JJ_DIFF_TEMPLATE = " ++ ".join(f'{field} ++ "\\x00"' for field in _DIFF_FIELDS)
+# The same identity fields as _changed_files, without patches, line counts or sizes.
+# Frame each commit with its file count; filenames may contain newlines.
+_JJ_REVIEW_KEYS_TEMPLATE = (
+    'commit_id ++ "\\x00" ++ diff.files().len() ++ "\\x00" ++ '
+    "diff.files().map(|file| "
+    'file.source().path() ++ "\\x00" ++ file.path() ++ "\\x00" ++ '
+    'file.source().normal_value() ++ "\\x00" ++ file.target().normal_value() ++ "\\x00" ++ '
+    'file.source().file_type() ++ "\\x00" ++ file.target().file_type() ++ "\\x00" ++ '
+    'file.source().executable() ++ "\\x00" ++ file.target().executable() ++ "\\x00" ++ '
+    '(file.source().conflict() || file.target().conflict()) ++ "\\x00").join("")'
+)
 # A context large enough for whole files: line counts and sizes from one jj call.
 _FULL_CONTEXT = str(1 << 30)
 SIZE_LOOKUPS = 50  # files whose size needs a jj call of its own: binaries, renames, modes
@@ -581,6 +592,37 @@ class JjBackend:
     def changed_files_for_commit(self, commit: ReviewCommit) -> FileChanges:
         """Files in a pinned commit, with independent seen keys for each commit and file."""
         return self._changed_files("", commit.commit, ("-r", commit.commit), f"{commit.key}:file:")
+
+    def review_file_keys(self, base: str, target: str) -> set[str]:
+        """Review identities between pinned commit IDs, in one metadata-only query.
+
+        Unlike the review screen, bookmark counts need neither patches nor file sizes.
+        Conflicted files have no normal object IDs, so those commits still use the
+        full diff to preserve their existing content-based identities.
+        """
+        fields = self._jj_bytes(
+            "log", "--no-graph", "-r", f"{base}..{target}", "-T", _JJ_REVIEW_KEYS_TEMPLATE
+        ).split(b"\0")[:-1]
+        keys: set[str] = set()
+        offset = 0
+        while offset < len(fields):
+            commit = fields[offset].decode("ascii")
+            count = int(fields[offset + 1])
+            offset += 2
+            end = offset + count * 9
+            entries = [fields[start : start + 9] for start in range(offset, end, 9)]
+            if any(entry[-1] == b"true" for entry in entries):
+                keys.update(
+                    f.key for f in self.changed_files_for_commit(ReviewCommit(commit, "")).files
+                )
+            else:
+                keys.update(
+                    f"commit:{commit}:file:"
+                    + hashlib.sha256(b"\0".join(entry[:-1])).hexdigest()[:32]
+                    for entry in entries
+                )
+            offset = end
+        return keys
 
     def changed_files(self, base: str, target: str) -> FileChanges:
         """Files differing between ``base`` and ``target``, with line counts and sizes."""

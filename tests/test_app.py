@@ -2328,7 +2328,7 @@ def test_bookmark_review_counts_persist_and_follow_main(
             raise AssertionError("unchanged tips should reuse commit identities")
 
         with monkeypatch.context() as patch:
-            patch.setattr(app.backend, "review_commits", unexpected_diff)
+            patch.setattr(app.backend, "review_file_keys", unexpected_diff)
             seen.mark([key], False)
             await app.refresh_data()
             assert str(app.table.get_cell("feature/x", "reviewed")) == "0/1"
