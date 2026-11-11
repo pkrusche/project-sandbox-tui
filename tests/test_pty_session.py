@@ -63,6 +63,7 @@ class Tui:
         finally:
             os.close(slave)
         self.buf = bytearray()
+        self.viewer_groups: set[int] = set()
 
     def resize(self, columns: int, rows: int) -> None:
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
@@ -72,6 +73,10 @@ class Tui:
         while time.monotonic() < end:
             ready, _, _ = select.select([self.fd], [], [], 0.05)
             if ready:
+                with contextlib.suppress(OSError):
+                    foreground = os.tcgetpgrp(self.fd)
+                    if foreground > 0 and foreground != self.proc.pid:
+                        self.viewer_groups.add(foreground)
                 try:
                     self.buf.extend(os.read(self.fd, 65536))
                 except OSError:
@@ -90,6 +95,13 @@ class Tui:
 
     def close(self) -> None:
         try:
+            with contextlib.suppress(OSError):
+                foreground = os.tcgetpgrp(self.fd)
+                if foreground > 0 and foreground != self.proc.pid:
+                    self.viewer_groups.add(foreground)
+            for group in self.viewer_groups:
+                with contextlib.suppress(OSError):
+                    os.killpg(group, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.proc.pid, signal.SIGKILL)  # also stop an interrupted test's agent
             self.proc.kill()  # also works if startup failed before login_tty created a session
@@ -99,6 +111,18 @@ class Tui:
             # interrupt that. If nobody reads the master, it never exits.
             os.close(self.fd)
         self.proc.wait(timeout=5)
+        # Linux's test subreaper adopts viewers orphaned by an interrupted jj.
+        # Their process groups differ from the TUI's, so reap them explicitly.
+        for group in self.viewer_groups:
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    pid, _ = os.waitpid(-group, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if pid == 0:
+                    assert time.monotonic() < deadline, f"viewer group {group} survived"
+                    time.sleep(0.01)
 
 
 def start_tui(repo: Path, command: str, *, host_agent_command: str = "", **env_extra: str) -> Tui:
@@ -248,8 +272,9 @@ def test_diff_uses_host_viewer_and_returns_to_tui(repo: Path, viewer: str) -> No
         "    assert (pathlib.Path(sys.argv[2]) / 'b.txt').read_text() == 'b\\n'\n"
         "print('HOST-DIFF-VIEWER-READY', flush=True)\n"
         # A pager reads jj's output on stdin; use the controlling tty for keys.
-        "with open('/dev/tty') as tty:\n"
-        "    tty.readline()\n"
+        "if len(sys.argv) == 1:\n"
+        "    with open('/dev/tty') as tty:\n"
+        "        tty.readline()\n"
     )
     command = [sys.executable, str(script)]
     jj(repo, "config", "set", "--user", "ui.color", "never")
@@ -275,14 +300,138 @@ def test_diff_uses_host_viewer_and_returns_to_tui(repo: Path, viewer: str) -> No
             tui.send(b"\r")
             assert tui.wait_for(b"HOST-DIFF-VIEWER-READY"), tui.buf.decode(errors="replace")
             assert b"\x1b[2J\x1b[H" + "── sbx-tui: diff".encode() in tui.buf
-            tui.send(b"\r")
-            assert tui.wait_for(b"press Enter to return to sbx-tui")
             tui.buf.clear()
-            tui.send(b"\r")
+            tui.send(b"q" if viewer == "formatter" else b"\r")
             assert tui.wait_for(b"0/1 seen"), "the file table did not come back"
+            assert b"press Enter to return" not in tui.buf
         tui.send(b" ")
         assert tui.wait_for(b"1/1 seen"), "the file table does not take keys"
         tui.send(b"q")  # back to the bookmark list
+        assert_responsive(tui)
+    finally:
+        tui.close()
+
+
+@pytest.mark.parametrize(
+    "pager", ["default", "less", "builtin", "delta", "delta-table", "JJ_PAGER"]
+)
+@pytest.mark.parametrize("exit_key", [b"q", b"\x03", b"\x1a"], ids=["quit", "ctrl-c", "ctrl-z"])
+def test_short_diff_stays_in_pager_and_tui_recovers(
+    repo: Path, pager: str, exit_key: bytes
+) -> None:
+    jj(repo, "config", "set", "--user", "ui.diff-formatter", ":git")
+    jj(repo, "config", "set", "--user", "ui.paginate", "never")
+    if pager.startswith("delta"):
+        # Exercise delta's paging contract without depending on a delta install.
+        delta = repo.parent / "delta"
+        delta.write_text(
+            f"#!{sys.executable}\n"
+            "import os, shlex, sys\n"
+            "assert sys.argv[1:] == ['--side-by-side', '--paging=always']\n"
+            "assert os.environ['KEEP'] == 'yes'\n"
+            "args = shlex.split(os.environ['DELTA_PAGER'])\n"
+            "os.execvp(args[0], args)\n"
+        )
+        delta.chmod(0o755)
+        command = [str(delta), "--side-by-side", "--paging", "auto"]
+        if pager == "delta-table":
+            value = (
+                f"{{command={json.dumps(command)}, env={{DELTA_PAGER='less -FRX', KEEP='yes'}}}}"
+            )
+        else:
+            value = json.dumps(shlex.join(command[:-2] + ["--paging=never"]))
+        jj(repo, "config", "set", "--user", "ui.pager", value)
+    elif pager in ("less", "builtin"):
+        jj(
+            repo,
+            "config",
+            "set",
+            "--user",
+            "ui.pager",
+            ":builtin" if pager == "builtin" else "less -FRXK",
+        )
+    env = {"JJ_PAGER": "less -FRX"} if pager == "JJ_PAGER" else {}
+    tui = start_tui(repo, "true", LESS="-F -E", DELTA_PAGER="less -FRX", KEEP="yes", **env)
+    try:
+        tui.send(b"j=")
+        assert tui.wait_for(b"0/1 seen"), tui.buf.decode(errors="replace")
+        for _ in range(2):
+            tui.buf.clear()
+            tui.send(b"\r")
+            assert tui.wait_for(b"diff --git"), tui.buf.decode(errors="replace")
+            tui.pump(0.5)
+            assert b"0/1 seen" not in tui.buf, "short diff exited without waiting for q"
+            tui.send(b"\x04")  # half-page in the pager, never EOF for a return prompt
+            tui.pump(0.2)
+            assert b"0/1 seen" not in tui.buf
+            tui.buf.clear()
+            if pager == "builtin" and exit_key == b"\x1a":
+                # The builtin pager consumes Ctrl+Z as an unbound raw key;
+                # exercise a stopped process independently of its bindings.
+                os.killpg(os.tcgetpgrp(tui.fd), signal.SIGSTOP)
+            else:
+                tui.send(exit_key)
+            assert tui.wait_for(b"0/1 seen"), tui.buf.decode(errors="replace")
+            assert b"press Enter to return" not in tui.buf
+            error_at = tui.buf.find(b"jj diff exited")
+            assert error_at < 0, bytes(tui.buf[error_at : error_at + 100])
+            assert tui.proc.poll() is None
+        tui.send(b"q")
+        assert_responsive(tui)
+        tui.send(b"q")  # close help
+        tui.pump(0.2)
+        tui.send(b"\x11")  # Textual's quit key; Ctrl+C shows a quit hint
+        tui.pump(1)
+        assert tui.proc.poll() == 0, "the TUI should exit on the first quit key"
+    finally:
+        tui.close()
+
+
+def test_interrupted_diff_does_not_leave_a_viewer_running(repo: Path) -> None:
+    script = repo.parent / "slow_viewer.py"
+    pid_file = repo.parent / "viewer.pid"
+    script.write_text(
+        "import fcntl, os, pathlib, signal, sys, time, tty\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "sys.stdin.read()\n"
+        "with open('/dev/tty') as terminal:\n"
+        "    tty.setcbreak(terminal.fileno())\n"
+        "flags = fcntl.fcntl(1, fcntl.F_GETFL)\n"
+        "fcntl.fcntl(1, fcntl.F_SETFL, flags | os.O_NONBLOCK)\n"
+        "print('SLOW-VIEWER-READY', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    jj(repo, "config", "set", "--user", "ui.diff-formatter", ":git")
+    jj(
+        repo,
+        "config",
+        "set",
+        "--user",
+        "ui.pager",
+        json.dumps([sys.executable, str(script), str(pid_file)]),
+    )
+    tui = start_tui(repo, "true")
+    try:
+        tui.send(b"j=")
+        assert tui.wait_for(b"0/1 seen")
+        tui.buf.clear()
+        tui.send(b"\r")
+        assert tui.wait_for(b"SLOW-VIEWER-READY"), tui.buf.decode(errors="replace")
+        viewer_pid = int(pid_file.read_text())
+        tui.buf.clear()
+        tui.send(b"\x03")
+        assert tui.wait_for(b"0/1 seen"), tui.buf.decode(errors="replace")
+        # A dead orphan may briefly be a zombie until the test's subreaper
+        # collects it. A running viewer must never outlive this viewing.
+        try:
+            pid, _ = os.waitpid(viewer_pid, os.WNOHANG)
+        except ChildProcessError:
+            with pytest.raises(ProcessLookupError):
+                os.kill(viewer_pid, 0)
+        else:
+            assert pid == viewer_pid, "interrupted viewer is still running"
+        tui.send(b"q")  # back to the bookmark list, where ? opens help
         assert_responsive(tui)
     finally:
         tui.close()

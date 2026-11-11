@@ -353,7 +353,9 @@ file table and can be passed with `]`.
 Diffs use `jj diff -r COMMIT` restricted to the selected files, with the host's
 formatter and pager (including delta). Merge diffs show changes relative to the
 automatic merge of their parents. Each viewing starts with a cleared terminal.
-Exit the viewer, then press Enter to return to the file table. The review pins
+Short diffs stay in the pager too; `q` returns directly to the file table, with
+no Enter prompt. `Ctrl+C` interrupts the viewer and returns to the TUI. A viewer
+stopped by `Ctrl+Z` is closed so the TUI can reclaim the terminal. The review pins
 commit IDs when it opens, so files and diffs stay the same even if a run moves
 the bookmark meanwhile; reopen the review to see later changes.
 

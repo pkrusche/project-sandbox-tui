@@ -1279,21 +1279,14 @@ class SandboxTUI(App[None]):
 
     def _show_diff(self, title: str, argv: list[str]) -> None:
         try:
+            argv = self.backend.paged_diff_command(argv)
             with self._suspended():
                 print(f"\033[2J\033[H── sbx-tui: diff {title} ──\n", flush=True)
-                with terminal.preserved():
-                    try:
-                        code = subprocess.call(argv, cwd=self.backend.root)
-                    except KeyboardInterrupt:
-                        code = 130
-                # Pagers can exit immediately for short diffs. Keep the output
-                # visible until the user is ready to resume the TUI.
-                with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
-                    input("\n── press Enter to return to sbx-tui ──")
-        except OSError as exc:
+                code = terminal.run_foreground(argv, cwd=self.backend.root)
+        except (OSError, VcsError) as exc:
             self.notify(f"could not start jj diff: {exc}", severity="error")
             return
-        if code not in (0, 130):
+        if code not in (0, 130, -signal.SIGINT):
             self.notify(f"jj diff exited with {code}", severity="error")
 
     def action_launch(self, mode: Mode) -> None:
@@ -1561,14 +1554,15 @@ class SandboxTUI(App[None]):
         instead so the caller can wait for the child and return to the TUI.
         """
         error: BaseException | None = None
-        with self.suspend():
-            previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
-            try:
-                yield
-            except BaseException as exc:  # re-raised once the app has resumed
-                error = exc
-            finally:
-                signal.signal(signal.SIGINT, previous_sigint)
+        previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
+        try:
+            with self.suspend():
+                try:
+                    yield
+                except BaseException as exc:  # re-raised once the app has resumed
+                    error = exc
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint)
         if error is not None:
             raise error
 

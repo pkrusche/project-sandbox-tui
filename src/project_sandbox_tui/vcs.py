@@ -5,8 +5,11 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import re
+import shlex
 import subprocess
+import tomllib
 from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -474,6 +477,63 @@ class JjBackend:
     def diff_command(self, base: str, target: str) -> list[str]:
         """Interactive diff: let jj choose the formatter, colors and pager."""
         return ["jj", "diff", "--from", revset_symbol(base), "--to", revset_symbol(target)]
+
+    def paged_diff_command(self, argv: list[str]) -> list[str]:
+        """Keep short diffs open, preserving the host's formatter and pager.
+
+        jj's "auto" pagination always starts a pager on a tty; short-output
+        auto-exit is a pager option. Override it only for this viewing.
+        """
+        config = tomllib.loads(
+            self._jj(
+                "config", "list", "--include-defaults", "ui.pager",
+                "--template", 'name ++ " = " ++ value ++ "\\n"',
+            )
+        )  # fmt: skip
+        pager = config["ui"]["pager"]
+        command = pager.get("command") if isinstance(pager, dict) else pager
+        args = shlex.split(command) if isinstance(command, str) else list(command)
+        name = Path(args[0]).name if args else ""
+        overrides = [
+            "--config=ui.paginate=auto",
+            "--config=ui.streampager.interface=full-screen-clear-output",
+        ]
+        if name == "less":
+            # Command-line options override LESS, including a configured -F.
+            args.extend(["-+F", "-+e", "-+X", "-K"])
+        elif name == "delta":
+            # Replace existing paging options rather than passing conflicting
+            # copies to versions of delta that reject repeated arguments.
+            original = iter(args)
+            args = []
+            for arg in original:
+                if arg == "--paging":
+                    next(original, None)
+                elif not arg.startswith("--paging="):
+                    args.append(arg)
+            args.append("--paging=always")
+            # Delta normally supplies less -FRX itself. Keep formatting options,
+            # but make its nested pager wait for q even for a one-line diff.
+            env = pager.get("env", {}) if isinstance(pager, dict) else {}
+            nested = (
+                env.get("DELTA_PAGER")
+                or os.environ.get("DELTA_PAGER")
+                or env.get("PAGER")
+                or os.environ.get("PAGER")
+                or "less -R"
+            )
+            nested_args = shlex.split(nested)
+            if nested_args and Path(nested_args[0]).name == "less":
+                nested_args.extend(["-+F", "-+e", "-+X", "-K"])
+            overrides.append(
+                "--config=ui.pager.env.DELTA_PAGER=" + json.dumps(shlex.join(nested_args))
+            )
+        else:
+            return [*argv, *overrides]
+        key = "ui.pager.command" if isinstance(pager, dict) or name == "delta" else "ui.pager"
+        # A scalar delta command must become a table to carry DELTA_PAGER too.
+        overrides.append(f"--config={key}={json.dumps(args)}")
+        return [*argv, *overrides]
 
     def diff_files_command(self, base: str, target: str, paths: Collection[str]) -> list[str]:
         """Interactive diff of some files, as ``diff_command``."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import signal
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, cast
@@ -2114,7 +2115,7 @@ def test_diff_selection(
     run_app(repo, fake_cfg(), scenario)
 
 
-@pytest.mark.parametrize("failure", [FileNotFoundError("jj missing"), 1, KeyboardInterrupt()])
+@pytest.mark.parametrize("failure", [FileNotFoundError("jj missing"), 1, 130, -signal.SIGINT])
 def test_diff_viewer_failure_recovers(
     repo: Path,
     fake_cfg: Callable[..., Config],
@@ -2129,7 +2130,8 @@ def test_diff_viewer_failure_recovers(
 
     def viewer(argv: list[str], *, cwd: Path) -> int:
         base, target = (f'"{c}"' for c in commits)
-        assert argv == ["jj", "diff", "--from", base, "--to", target, 'root-file:"b.txt"']
+        assert argv[:7] == ["jj", "diff", "--from", base, "--to", target, 'root-file:"b.txt"']
+        assert "--config=ui.paginate=auto" in argv
         assert cwd == repo
         if isinstance(failure, BaseException):
             raise failure
@@ -2137,13 +2139,12 @@ def test_diff_viewer_failure_recovers(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
-        monkeypatch.setattr("subprocess.call", viewer)
-        monkeypatch.setattr("builtins.input", lambda _: "")
+        monkeypatch.setattr("project_sandbox_tui.terminal.run_foreground", viewer)
         app.marked = ["main", "feature/x"]
         await pilot.press("equals_sign")
         await wait_until(pilot, lambda: isinstance(app.screen, DiffReviewScreen))
         await pilot.press("enter")
-        if not isinstance(failure, KeyboardInterrupt):
+        if failure not in (130, -signal.SIGINT):
             await wait_until(
                 pilot, lambda: any("jj diff" in str(n.message) for n in app._notifications)
             )
@@ -2163,7 +2164,7 @@ def test_diff_review_marks_files_seen(
     viewed: list[list[str]] = []
 
     def viewer(argv: list[str], *, cwd: Path) -> int:
-        viewed.append(argv[6:])
+        viewed.append([arg for arg in argv[6:] if not arg.startswith("--config=")])
         return 0
 
     def review_rows(app: SandboxTUI) -> list[list[str]]:
@@ -2186,8 +2187,7 @@ def test_diff_review_marks_files_seen(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
-        monkeypatch.setattr("subprocess.call", viewer)
-        monkeypatch.setattr("builtins.input", lambda _: "")
+        monkeypatch.setattr("project_sandbox_tui.terminal.run_foreground", viewer)
         assert str(app.table.get_cell("@", "reviewed")) == "0/2"
         assert str(app.table.get_cell("feature/x", "reviewed")) == "0/1"
         assert str(app.table.get_cell("main", "reviewed")) == ""
@@ -2923,7 +2923,9 @@ def test_commit_review_groups_persists_and_invalidates_rewritten_commits(
         await wait_until(
             pilot,
             lambda: (
-                isinstance(app.screen, CommitReviewScreen) and isinstance(app.focused, DataTable)
+                isinstance(app.screen, CommitReviewScreen)
+                and isinstance(app.focused, DataTable)
+                and app.focused.row_count > 0
             ),
         )
         return cast(CommitReviewScreen, app.screen)

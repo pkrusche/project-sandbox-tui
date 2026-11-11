@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Short diffs stay open in the pager, and closing the viewer returns directly
+  to the file table without an Enter prompt. Diff viewers run in their own
+  foreground process group; interrupting or stopping a viewer cleans up its
+  processes and restores the terminal before resuming the TUI.
+
 ## [0.1.1] - 2026-11-03
 
 ### Added
