@@ -639,7 +639,7 @@ class SandboxTUI(App[None]):
 
     def _review_counts(self) -> dict[str, tuple[int, int]]:
         """Count seen files across commits, caching identities until either tip changes."""
-        seen = SeenFiles.for_repo(self.repo)
+        marks = SeenFiles.for_repo(self.repo).seen()
         main = self.main_name()
         base = next((b.commit for b in self.branches if b.name == main), "")
         counts: dict[str, tuple[int, int]] = {}
@@ -648,7 +648,6 @@ class SandboxTUI(App[None]):
             comparison = branch.comparison
             if not base or comparison is None or not comparison.ahead:
                 continue
-            marks = seen.seen(branch.name)
             pair = (base, branch.commit)
             current = keys.get(pair, self._review_keys.get(pair))
             if current is None:
@@ -1248,7 +1247,7 @@ class SandboxTUI(App[None]):
         async def closed(_: None) -> None:
             await self.refresh_data()
 
-        self.push_screen(CommitReviewScreen(title, target, commits, changes, seen, view), closed)
+        self.push_screen(CommitReviewScreen(title, commits, changes, seen, view), closed)
 
     @work(exclusive=True, group="diff")
     async def _review_diff(self, base: str, target: str) -> None:
@@ -1275,7 +1274,7 @@ class SandboxTUI(App[None]):
         async def closed(_: None) -> None:
             await self.refresh_data()
 
-        self.push_screen(DiffReviewScreen(title, target, changes, seen, view), closed)
+        self.push_screen(DiffReviewScreen(title, changes, seen, view), closed)
 
     def _show_diff(self, title: str, argv: list[str]) -> None:
         try:

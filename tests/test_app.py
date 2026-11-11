@@ -2221,7 +2221,7 @@ def test_diff_review_marks_files_seen(
         (repo / "a.txt").write_text("changed again\n")
         await app.refresh_data()
         assert str(app.table.get_cell("@", "reviewed")) == "0/2"
-        # Another bookmark has its own marks.
+        # Both diffs changed, so another bookmark also shows them as unseen.
         jj(repo, "bookmark", "create", "--quiet", "wip", "-r", "@")
         await app.refresh_data()
         assert str(app.table.get_cell("wip", "reviewed")) == "0/2"
@@ -2238,6 +2238,77 @@ def test_diff_review_marks_files_seen(
     run_app(repo, fake_cfg(), scenario)
 
 
+@pytest.mark.parametrize("direct", [False, True])
+def test_review_marks_follow_shared_diffs_across_bookmarks(
+    repo: Path, fake_cfg: Callable[..., Config], direct: bool
+) -> None:
+    jj(repo, "new", "feature/x", "-m", "shared changes")
+    (repo / "c.txt").write_text("c\n")
+    (repo / "d.txt").write_text("d\n")
+    jj(repo, "bookmark", "create", "feature-1", "-r", "@")
+    jj(repo, "new", "-m", "follow-up")
+    (repo / "e.txt").write_text("e\n")
+    jj(repo, "bookmark", "create", "feature-2", "-r", "@")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+
+        async def open_review(bookmark: str) -> DiffReviewScreen:
+            app.marked = ["main", bookmark] if direct else [bookmark]
+            await pilot.press("equals_sign")
+            await wait_until(
+                pilot,
+                lambda: (
+                    isinstance(app.screen, DiffReviewScreen) and isinstance(app.focused, DataTable)
+                ),
+            )
+            if not direct:
+                await pilot.press("right_square_bracket")  # shared c.txt / d.txt commit
+            return cast(DiffReviewScreen, app.screen)
+
+        async def close_review() -> None:
+            await pilot.press("q")
+            await wait_until(pilot, lambda: app.screen is app.main)
+            await app.workers.wait_for_complete()
+
+        def count(bookmark: str) -> str:
+            return str(app.table.get_cell(bookmark, "reviewed"))
+
+        screen = await open_review("feature-1")
+        row = next(i for i, f in enumerate(screen.files) if f.path == "c.txt")
+        screen.query_one(DataTable).move_cursor(row=row)
+        await pilot.press("space")
+        await close_review()
+        assert count("feature-1") == ("0/3" if direct else "1/3")
+        assert count("feature-2") == ("0/4" if direct else "1/4")
+        assert count("feature/x") == "0/1"
+
+        screen = await open_review("feature-2")
+        assert {f.path for f in screen.files if f.key in screen.seen} == {"c.txt"}
+        await pilot.press("A")
+        await close_review()
+        assert count("feature-1") == ("0/3" if direct else "2/3")
+        assert count("feature-2") == ("0/4" if direct else "2/4")
+
+        # New and renamed bookmarks inherit saved marks without copying them.
+        jj(repo, "bookmark", "create", "later", "-r", "feature-1")
+        jj(repo, "bookmark", "rename", "feature-1", "renamed")
+        await app.refresh_data()
+        screen = await open_review("later")
+        assert len(screen.seen) == len(screen.files)
+        await pilot.press("A")  # unmark all from the new bookmark
+        await close_review()
+        assert count("renamed") == "0/3"
+        assert count("feature-2") == "0/4"
+        screen = await open_review("feature-2")
+        assert {f.path for f in screen.files if f.key in screen.seen} == (
+            {"e.txt"} if direct else set()
+        )
+        await close_review()
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_bookmark_review_counts_persist_and_follow_main(
     repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2247,7 +2318,7 @@ def test_bookmark_review_counts_persist_and_follow_main(
     commits = backend.review_commits("main", "feature/x")
     key = backend.changed_files_for_commit(commits[0]).files[0].key
     seen = SeenFiles.for_repo(repo)
-    seen.mark("feature/x", [key, "obsolete-diff"], True)
+    seen.mark([key, "obsolete-diff"], True)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         assert str(app.table.get_cell("feature/x", "reviewed")) == "1/1"
@@ -2258,10 +2329,10 @@ def test_bookmark_review_counts_persist_and_follow_main(
 
         with monkeypatch.context() as patch:
             patch.setattr(app.backend, "review_commits", unexpected_diff)
-            seen.mark("feature/x", [key], False)
+            seen.mark([key], False)
             await app.refresh_data()
             assert str(app.table.get_cell("feature/x", "reviewed")) == "0/1"
-            seen.mark("feature/x", [key], True)
+            seen.mark([key], True)
             await app.refresh_data()
             assert str(app.table.get_cell("feature/x", "reviewed")) == "1/1"
 
@@ -2963,7 +3034,7 @@ def test_commit_review_groups_persists_and_invalidates_rewritten_commits(
         await pilot.press("q")
         await wait_until(pilot, lambda: str(app.table.get_cell("feature/x", "reviewed")) == "3/3")
         keys = {f.key for change in changes for f in change.files}
-        assert keys <= SeenFiles.for_repo(repo).seen("feature/x")
+        assert keys <= SeenFiles.for_repo(repo).seen()
         screen = await open_review(app, pilot)
         assert screen.seen == {changes[0].files[0].key}
         # An open review keeps its pinned files and patches after a rewrite.
