@@ -47,6 +47,40 @@ when needed.
 Edit TOML directly or use `config set/unset`. `ctrl+l` reloads both files,
 keeping current settings on error; running sessions retain their launch settings.
 
+## Agent profiles
+
+Run `:config-profiles` in the TUI to create or edit a named agent profile.
+Choose **new profile** or an existing profile, enter its name, and configure
+agent, model, effort and fast mode. **CLI args** accepts additional
+project-sandbox switches, using shell quoting to keep values with spaces together
+(for example, `--extra-domain example.org --memory '16g'`). Arguments are passed
+directly to project-sandbox; shell expressions are not executed.
+Press `ctrl+s` or click **save** to write the profile to the project's
+`.project-sandbox-tui.toml`. Saving an existing name updates that profile;
+entering another name saves a copy. `esc` discards edits. Other settings and
+comments in the file are preserved, and existing config trust rules still apply.
+
+```toml
+[profiles."Deep review"]
+agent = "codex"
+model = ""                  # agent default
+effort = "high"
+fast = false
+extra_args = ["--memory=16g"]
+```
+
+Interactive and unsupervised launch forms offer these profiles plus **custom**.
+Selecting **custom** shows the individual agent controls and CLI arguments.
+The last successfully launched profile (including Custom) is remembered per
+repository; before the first choice, the first available profile is selected.
+If a remembered profile is removed, the form falls back to Custom.
+Prompts and timeouts remain run-specific. Profile arguments follow
+`sandbox.extra_args`; a run records the selected profile's settings at launch.
+Host-agent commands and configured agent actions do not select profiles.
+
+Profiles can also be edited with keys such as `profiles.review.agent` and
+`profiles.review.extra_args` through `sbx-tui config set --project`.
+
 ## From the command line
 
 ```sh
@@ -170,7 +204,7 @@ as `eval` can execute them even when passed safely.
 `:name args` runs the command with `sh -c` in the repository foreground, with `args`
 appended (`:test -k merge` runs `uv run pytest -k merge`). Names start with a
 letter and use letters, digits, `_` and `-`; built-in commands (`help`, `quit`,
-`q`, `refresh`, `reload`, `host`) cannot be redefined. Unlike `ui.*_command`, these are
+`q`, `refresh`, `reload`, `host`, `config-profiles`) cannot be redefined. Unlike `ui.*_command`, these are
 shell code: use `SBX_REPO`, `SBX_BOOKMARK` and `SBX_WORKSPACE` rather than
 placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 

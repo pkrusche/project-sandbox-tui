@@ -23,6 +23,7 @@ from project_sandbox_tui.config import (
     _SECTIONS,
     ACTION_KEYS,
     AGENTS,
+    AgentProfile,
     Config,
     ConfigError,
     ProjectTrust,
@@ -32,6 +33,7 @@ from project_sandbox_tui.config import (
     global_config_path,
     load,
     project_config_path,
+    validate_profile_name,
 )
 
 Scope = Literal["global", "project"]
@@ -48,9 +50,9 @@ class Key:
 
     @property
     def path(self) -> list[str]:
-        """Table names from the document root to the value: ``actions.NAME.prompt``
-        is nested one level deeper than other keys."""
-        if self.section == "actions":
+        """Table names from the document root to the value; actions and profiles
+        are nested one level deeper than other keys."""
+        if self.section in ("actions", "profiles"):
             action, _, name = self.name.rpartition(".")
             return [self.section, action, name]
         return [self.section, self.name]
@@ -58,7 +60,7 @@ class Key:
 
 def parse_key(text: str) -> Key:
     """``section.key``, ``models.<agent>``, ``commands.<name>``, ``leader.<keys>``
-    or ``actions.<name>.<key>``."""
+    or ``actions.<name>.<key>`` / ``profiles.<name>.<key>``."""
     section, _, name = text.partition(".")
     if section == "models" and name in AGENTS:
         return Key(section, name, [])
@@ -69,6 +71,12 @@ def parse_key(text: str) -> Key:
         if action and field in ACTION_KEYS:
             return Key(section, name, ACTION_KEYS[field])
         raise ConfigError(f"unknown key {text!r}: use actions.<name>.<{'|'.join(ACTION_KEYS)}>")
+    if section == "profiles":
+        profile, _, field = name.rpartition(".")
+        defaults = dataclasses.asdict(AgentProfile())
+        if profile and field in defaults:
+            return Key(section, name, defaults[field])
+        raise ConfigError(f"unknown key {text!r}: use profiles.<name>.<{'|'.join(defaults)}>")
     cls = _SECTIONS.get(section)
     if cls is None or name not in {f.name for f in dataclasses.fields(cls)}:
         raise ConfigError(f"unknown key {text!r} (see `sbx-tui config list`)")
@@ -110,7 +118,7 @@ def flatten(data: dict[str, Any]) -> list[tuple[str, Any]]:
         if not isinstance(table, dict):
             continue
         for name, value in table.items():
-            if section == "actions" and isinstance(value, dict):
+            if section in ("actions", "profiles") and isinstance(value, dict):
                 out += [(f"{section}.{name}.{k}", v) for k, v in value.items()]
             else:
                 out.append((f"{section}.{name}", value))
@@ -124,6 +132,7 @@ def effective(cfg: Config) -> dict[str, Any]:
     data["commands"] = dict(cfg.commands)
     data["leader"] = dict(cfg.leader)
     data["actions"] = {name: action.to_dict() for name, action in cfg.actions.items()}
+    data["profiles"] = {name: dataclasses.asdict(profile) for name, profile in cfg.profiles.items()}
     return data
 
 
@@ -155,10 +164,28 @@ class Editor:
         for part in key.path[:-1]:
             inner = table.get(part)
             if not isinstance(inner, dict):
-                inner = tomlkit.table(is_super_table=part == "actions")
+                inner = tomlkit.table(is_super_table=part in ("actions", "profiles"))
                 table[part] = inner
             table = inner
         table[key.path[-1]] = value
+        self.write(doc)
+
+    def save_profile(self, name: str, profile: AgentProfile) -> None:
+        """Save all profile fields together, preserving unrelated project settings."""
+        validate_profile_name(name)
+        profile.validate(f"profiles.{name}")
+        doc = self.read()
+        if "profiles" not in doc:
+            doc["profiles"] = tomlkit.table(is_super_table=True)
+        profiles: Any = doc["profiles"]
+        if not isinstance(profiles, dict):
+            raise ConfigError("[profiles] must be a table")
+        if name not in profiles:
+            profiles[name] = tomlkit.table()
+        if not isinstance(profiles[name], dict):
+            raise ConfigError(f"[profiles.{name}] must be a table")
+        for key, value in dataclasses.asdict(profile).items():
+            profiles[name][key] = value
         self.write(doc)
 
     def unset(self, key: Key) -> bool:

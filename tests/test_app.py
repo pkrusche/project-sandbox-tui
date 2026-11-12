@@ -18,6 +18,7 @@ from textual.widgets.data_table import ColumnKey
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config, LastUsed
 from project_sandbox_tui.jobs import JobManager
+from project_sandbox_tui.screens.agent import AgentControls
 from project_sandbox_tui.screens.dialogs import (
     ConfirmScreen,
     DescriptionScreen,
@@ -884,7 +885,7 @@ def test_launch_rejects_model_name_with_spaces(repo: Path, fake_cfg: Callable[..
         form = app.screen
         assert isinstance(form, LaunchScreen)
         form.query_one("#model", CycleField).value = CUSTOM_MODEL
-        form._update_custom_model()
+        form.query_one(AgentControls)._update_custom_model()
         form.query_one("#custom-model", Input).value = "my model"
         form.action_launch()
         await pilot.pause()

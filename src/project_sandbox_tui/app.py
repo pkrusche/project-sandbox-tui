@@ -37,6 +37,7 @@ from project_sandbox_tui.cleanup import (
     remove_workspaces,
 )
 from project_sandbox_tui.config import (
+    AgentProfile,
     Config,
     ConfigError,
     LastUsed,
@@ -76,8 +77,10 @@ from project_sandbox_tui.screens.dialogs import (
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
+from project_sandbox_tui.screens.profiles import ProfilesScreen
 from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen
 from project_sandbox_tui.screens.tasks import TasksScreen
+from project_sandbox_tui.settings import Editor
 from project_sandbox_tui.tasks import TaskManager, TaskRecord
 from project_sandbox_tui.vcs import (
     WORKING_COPY,
@@ -1539,6 +1542,8 @@ class SandboxTUI(App[None]):
                 spec.effort,
                 spec.timeout if spec.mode == "background" else None,
                 fast=spec.fast,
+                profile=spec.profile,
+                extra_args=spec.extra_args,
             )
             self.main.update_help_layout()
         self.call_later(self.refresh_data)
@@ -2425,6 +2430,18 @@ class SandboxTUI(App[None]):
     def action_toggle_cheatsheet(self) -> None:
         self.show_cheatsheet(not self.cheatsheet_visible)
 
+    def action_config_profiles(self) -> None:
+        def save(name: str, profile: AgentProfile) -> None:
+            Editor("project", self.repo, self.config_path).save_profile(name, profile)
+            self.cfg.profiles = load(self.repo, self.config_path).profiles
+
+        def saved(changed: bool | None) -> None:
+            if changed:
+                self.notify("Agent profile saved to project config")
+                self._review_project_config()
+
+        self.push_screen(ProfilesScreen(self.cfg, LastUsed.load(self.repo), save), saved)
+
     def show_cheatsheet(self, visible: bool) -> None:
         """Show the sheet when it fits, otherwise keep the one-line help hint."""
         self.cheatsheet_visible = visible
@@ -2524,6 +2541,8 @@ class SandboxTUI(App[None]):
             await self.refresh_data()
         elif command.builtin == "reload":
             await self.action_reload_config()
+        elif command.builtin == "config-profiles":
+            self.action_config_profiles()
         elif command.builtin == "host":
             self._open_host_agents(command.argv)
         else:

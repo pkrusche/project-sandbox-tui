@@ -136,6 +136,7 @@ removes the workspace instead.
 | `:action args` | Start the [`[actions]`](configuration.md#agent-actions) prompt on each target, with `args` appended |
 | `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
+| `:config-profiles` | Create or edit saved agent profiles in the project config |
 
 | Key | Action in the command line |
 |---|---|
@@ -406,7 +407,7 @@ not snapshotted are recorded first and can be recovered via `jj op log`), and
 | Key | Action |
 |---|---|
 | `tab` | Next field (`j`/`k` on choice fields) |
-| `h` `l` | Cycle agent, effort, model or fast mode |
+| `h` `l` | Cycle profile, or agent, effort, model and fast mode under Custom |
 | `enter` | Launch interactive session; newline in a background prompt |
 | `ctrl+s` / `ctrl+enter` | Launch background run (or click **launch**); `ctrl+enter` requires terminal support |
 | `esc` | Cancel, keeping an edited background prompt as a draft |
@@ -415,6 +416,10 @@ The form remembers launch choices per repository; see
 [defaults and precedence](configuration.md#settings-reference). A bookmark
 name that does not exist yet is flagged under the field: launching creates it
 from the highlighted bookmark.
+
+Choose a saved [agent profile](configuration.md#agent-profiles), or **custom**
+to show the agent, model, effort, fast mode and extra CLI arguments.
+Use `:config-profiles` to name and save profiles for this project.
 
 For Codex and Claude, the **fast** field enables fast mode in interactive and
 background runs. It requires project-sandbox 0.3.1 or later and adds `--fast`

@@ -1,4 +1,4 @@
-"""Launch form: agent / model / effort (+ prompt and timeout for unsupervised runs)."""
+"""Launch form: saved profiles or custom settings, with unsupervised prompts."""
 
 from __future__ import annotations
 
@@ -14,25 +14,21 @@ from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Button, Input, Static, TextArea
 
-from project_sandbox_tui import models as models_mod
 from project_sandbox_tui import octopus as octopus_mod
 from project_sandbox_tui.config import (
-    AGENTS,
-    EFFORTS,
-    FAST_AGENTS,
+    AgentProfile,
     Config,
+    ConfigError,
     LastUsed,
     LaunchDefaults,
-    resolve_fast,
 )
-from project_sandbox_tui.config import resolve_model as _resolve_model
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import LaunchSpec, Mode
+from project_sandbox_tui.screens.agent import CUSTOM_MODEL as CUSTOM_MODEL
+from project_sandbox_tui.screens.agent import AgentControls
 from project_sandbox_tui.screens.history import HistorySearchScreen
 from project_sandbox_tui.vcs import session_target_error, validate_branch_name
 from project_sandbox_tui.widgets import CycleField, KeyHints, PromptArea, modifier_key
-
-CUSTOM_MODEL = "custom (enter model name)"
 
 
 @dataclass
@@ -66,7 +62,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen .field-label { width: 10; color: $text-muted; padding: 0 0 0 1; }
     LaunchScreen .field Input { width: 1fr; padding: 0; }
     LaunchScreen .field-value { width: 1fr; height: 1; }
-    LaunchScreen TextArea { height: 8; border: none; margin: 0; }
+    LaunchScreen TextArea { height: 6; border: none; margin: 0; }
     LaunchScreen TextArea:focus { background: $boost; border: none; }
     LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
     LaunchScreen .inputs { color: $text-muted; padding: 0 1; margin-bottom: 1; }
@@ -111,8 +107,11 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.cfg = cfg
         self.last = last
         self.defaults = defaults
-        self._fast_by_agent = {agent: resolve_fast(cfg, last, agent) for agent in FAST_AGENTS}
-        self._fast_by_agent[defaults.agent] = defaults.fast
+        self.initial_profile = (
+            next(iter(cfg.profiles), "") if last.profile is None else last.profile
+        )
+        if self.initial_profile not in cfg.profiles:
+            self.initial_profile = ""
         self.preview_fn = preview
         self.initial_prompt = draft or prompt_text
         self._baseline_prompt = prompt_text  # what the prompt shows without edits
@@ -125,7 +124,6 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.octopus = octopus
         self._auto_prompt = ""  # last template-rendered prompt (octopus only)
         self._auto_result = ""  # last generated result name (octopus only)
-        self.model_store = models_mod.load_store()  # downloaded catalog, if any
         if octopus is not None:
             self.branch = octopus_mod.default_result_name("merge", octopus.inputs)
             self._auto_result = self.branch
@@ -173,33 +171,18 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                         id="start-branch",
                     )
                 yield Static("", classes="prompt-hint", id="branch-hint")
-            yield CycleField("agent", AGENTS, self.defaults.agent, id="agent")
             yield CycleField(
-                "model",
-                self._model_options(self.defaults.agent, self.defaults.model),
-                self.defaults.model,
-                empty_label="agent default",
-                id="model",
+                "profile",
+                [*self.cfg.profiles, "custom"],
+                self.initial_profile or "custom",
+                id="profile",
             )
-            with Horizontal(classes="field", id="custom-model-row") as custom_model_row:
-                custom_model_row.display = False
-                yield Static("name", classes="field-label")
-                yield Input(
-                    value=self.defaults.model,
-                    placeholder="model name (blank uses agent default)",
-                    select_on_focus=False,
-                    id="custom-model",
-                )
-            model_hint = models_mod.store_hint(self.defaults.agent, self.model_store)
-            hint_widget = Static(model_hint, id="model-hint", classes="prompt-hint")
-            hint_widget.display = bool(model_hint)
-            yield hint_widget
-            yield CycleField("effort", ("", *EFFORTS), self.defaults.effort, id="effort")
-            fast = CycleField(
-                "fast", ("off", "on"), "on" if self.defaults.fast else "off", id="fast"
+            yield Static("", classes="prompt-hint", id="profile-hint")
+            controls = AgentControls(
+                self.cfg, self.last, self.defaults, extra_args=self.last.extra_args
             )
-            fast.display = self.defaults.agent in FAST_AGENTS
-            yield fast
+            controls.display = not self.initial_profile
+            yield controls
             if self.mode == "background":
                 with Horizontal(classes="field"):
                     yield Static("timeout", classes="field-label")
@@ -272,7 +255,11 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             result,
             base if operation == "rebase" else "",
         )
-        if self._value("#agent", self.defaults.agent) == "bash":
+        name = self._selected_profile()
+        agent = (
+            self.cfg.profiles[name].agent if name else self._value("#agent", self.defaults.agent)
+        )
+        if agent == "bash":
             return octopus_mod.bash_prompt(plan, self.octopus.existing)
         return octopus_mod.render_prompt(self.octopus.templates[operation], plan)
 
@@ -299,8 +286,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 area.replace_text(fresh)
 
     def on_mount(self) -> None:
-        target = "#prompt" if self.mode == "background" else "#agent"
+        target = "#prompt" if self.mode == "background" else "#profile"
         self.query_one(target).focus()
+        self._profile_changed()
         self._update_preview()
         self._update_prompt_hint()
         self._update_branch_hint()
@@ -334,13 +322,38 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             hint = f"{count} prompts in history · ctrl+p/n browse · ctrl+r search · ctrl+l clear"
         self.query_one("#prompt-hint", Static).update(KeyHints(hint))
 
-    def _model_options(self, agent: str, current: str) -> list[str]:
-        if agent == "bash":
-            return [""]
-        models = models_mod.suggestions(agent, self.cfg.models.get(agent), self.model_store)
-        return list(dict.fromkeys(["", *([current] if current else []), *models, CUSTOM_MODEL]))
-
     # ------------------------------------------------------------ state
+
+    def _selected_profile(self) -> str:
+        name = self._value("#profile", self.initial_profile or "custom")
+        return name if name in self.cfg.profiles else ""
+
+    def _current_profile(self) -> AgentProfile:
+        if name := self._selected_profile():
+            return self.cfg.profiles[name]
+        return self.query_one(AgentControls).current_profile()
+
+    @on(CycleField.Changed, "#profile")
+    def _profile_changed(self) -> None:
+        name = self._selected_profile()
+        self.query_one(AgentControls).display = not name
+        hint = self.query_one("#profile-hint", Static)
+        hint.display = bool(name)
+        if name:
+            profile = self.cfg.profiles[name]
+            text = " / ".join(
+                value
+                for value in (
+                    profile.agent,
+                    profile.model,
+                    profile.effort,
+                    "fast" if profile.fast else "",
+                )
+                if value
+            )
+            hint.update(Text(text + " · edit with :config-profiles"))
+        self._octopus_changed()
+        self._update_preview()
 
     def current_spec(self) -> LaunchSpec:
         timeout = 0
@@ -348,10 +361,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             raw = self.query_one("#timeout", Input).value.strip()
             timeout = int(raw) if raw.isdigit() else 0
         prompt = self.query_one("#prompt", TextArea).text if self.mode == "background" else ""
-        agent = self.query_one("#agent", CycleField).value
-        model = self.query_one("#model", CycleField).value
-        if model == CUSTOM_MODEL:
-            model = self.query_one("#custom-model", Input).value.strip()
+        profile = self._current_profile()
         operation, base = "", ""
         inputs: list[str] = []
         if self.octopus is not None:
@@ -363,16 +373,18 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             branch = self.query_one("#branch", Input).value.strip()
         return LaunchSpec(
             branch=branch,
-            agent=agent,
-            model=model if agent != "bash" else "",
-            effort=self.query_one("#effort", CycleField).value,
+            agent=profile.agent,
+            model=profile.model if profile.agent != "bash" else "",
+            effort=profile.effort,
             mode=self.mode,
             prompt_text=prompt,
             timeout=timeout,
             operation=operation,
             inputs=inputs,
             base=base,
-            fast=agent in FAST_AGENTS and self.query_one("#fast", CycleField).value == "on",
+            fast=profile.fast,
+            extra_args=list(profile.extra_args),
+            profile=self._selected_profile(),
         )
 
     def _update_preview(self) -> None:
@@ -384,57 +396,21 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     # ------------------------------------------------------------ events
 
-    @on(CycleField.Changed, "#agent")
-    def _agent_changed(self, event: CycleField.Changed) -> None:
-        fast = self.query_one("#fast", CycleField)
-        fast.display = event.value in FAST_AGENTS
-        fast.value = "on" if self._fast_by_agent.get(event.value, False) else "off"
-        model = self.query_one("#model", CycleField)
-        current = "" if event.value == "bash" else _resolve_model(self.cfg, self.last, event.value)
-        model.options = self._model_options(event.value, current)
-        model.value = current
-        model.refresh()
-        self.query_one("#custom-model", Input).value = current
-        self._update_custom_model()
-        hint = self.query_one("#model-hint", Static)
-        text = models_mod.store_hint(event.value, self.model_store)
-        hint.update(text)
-        hint.display = bool(text)
-        self._octopus_changed()
-        self._update_preview()
-
     @on(CycleField.Changed, "#operation")
     @on(Input.Changed, "#result")
     @on(Input.Changed, "#base")
     def _octopus_field_changed(self) -> None:
         self._octopus_changed()
 
-    def _update_custom_model(self) -> None:
-        self.query_one("#custom-model-row").display = (
-            self.query_one("#agent", CycleField).value != "bash"
-            and self.query_one("#model", CycleField).value == CUSTOM_MODEL
-        )
-
-    @on(CycleField.Changed, "#model")
-    def _model_changed(self) -> None:
-        self._update_custom_model()
-        self._changed()
-
-    @on(CycleField.Changed, "#effort")
+    @on(AgentControls.Changed)
     @on(Input.Changed)
     @on(TextArea.Changed)
     def _changed(self) -> None:
+        self._octopus_changed()
         self.query_one("#launch-hint", Static).update(KeyHints(self.default_hint))
         self._update_preview()
         # after PromptArea has processed the same Changed (browse state, suggestion)
         self.call_after_refresh(self._update_prompt_hint)
-
-    @on(CycleField.Changed, "#fast")
-    def _fast_changed(self) -> None:
-        agent = self.query_one("#agent", CycleField).value
-        if agent in FAST_AGENTS:
-            self._fast_by_agent[agent] = self.query_one("#fast", CycleField).value == "on"
-        self._changed()
 
     @on(PromptArea.SearchRequested)
     def _search_history(self, event: PromptArea.SearchRequested) -> None:
@@ -504,7 +480,12 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 self.notify(error, severity="warning")
                 self.query_one("#branch").focus()
                 return
-        spec = self.current_spec()
+        try:
+            spec = self.current_spec()
+        except ConfigError as exc:
+            self.notify(str(exc), severity="warning")
+            self.query_one("#extra-args").focus()
+            return
         if any(ch.isspace() for ch in spec.model):
             self.notify(f"invalid model name: {spec.model!r}", severity="warning")
             custom = self.query_one("#custom-model-row").display
