@@ -112,8 +112,11 @@ and working-copy files stay unchanged. `u` moves main back unless it has moved
 again since.
 
 `@` saves an unbookmarked working-copy change, including edits, as
-`saved/<change-id>` for later recovery, then runs `jj new` on the chosen bookmark
-and checks out its files. Running sessions in `@` block the move.
+`saved/<change-id>` for later recovery unless the change is already an ancestor
+of main. It then runs `jj new` on the chosen bookmark and checks out its files.
+This uses the configured main bookmark, or detects `main` / `master` / `trunk`;
+if main is missing or conflicted, the change is saved. Running sessions in `@`
+block the move.
 
 When the bookmark's commit is still the working copy of another workspace,
 typically one [kept from a session](sessions.md#kept-workspaces), `@` asks
@@ -267,7 +270,7 @@ results) and deletions (`dd`, bookmarks deleted by [cleanup](cleanup.md)),
 restoring the commit the bookmark last pointed to, and `f`, refusing when main
 has moved since. Bookmarks with running sessions are not deleted, and the main
 bookmark is never deleted by `dd`. Workspace removal, `@` and other jj commands
-are not undone; `@` keeps the previous change as `saved/…`, and `jj undo`
+are not undone; `@` keeps unbookmarked work outside main as `saved/…`, and `jj undo`
 covers the rest. The history is kept in the
 [state directory](configuration.md#state-directory) and shared by TUI instances.
 

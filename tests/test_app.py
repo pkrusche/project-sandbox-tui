@@ -579,6 +579,34 @@ def test_move_working_copy_shortcut(
     run_app(repo, fake_cfg(), scenario)
 
 
+@pytest.mark.parametrize("configured", ["", "release"])
+def test_move_working_copy_skips_saving_ancestor_of_main(
+    repo: Path, fake_cfg: Callable[..., Config], configured: str
+) -> None:
+    from tests.conftest import jj
+
+    jj(repo, "describe", "-m", "previous work")
+    jj(repo, "new")
+    jj(repo, "bookmark", "create", "release", "-r", "@")
+    if not configured:
+        jj(repo, "bookmark", "move", "main", "--to", "release")
+    jj(repo, "edit", "@-")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.marked = ["feature/x"]
+        await pilot.press("@")
+        await app.workers.wait_for_complete()
+        assert app.backend._jj("log", "--no-graph", "-r", "@-", "-T", "commit_id").strip() == (
+            app.backend._bookmark_commit("feature/x")
+        )
+        assert not any(b.name.startswith("saved/") for b in app.branches)
+        notifications = "\n".join(str(n.message) for n in app._notifications)
+        assert "working copy moved onto feature/x" in notifications
+        assert "previous change saved" not in notifications
+
+    run_app(repo, fake_cfg(main_branch=configured), scenario)
+
+
 @pytest.mark.parametrize("case", ["working-copy", "multiple"])
 def test_move_working_copy_shortcut_requires_one_bookmark(
     repo: Path, fake_cfg: Callable[..., Config], case: str

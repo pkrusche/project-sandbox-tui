@@ -1130,7 +1130,9 @@ class SandboxTUI(App[None]):
                 for name in names:
                     if reason := self.jobs._busy_reason(name, sessions):
                         raise BusyError(reason)
-                return self.backend.move_working_copy_to(target, new_in_holders=new_in_holders)
+                return self.backend.move_working_copy_to(
+                    target, main=self.cfg.project.main_branch, new_in_holders=new_in_holders
+                )
 
         try:
             async with self._history_lock:

@@ -540,6 +540,52 @@ def test_move_working_copy_does_not_add_bookmark_when_one_exists(repo: Path) -> 
     assert not any(b.name.startswith("saved/") for b in backend.list_branches())
 
 
+@pytest.mark.parametrize("main", ["main", "master", "trunk", "release-"])
+@pytest.mark.parametrize("edited", [False, True])
+def test_move_working_copy_only_saves_work_outside_main(
+    repo: Path, main: str, edited: bool
+) -> None:
+    from tests.conftest import jj
+
+    (repo / "a.txt").write_text("previous work\n")
+    jj(repo, "describe", "-m", "previous work")
+    jj(repo, "new")
+    jj(repo, "bookmark", "move", "main", "--to", "@")
+    jj(repo, "edit", "@-")  # unbookmarked ancestor of main
+    if main != "main":
+        jj(repo, "bookmark", "rename", "main", vcs.revset_symbol(main))
+    configured = main if main == "release-" else ""
+    backend = vcs.detect(repo)
+    if edited:
+        # Snapshotting rewrites main's ancestor too; the edited change is still contained.
+        (repo / "a.txt").write_text("updated previous work\n")
+    assert backend.move_working_copy_to("feature/x", main=configured) is None
+    assert not any(b.name.startswith("saved/") for b in backend.list_branches())
+    assert backend._jj("log", "--no-graph", "-r", "@-", "-T", "commit_id").strip() == (
+        backend._bookmark_commit("feature/x")
+    )
+    expected = "updated previous work\n" if edited else "previous work\n"
+    assert backend._jj("file", "show", "-r", vcs.revset_symbol(main), "a.txt") == expected
+
+
+@pytest.mark.parametrize("case", ["diverged", "missing", "configured-missing"])
+def test_move_working_copy_preserves_work_not_in_main(repo: Path, case: str) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    if case == "diverged":
+        add_bookmark(repo, "side", "side.txt", "side\n")
+        jj(repo, "bookmark", "move", "main", "--to", "side")
+    elif case == "missing":
+        jj(repo, "bookmark", "delete", "main")
+    (repo / "a.txt").write_text("unfinished\n")
+    backend = vcs.detect(repo)
+    saved = backend.move_working_copy_to(
+        "feature/x", main="missing" if case == "configured-missing" else ""
+    )
+    assert saved is not None
+    assert backend._jj("file", "show", "-r", saved, "a.txt") == "unfinished\n"
+
+
 @pytest.mark.parametrize("target", ["main", "feature/x"])
 def test_move_working_copy_snapshots_before_resolving_target(repo: Path, target: str) -> None:
     from tests.conftest import jj

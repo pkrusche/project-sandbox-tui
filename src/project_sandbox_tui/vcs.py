@@ -762,8 +762,13 @@ class JjBackend:
                 held.append((name, Path(root) if root else None))
         return held
 
-    def move_working_copy_to(self, target: str, *, new_in_holders: bool = False) -> str | None:
-        """Save an unbookmarked @, then start a new working-copy change on target.
+    def move_working_copy_to(
+        self, target: str, *, main: str = "", new_in_holders: bool = False
+    ) -> str | None:
+        """Save an unbookmarked @ unless main contains it, then start a change on target.
+
+        Use the configured main bookmark, or detect main/master/trunk. If main
+        is missing or conflicted, keep the previous change bookmarked.
 
         Raise :class:`HeldByWorkspaceError` if target's commit is another
         workspace's working copy, unless ``new_in_holders``: then first start a
@@ -795,12 +800,18 @@ class JjBackend:
             "bookmark",
             "list",
             "-T",
-            'if(remote, "", name ++ "\\x00" ++ '
+            'if(remote, "", stringify(name) ++ "\\x00" ++ '
             'if(normal_target, normal_target.commit_id(), "") ++ "\\n")',
         )
         local = dict(line.split("\0", 1) for line in bookmarks.splitlines())
+        main_commit = local.get(main_branch(local, main) or "")
         saved: str | None = None
-        if old_commit not in local.values():
+        if old_commit not in local.values() and not (
+            main_commit
+            and self._jj(
+                "log", "--no-graph", "-r", f"{old_commit} & ::{main_commit}", "-T", "commit_id"
+            )
+        ):
             base = f"saved/{change[:8]}"
             saved = base
             suffix = 2
