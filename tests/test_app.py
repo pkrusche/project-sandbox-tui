@@ -94,8 +94,10 @@ def test_refresh_preserves_horizontal_scroll(
             assert table.scroll_x == table.scroll_target_x == offset
             assert app.selected_branch_name() == selected
 
-        app._refresh_timer.resume()
-        await pilot.pause(0.6)  # periodic refresh uses the same restoration
+        before = app._refreshed
+        app._refresh_timer.resume()  # periodic refresh uses the same restoration
+        await wait_until(pilot, lambda: app._refreshed is not before and app._refreshed.is_set())
+        await pilot.pause()
         assert table.scroll_x == table.scroll_target_x == 20
         app._refresh_timer.pause()
 
@@ -103,8 +105,9 @@ def test_refresh_preserves_horizontal_scroll(
         table.scroll_to(x=offset, animate=False)
         app.filter_text = "main"
         app._render_table()
+        # The table recomputes its width on idle; the clamp must follow it.
+        await wait_until(pilot, lambda: table.max_scroll_x < offset)
         await pilot.pause()
-        assert table.max_scroll_x < offset
         assert table.scroll_x == table.scroll_target_x == table.max_scroll_x
 
     run_app(repo, fake_cfg(), scenario, size=(70, 25))
@@ -194,7 +197,7 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         assert screen.table.max_scroll_x == 0
         await pilot.press("tab", "end")
         assert app.focused is pane
-        assert pane.scroll_y > 0
+        await wait_until(pilot, lambda: pane.scroll_y > 0)  # scroll_end waits for a refresh
         screen._render_rows()
         await pilot.pause()
         assert pane.scroll_y > 0  # refresh does not reset reading position
@@ -916,7 +919,9 @@ def test_missing_image_config_is_reported(repo: Path) -> None:
         assert "no image configured" in str(form.query_one("#preview").render())
         form.query_one("#prompt", TextArea).text = "go"
         await pilot.press("ctrl+enter")
-        await pilot.pause(0.1)
+        await wait_until(
+            pilot, lambda: any("no image configured" in str(n.message) for n in app._notifications)
+        )
         assert "feature/x" not in app.jobs.jobs
 
     run_app(repo, Config(), scenario)
@@ -1385,7 +1390,8 @@ def test_enter_that_launches_interactive_session_does_not_leak(
         assert not job.external
         assert job.exit_code == 0
         assert (f"--branch={target}" in job.argv) == (target != "@")
-        await pilot.pause(0.3)
+        await wait_until(pilot, lambda: app.screen is app.main)
+        await pilot.pause(0.3)  # and nothing is pushed afterwards
         assert app.screen is app.main, f"stray screen after session: {app.screen!r}"
         assert not isinstance(app.screen, LogScreen)
         await pilot.press("question_mark")  # and the list still takes keys
@@ -1794,9 +1800,9 @@ def test_log_and_preview_respect_selection(repo: Path, fake_cfg: Callable[..., C
         assert "── main ──\n" in app.screen.body and "── feature/x ──\n" in app.screen.body
         assert "--branch=feature/x" in app.screen.body
         await pilot.press("end")
-        await pilot.pause()
-        assert isinstance(app.screen, MessageScreen)
-        assert app.screen.query_one(VerticalScroll).scroll_y > 0
+        screen = app.screen
+        assert isinstance(screen, MessageScreen)
+        await wait_until(pilot, lambda: screen.query_one(VerticalScroll).scroll_y > 0)
         await pilot.press("q")
         assert app.screen is app.main and len(app.selection()) == 2
 
@@ -1854,14 +1860,13 @@ def test_launch_command_preview_scrolls(repo: Path, fake_cfg: Callable[..., Conf
         panel = form.query_one("Vertical")
         height = panel.size.height
         form.query_one("#prompt", TextArea).text = "long prompt " * 1000
-        await pilot.pause()
         scroll = form.query_one("#command-scroll")
+        await wait_until(pilot, lambda: scroll.max_scroll_y > 0)  # preview updated and laid out
         assert panel.size.height == height
         assert scroll.size.height == 3
         assert scroll.max_scroll_y > 0
-        scroll.scroll_end(animate=False)
-        await pilot.pause()
-        assert scroll.scroll_y > 0
+        scroll.scroll_end(animate=False)  # deferred until after a refresh
+        await wait_until(pilot, lambda: scroll.scroll_y > 0)
         await pilot.press("escape")
 
     run_app(repo, fake_cfg(), scenario)
@@ -2469,8 +2474,8 @@ def test_pending_prefix_is_shown_and_cancelled(repo: Path, fake_cfg: Callable[..
         await pilot.press("k")  # another key cancels dd
         assert "d…" not in header(app)
         await pilot.press("d")
-        await pilot.pause(1.0)  # and so does waiting
-        assert "d…" not in header(app)
+        assert "d…" in header(app)
+        await wait_until(pilot, lambda: "d…" not in header(app))  # and so does waiting
         await pilot.press("d")
         await app.workers.wait_for_complete()
         assert "feature/x" in {b.name for b in app.backend.list_branches()}
@@ -2775,8 +2780,14 @@ def test_stale_working_copy_dialog(
         assert sum(isinstance(s, StaleWorkspaceScreen) for s in app.screen_stack) == 1
         await pilot.press(key)
         if key == "u":
-            await wait_until(pilot, lambda: not (repo / "wip.txt").exists())
-            await pilot.pause(0.5)
+            await wait_until(
+                pilot,
+                lambda: (
+                    not (repo / "wip.txt").exists()
+                    and not isinstance(app.screen, StaleWorkspaceScreen)
+                ),
+            )
+            await pilot.pause(0.5)  # later refreshes do not reopen it
             assert not isinstance(app.screen, StaleWorkspaceScreen)
             assert app.is_running
         else:

@@ -554,6 +554,9 @@ class SandboxTUI(App[None]):
         ):
             table.add_column(label, width=width, key=label or "graph")
         table.focus()
+        # DataTable recomputes its width on its own idle, which may come after the
+        # clamp in _render_table: clamp again whenever the scrollable width changes.
+        self.watch(table, "virtual_size", self._clamp_table_scroll, init=False)
         await self.refresh_data()
         self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
         self._review_project_config()
@@ -825,6 +828,11 @@ class SandboxTUI(App[None]):
             lambda: table.scroll_to(x=min(scroll_x, table.max_scroll_x), animate=False, force=True)
         )
         self._render_header(chosen)
+
+    def _clamp_table_scroll(self) -> None:
+        table = self.table
+        if table.scroll_target_x > table.max_scroll_x:
+            table.scroll_to(x=table.max_scroll_x, animate=False, force=True)
 
     def _subject_width(self, rows: list[Row]) -> int:
         """Up to SUBJECT_WIDTH, but narrow enough to leave room for the status."""

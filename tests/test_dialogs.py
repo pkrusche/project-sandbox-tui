@@ -13,6 +13,7 @@ from textual.widgets import Input, OptionList, Static
 
 from project_sandbox_tui.cleanup import Workspace
 from project_sandbox_tui.screens.dialogs import CleanupScreen, NewBranchScreen
+from tests.test_app import wait_until
 
 
 @pytest.mark.parametrize("start", ["@-", "main"])
@@ -65,8 +66,7 @@ def test_cleanup_reasons_wrap_and_list_scrolls() -> None:
             assert hint.region.bottom <= app.screen.region.bottom
             assert app.screen.query_one(".title").region.y >= 0
             await pilot.press("end")
-            await pilot.pause()
-            assert options.scroll_y > 0
+            await wait_until(pilot, lambda: options.scroll_y > 0)
 
             app.pop_screen()
             app.push_screen(CleanupScreen(_cleanup_rows(1)))
@@ -243,8 +243,8 @@ def test_confirmation_contents_scroll_without_dismissing() -> None:
             assert scroll.max_scroll_y > 0
             assert screen.query_one(".hint").region.bottom <= screen.region.bottom
             await pilot.press("end")
-            await pilot.pause()
-            assert app.screen is screen and scroll.scroll_y > 0
+            await wait_until(pilot, lambda: scroll.scroll_y > 0)  # scroll_end is deferred
+            assert app.screen is screen
             await pilot.press("n")
             assert app.screen is not screen
 

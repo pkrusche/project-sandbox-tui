@@ -9,6 +9,7 @@ from textual.widgets import Log
 from project_sandbox_tui.jobs import JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.log import LogScreen
+from tests.test_app import wait_until
 
 
 def test_log_follows_partial_utf8_and_truncation(tmp_path: Path) -> None:
@@ -107,8 +108,11 @@ def test_log_follow_tracks_scroll_position(tmp_path: Path) -> None:
             app.push_screen(screen)
             await pilot.pause()
             log = screen.query_one(Log)
-            await pilot.pause()
-            assert screen._follow and log.scroll_y == log.max_scroll_y
+            # Scrolling to the end is deferred until after a refresh.
+            await wait_until(
+                pilot, lambda: log.max_scroll_y > 0 and log.scroll_y == log.max_scroll_y
+            )
+            assert screen._follow
             await pilot.press("pageup")  # not only k: any scrolling away pauses
             await pilot.pause()
             assert not screen._follow
@@ -118,8 +122,8 @@ def test_log_follow_tracks_scroll_position(tmp_path: Path) -> None:
             await pilot.pause()
             assert log.scroll_y < log.max_scroll_y  # the view stays put
             await pilot.press("G")
-            await pilot.pause()
-            assert screen._follow and log.scroll_y == log.max_scroll_y
+            await wait_until(pilot, lambda: log.scroll_y == log.max_scroll_y)
+            assert screen._follow
             await pilot.press("f")  # an explicit pause at the end sticks
             with path.open("a") as stream:
                 stream.write("again\n")
@@ -127,8 +131,7 @@ def test_log_follow_tracks_scroll_position(tmp_path: Path) -> None:
             await pilot.pause()
             assert not screen._follow and log.scroll_y < log.max_scroll_y
             await pilot.press("g", "g")
-            await pilot.pause()
-            assert log.scroll_y == 0
+            await wait_until(pilot, lambda: log.scroll_y == 0)
             await pilot.press("j", "j", "ctrl+f")
             await pilot.pause()
             assert log.scroll_y > 2 and not screen._follow
