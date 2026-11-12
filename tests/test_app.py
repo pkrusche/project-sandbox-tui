@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 from rich.cells import cell_len
+from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static, TextArea
 from textual.widgets.data_table import ColumnKey
 
@@ -61,9 +62,10 @@ async def wait_until(pilot: Any, predicate: Callable[[], bool], timeout: float =
     raise AssertionError("condition not met in time")
 
 
-def description_editor_open(app: SandboxTUI) -> bool:
-    """The screen is pushed from a worker: wait for it to mount and focus the editor."""
-    return isinstance(app.screen, DescriptionScreen) and isinstance(app.focused, TextArea)
+async def wait_for_screen[T: Screen[Any]](app: SandboxTUI, pilot: Any, screen_type: type[T]) -> T:
+    """Wait for on_mount, even when auto-focus or an empty table looks ready."""
+    await wait_until(pilot, lambda: isinstance(app.screen, screen_type) and app.screen.is_mounted)
+    return cast(T, app.screen)
 
 
 def row_texts(app: SandboxTUI) -> list[list[str]]:
@@ -207,9 +209,8 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         assert "existing bookmark from main" in str(details.content)
         assert "agent" not in str(details.content)
         await pilot.press("k", "l")  # an earlier run's log
-        assert isinstance(app.screen, LogScreen)
-        await pilot.pause(0.2)
-        assert "output of first try" in "\n".join(app.screen.query_one(Log).lines)
+        screen = await wait_for_screen(app, pilot, LogScreen)
+        assert "output of first try" in "\n".join(screen.query_one(Log).lines)
         await pilot.press("q", "q")
         assert app.screen is app.main
 
@@ -302,7 +303,7 @@ def test_edit_description(repo: Path, fake_cfg: Callable[..., Config], name: str
         elif name != "@":
             await pilot.press("j")
         await pilot.press("e")
-        await wait_until(pilot, lambda: description_editor_open(app))
+        await wait_for_screen(app, pilot, DescriptionScreen)
         editor = app.screen.query_one(TextArea)
         assert app.focused is editor
         assert editor.text == "old subject\n\nexisting body\n"
@@ -312,7 +313,7 @@ def test_edit_description(repo: Path, fake_cfg: Callable[..., Config], name: str
         assert app.backend.get_description(name)[1] == "old subject\n\nexisting body\n"
 
         await pilot.press("e")
-        await wait_until(pilot, lambda: description_editor_open(app))
+        await wait_for_screen(app, pilot, DescriptionScreen)
         app.screen.query_one(TextArea).load_text("new subject")
         await pilot.press("end", "enter", "enter", *"body jkrq")
         assert isinstance(app.screen, DescriptionScreen)  # typing doesn't run list actions
@@ -334,7 +335,7 @@ def test_description_editor_keeps_draft_on_error(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j", "e")
-        await wait_until(pilot, lambda: description_editor_open(app))
+        await wait_for_screen(app, pilot, DescriptionScreen)
         app.screen.query_one(TextArea).load_text("my draft")
         jj(repo, "describe", "feature/x", "-m", "external edit")
         await pilot.press("ctrl+s")
@@ -641,7 +642,7 @@ def test_move_working_copy_asks_about_held_workspace(
         await app.refresh_data()
         app.marked = ["feature/x"]
         await pilot.press("@")
-        await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await wait_for_screen(app, pilot, ConfirmScreen)
         assert isinstance(app.screen, ConfirmScreen)
         assert "working copy of workspace feature/x" in app.screen.body
         await pilot.press(answer)
@@ -824,9 +825,8 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await pilot.press("q")
 
         await pilot.press("l")
-        assert isinstance(app.screen, LogScreen)
-        await pilot.pause(0.2)
-        assert app.screen.current is not None and app.screen.current.suffix == ".md"
+        screen = await wait_for_screen(app, pilot, LogScreen)
+        assert screen.current is not None and screen.current.suffix == ".md"
         await pilot.press("q")
         assert not isinstance(app.screen, LogScreen)
 
@@ -1881,7 +1881,7 @@ def test_cleanup_workspaces_key(repo: Path, fake_cfg: Callable[..., Config]) -> 
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("W")
-        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await wait_for_screen(app, pilot, CleanupScreen)
         assert isinstance(app.screen, CleanupScreen)
         assert [(ws.name, ws.removable) for ws in app.screen.workspaces] == [
             ("feature/x", True),
@@ -1890,18 +1890,18 @@ def test_cleanup_workspaces_key(repo: Path, fake_cfg: Callable[..., Config]) -> 
         assert app.screen.selected == {0}
         await pilot.press("escape")
         assert not isinstance(app.screen, CleanupScreen)
-        await pilot.pause(0.2)
+        await app.workers.wait_for_complete()
         assert path.exists()
 
         await pilot.press("W")
-        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await wait_for_screen(app, pilot, CleanupScreen)
         await pilot.press("a")  # deselect all
         await pilot.press("enter")  # nothing selected: nothing happens
-        await pilot.pause(0.2)
+        await app.workers.wait_for_complete()
         assert path.exists()
 
         await pilot.press("W")
-        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await wait_for_screen(app, pilot, CleanupScreen)
         await pilot.press("enter")  # asks first
         assert isinstance(app.screen, ConfirmScreen)
         await pilot.press("y")
@@ -1911,7 +1911,7 @@ def test_cleanup_workspaces_key(repo: Path, fake_cfg: Callable[..., Config]) -> 
 
         run("jj", "workspace", "forget", "dirty", cwd=repo)
         await pilot.press("W")  # nothing left: just a message
-        await wait_until(pilot, lambda: isinstance(app.screen, MessageScreen))
+        await wait_for_screen(app, pilot, MessageScreen)
         assert isinstance(app.screen, MessageScreen)
         assert "No workspaces found" in app.screen.body
         await pilot.press("q")
@@ -2063,9 +2063,9 @@ def test_cleanup_force_delete(repo: Path, fake_cfg: Callable[..., Config]) -> No
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("W")
-        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await wait_for_screen(app, pilot, CleanupScreen)
         await pilot.press("D")
-        await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await wait_for_screen(app, pilot, ConfirmScreen)
         assert isinstance(app.screen, ConfirmScreen)
         assert "uncommitted changes" in app.screen.body
         assert f"Delete directory and all contents: {dirty}" in app.screen.body
@@ -2073,13 +2073,13 @@ def test_cleanup_force_delete(repo: Path, fake_cfg: Callable[..., Config]) -> No
         assert "  a.txt" in app.screen.body
         assert "Unregister workspace: dirty" in app.screen.body
         await pilot.press("n")  # cancelled: nothing happens
-        await pilot.pause(0.2)
+        await app.workers.wait_for_complete()
         assert dirty.exists()
 
         await pilot.press("W")
-        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await wait_for_screen(app, pilot, CleanupScreen)
         await pilot.press("D")
-        await wait_until(pilot, lambda: isinstance(app.screen, ConfirmScreen))
+        await wait_for_screen(app, pilot, ConfirmScreen)
         await pilot.press("y")
         await wait_until(pilot, lambda: not dirty.exists())
         assert app.is_running
@@ -2142,7 +2142,7 @@ def test_diff_viewer_failure_recovers(
         monkeypatch.setattr("project_sandbox_tui.terminal.run_foreground", viewer)
         app.marked = ["main", "feature/x"]
         await pilot.press("equals_sign")
-        await wait_until(pilot, lambda: isinstance(app.screen, DiffReviewScreen))
+        await wait_for_screen(app, pilot, DiffReviewScreen)
         await pilot.press("enter")
         if failure not in (130, -signal.SIGINT):
             await wait_until(
@@ -2175,15 +2175,7 @@ def test_diff_review_marks_files_seen(
         if keys:
             app.marked = ["main", "@"]
         await pilot.press(*keys, "equals_sign")
-        await wait_until(
-            pilot,
-            lambda: (
-                isinstance(app.screen, DiffReviewScreen)
-                and bool(app.screen.query(DataTable))
-                and app.screen.query_one(DataTable).row_count > 0
-            ),
-        )
-        return cast(DiffReviewScreen, app.screen)
+        return await wait_for_screen(app, pilot, DiffReviewScreen)
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         monkeypatch.setattr(app, "_suspended", contextlib.nullcontext)
@@ -2256,19 +2248,10 @@ def test_review_marks_follow_shared_diffs_across_bookmarks(
         async def open_review(bookmark: str) -> DiffReviewScreen:
             app.marked = ["main", bookmark] if direct else [bookmark]
             await pilot.press("equals_sign")
-            # Auto-focus can precede on_mount populating the table. Moving the
-            # cursor while it is empty would clamp the requested row to zero.
-            await wait_until(
-                pilot,
-                lambda: (
-                    isinstance(app.screen, DiffReviewScreen)
-                    and isinstance(app.focused, DataTable)
-                    and app.focused.row_count == len(app.screen.files)
-                ),
-            )
+            screen = await wait_for_screen(app, pilot, DiffReviewScreen)
             if not direct:
                 await pilot.press("right_square_bracket")  # shared c.txt / d.txt commit
-            return cast(DiffReviewScreen, app.screen)
+            return screen
 
         async def close_review() -> None:
             await pilot.press("q")
@@ -2543,7 +2526,7 @@ def test_cleanup_bookmark_deletion_can_be_undone(
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         commit = app.backend._bookmark_commit("old")
         await pilot.press("W")
-        await wait_until(pilot, lambda: isinstance(app.screen, CleanupScreen))
+        await wait_for_screen(app, pilot, CleanupScreen)
         await pilot.press("enter")
         assert isinstance(app.screen, ConfirmScreen)
         assert "delete bookmark old" in app.screen.body
@@ -2785,7 +2768,7 @@ def test_stale_working_copy_dialog(
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         make_stale(repo, tmp_path / "other")
-        await wait_until(pilot, lambda: isinstance(app.screen, StaleWorkspaceScreen))
+        await wait_for_screen(app, pilot, StaleWorkspaceScreen)
         await pilot.press("x")  # neither choice: the dialog stays
         await pilot.pause(0.5)  # refreshes meanwhile do not stack more dialogs
         assert isinstance(app.screen, StaleWorkspaceScreen)
@@ -2996,15 +2979,7 @@ def test_commit_review_groups_persists_and_invalidates_rewritten_commits(
 
     async def open_review(app: SandboxTUI, pilot: Any) -> CommitReviewScreen:
         await pilot.press("equals_sign")
-        await wait_until(
-            pilot,
-            lambda: (
-                isinstance(app.screen, CommitReviewScreen)
-                and isinstance(app.focused, DataTable)
-                and app.focused.row_count > 0
-            ),
-        )
-        return cast(CommitReviewScreen, app.screen)
+        return await wait_for_screen(app, pilot, CommitReviewScreen)
 
     def rows(screen: CommitReviewScreen) -> list[list[str]]:
         table = screen.query_one(DataTable)
@@ -3083,6 +3058,53 @@ def test_commit_review_groups_persists_and_invalidates_rewritten_commits(
     run_app(repo, fake_cfg(), scenario)
 
 
+@pytest.mark.parametrize("marked", [["@"], ["feature/x"], ["main", "feature/x"]])
+def test_review_waits_for_mount(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    marked: list[str],
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        mount_started = asyncio.Event()
+        release_mount = asyncio.Event()
+        original_mount = DiffReviewScreen.on_mount
+
+        async def delayed_mount(screen: DiffReviewScreen) -> None:
+            # Reproduce the interval where auto-focus precedes table/header setup.
+            screen.set_focus(screen.query_one(DataTable))
+            mount_started.set()
+            await release_mount.wait()
+            original_mount(screen)
+
+        monkeypatch.setattr(DiffReviewScreen, "on_mount", delayed_mount)
+        app.marked = marked
+        app.action_diff()
+        screen_type = CommitReviewScreen if len(marked) == 1 else DiffReviewScreen
+        try:
+            async with asyncio.timeout(10):
+                await mount_started.wait()
+                assert isinstance(app.focused, DataTable)
+                assert app.focused.row_count == 0
+                assert not str(app.screen.query_one("#review-title", Static).render())
+                waiter = asyncio.create_task(wait_for_screen(app, pilot, screen_type))
+                await asyncio.sleep(0)  # let the waiter check the unfinished mount
+                returned_early = waiter.done()
+                release_mount.set()
+                screen = await waiter
+                assert not returned_early
+        finally:
+            release_mount.set()
+        assert screen.query_one(DataTable).row_count == len(screen.files)
+        assert str(screen.query_one("#review-title", Static).render())
+        if isinstance(screen, CommitReviewScreen):
+            assert "commit 1/1" in str(screen.query_one("#review-commit", Static).render())
+        await pilot.press("q")
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_commit_review_empty_commits_and_no_path(
     repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3091,13 +3113,7 @@ def test_commit_review_empty_commits_and_no_path(
         viewed = []
         monkeypatch.setattr(app, "_show_diff", lambda title, argv: viewed.append(argv))
         await pilot.press("equals_sign")  # empty @ has no files to review
-        await wait_until(
-            pilot,
-            lambda: (
-                isinstance(app.screen, CommitReviewScreen) and isinstance(app.focused, DataTable)
-            ),
-        )
-        screen = cast(CommitReviewScreen, app.screen)
+        screen = await wait_for_screen(app, pilot, CommitReviewScreen)
         assert screen.query_one(DataTable).row_count == 0
         assert "(no description set)" in str(screen.query_one("#review-commit", Static).render())
         await pilot.press("space", "A", "equals_sign", "enter", "right_square_bracket")

@@ -4,7 +4,6 @@ import json
 import os
 import signal
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
@@ -47,9 +46,10 @@ def test_task_runs_in_its_directory_and_records_its_status(tmp_path: Path) -> No
 
 def test_adopted_task_reads_the_exit_file(tmp_path: Path) -> None:
     manager = TaskManager(tmp_path / "state")
-    task = start(manager, tmp_path, "sleep 0.3; exit 4")
+    task = start(manager, tmp_path, "while [ ! -f release ]; do sleep 0.01; done; exit 4")
     later = TaskManager(tmp_path / "state")  # a new TUI: not the parent process
     assert later.tasks[task.id].running
+    (tmp_path / "release").touch()
     wait_for(lambda: finished(later, task.id))
     assert later.tasks[task.id].exit_code == 4
     manager.refresh()  # reap the child
@@ -69,9 +69,9 @@ def test_task_without_exit_file_is_orphaned(tmp_path: Path) -> None:
 
 def test_cancel_escalates(tmp_path: Path) -> None:
     manager = TaskManager(tmp_path / "state")
-    task = start(manager, tmp_path, "sleep 30")
-    time.sleep(0.2)  # let the shells start
-    assert manager.cancel("feature/x") == ["feature/x: sent SIGINT to :*!sleep 30"]
+    task = start(manager, tmp_path, "echo ready; exec sleep 30")
+    wait_for(lambda: Path(task.out_path).read_text() == "ready\n")
+    assert manager.cancel("feature/x") == [f"feature/x: sent SIGINT to :{task.line}"]
     assert manager.cancel_started("feature/x")
     wait_for(lambda: finished(manager, task.id))
     assert task.status == "interrupted"
@@ -81,11 +81,11 @@ def test_cancel_escalates(tmp_path: Path) -> None:
 def test_cancel_marks_a_killed_task_interrupted(tmp_path: Path) -> None:
     manager = TaskManager(tmp_path / "state")
     # The command ignores SIGINT and SIGTERM, as a stuck test run might.
-    task = start(manager, tmp_path, "trap '' INT TERM; sleep 30")
-    time.sleep(0.2)
-    for stage in range(3):
+    task = start(manager, tmp_path, "trap '' INT TERM; echo ready; exec sleep 30")
+    wait_for(lambda: Path(task.out_path).read_text() == "ready\n")
+    for stage, sig in enumerate(("SIGINT", "SIGTERM", "SIGKILL")):
         manager._stop_last.clear()  # skip the double-press debounce
-        manager.cancel("feature/x")
+        assert manager.cancel("feature/x") == [f"feature/x: sent {sig} to :{task.line}"]
         if stage < 2:
             assert task.running
     wait_for(lambda: finished(manager, task.id))

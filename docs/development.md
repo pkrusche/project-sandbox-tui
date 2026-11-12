@@ -33,6 +33,11 @@ Tests cover units, Textual Pilot interactions and pseudo-terminal sessions.
   do not depend on a container's PID 1 to collect them.
 - Use `repo`, `jj_repo`, `jj_repo_no_bookmarks`, or `repo_copy(build, dest)` for
   a new layout. Each test gets a mutable copy of a repo built once per worker.
+- Wait for observable completion instead of fixed startup delays. For screens
+  opened by workers, use `wait_for_screen` in `tests/test_app.py`: screen type,
+  focus and an empty table do not prove that `on_mount` has finished. For child
+  processes, emit a readiness signal after setup and wait for it before sending
+  input or signals.
 
 ## Real container smoke test
 

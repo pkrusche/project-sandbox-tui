@@ -401,15 +401,20 @@ def test_each_cancel_and_leader(repo: Path, fake_cfg: Callable[..., Config]) -> 
     from tests.test_app import wait_until
 
     cfg = fake_cfg()
-    cfg.commands = {"wait": "sleep 30"}
+    cfg.commands = {"wait": "echo ready; exec sleep 30"}
     cfg.leader = {"W": "*wait"}
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j")  # feature/x
         await pilot.press("backslash", "W")
         await wait_until(pilot, lambda: app.tasks.running_count() == 1)
-        assert "1 task" in str(app.main.query_one("#header", Static).content)
-        await pilot.pause(0.2)
+        await wait_until(
+            pilot, lambda: "1 task" in str(app.main.query_one("#header", Static).content)
+        )
+        task = app.tasks.latest("feature/x")
+        assert task is not None
+        output = Path(task.out_path)
+        await wait_until(pilot, lambda: output.read_text() == "ready\n")
         await pilot.press("x")
         await wait_until(pilot, lambda: not app.tasks.running_count())
         task = app.tasks.latest("feature/x")
