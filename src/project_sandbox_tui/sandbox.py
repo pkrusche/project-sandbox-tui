@@ -36,6 +36,8 @@ class LaunchSpec:
     inputs: list[str] = field(default_factory=list)
     base: str = ""
     fast: bool = False
+    profile: str = ""
+    extra_args: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +52,8 @@ class LaunchSpec:
             "inputs": list(self.inputs),
             "base": self.base,
             "fast": self.fast,
+            "profile": self.profile,
+            "extra_args": list(self.extra_args),
         }
 
     @classmethod
@@ -69,6 +73,8 @@ class LaunchSpec:
             inputs=[str(i) for i in raw.get("inputs") or [] if isinstance(i, str)],
             base=str(raw.get("base") or ""),
             fast=raw.get("fast") is True,
+            profile=str(raw.get("profile") or ""),
+            extra_args=[str(arg) for arg in raw.get("extra_args") or [] if isinstance(arg, str)],
         )
 
     @property
@@ -187,6 +193,7 @@ def build_argv(
         argv.append(f"--api-key-env-file={cfg.resolve_path(env_file, repo)}")
 
     argv += s.extra_args
+    argv += spec.extra_args
 
     if spec.mode == "background":
         assert run_paths is not None

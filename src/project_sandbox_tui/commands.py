@@ -35,6 +35,7 @@ BUILTINS: dict[str, str] = {
     "quit": "quit (asks while runs continue)",
     "refresh": "refresh the bookmark list",
     "reload": "reload configuration",
+    "config-profiles": "configure saved agent profiles",
 }
 ALIASES = {"q": "quit"}  # not offered by completion
 NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")

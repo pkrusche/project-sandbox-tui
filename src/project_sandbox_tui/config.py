@@ -1,8 +1,8 @@
 """Configuration: global + per-project TOML, merged, plus per-repo state paths.
 
 Resolution order (later wins):  built-in defaults → global config → project config.
-The "last used" launch values live in the state directory, not in TOML, so the
-TUI never rewrites a file the user edits by hand.
+The "last used" launch values live in the state directory, not in TOML.
+Named agent profiles are explicitly saved to the project TOML.
 
 The project config comes with the repository, so it can be written by someone
 else; it can set commands that run on the host. Only a copy the user reviewed
@@ -55,6 +55,32 @@ class Defaults:
     effort: str = ""  # "" = the agent's own default
     timeout: int = 0  # seconds for unsupervised runs; 0 = no timeout
     fast: bool = False  # Codex and Claude; requires project-sandbox >= 0.3.1
+
+
+@dataclass
+class AgentProfile:
+    agent: str = "claude"
+    model: str = ""
+    effort: str = ""
+    fast: bool = False
+    extra_args: list[str] = field(default_factory=list)
+
+    def validate(self, where: str) -> None:
+        if self.agent not in AGENTS:
+            raise ConfigError(f"{where}.agent must be one of {', '.join(AGENTS)}")
+        if self.effort and self.effort not in EFFORTS:
+            raise ConfigError(f"{where}.effort must be empty or one of {', '.join(EFFORTS)}")
+        if any(ch.isspace() for ch in self.model):
+            raise ConfigError(f"{where}.model: invalid model name {self.model!r}")
+        if any("\0" in arg for arg in self.extra_args):
+            raise ConfigError(f"{where}.extra_args must not contain NUL characters")
+
+
+def validate_profile_name(name: str) -> None:
+    if not name.strip() or name != name.strip() or not name.isprintable():
+        raise ConfigError("profile name must contain printable text without surrounding spaces")
+    if name.casefold() == "custom":
+        raise ConfigError("profile name 'custom' is reserved for manual launch settings")
 
 
 @dataclass
@@ -193,6 +219,7 @@ class Config:
     )
     leader: dict[str, str] = field(default_factory=dict)  # keys after ui.leader -> command line
     actions: dict[str, Action] = field(default_factory=dict)  # :name -> sandbox run per target
+    profiles: dict[str, AgentProfile] = field(default_factory=dict)
     sources: list[Path] = field(default_factory=list)  # files that were loaded
 
     # ---------------------------------------------------------- helpers
@@ -259,6 +286,9 @@ class Config:
         for agent in self.models:
             if agent not in AGENTS:
                 raise ConfigError(f"[models] has unknown agent {agent!r}")
+        for name, profile in self.profiles.items():
+            validate_profile_name(name)
+            profile.validate(f"profiles.{name}")
         if not math.isfinite(self.ui.refresh_seconds) or self.ui.refresh_seconds <= 0:
             raise ConfigError("ui.refresh_seconds must be finite and > 0")
         for name, action in self.actions.items():
@@ -288,6 +318,7 @@ class Config:
 
 # Free-form tables: what their entries are, for error messages.
 TABLES: dict[str, str] = {
+    "profiles": "must be a table of [profiles.NAME] tables",
     "models": "must be a table of agent = [model, ...]",
     "commands": 'must be a table of name = "shell command"',
     "leader": 'must be a table of keys = "command line"',
@@ -409,6 +440,11 @@ def from_dict(data: dict[str, Any]) -> Config:
         raise ConfigError(f"[actions] {TABLES['actions']}")
     for name, table in actions.items():
         cfg.actions[name] = _build_action(name, table)
+    profiles = data.get("profiles", {})
+    if not isinstance(profiles, dict):
+        raise ConfigError(f"[profiles] {TABLES['profiles']}")
+    for name, table in profiles.items():
+        cfg.profiles[name] = _build_section(f"profiles.{name}", AgentProfile, table)
     return cfg
 
 
@@ -611,6 +647,8 @@ class LastUsed:
     model_by_agent: dict[str, str] = field(default_factory=dict)
     fast_by_agent: dict[str, bool] = field(default_factory=dict)
     host_command: list[str] = field(default_factory=list)
+    profile: str | None = None  # None = never chosen; "" = custom
+    extra_args: list[str] = field(default_factory=list)  # custom launch switches
 
     @classmethod
     def load(cls, repo: Path) -> LastUsed:
@@ -622,6 +660,13 @@ class LastUsed:
         if not isinstance(raw, dict):
             return cls()
         out = cls()
+        if isinstance(raw.get("profile"), str):
+            out.profile = raw["profile"]
+        extra_args = raw.get("extra_args")
+        if isinstance(extra_args, list) and all(
+            isinstance(arg, str) and "\0" not in arg for arg in extra_args
+        ):
+            out.extra_args = extra_args
         if raw.get("agent") in AGENTS:
             out.agent = raw["agent"]
         if raw.get("effort") in (*EFFORTS, ""):
@@ -697,9 +742,20 @@ def resolve_launch_defaults(cfg: Config, last: LastUsed) -> LaunchDefaults:
 
 
 def remember(
-    repo: Path, agent: str, model: str, effort: str, timeout: int | None, *, fast: bool = False
+    repo: Path,
+    agent: str,
+    model: str,
+    effort: str,
+    timeout: int | None,
+    *,
+    fast: bool = False,
+    profile: str = "",
+    extra_args: list[str] | None = None,
 ) -> None:
     last = LastUsed.load(repo)
+    last.profile = profile
+    if not profile:
+        last.extra_args = list(extra_args or [])
     last.agent = agent
     last.effort = effort
     if timeout is not None:
@@ -732,6 +788,13 @@ keep_workspace = true                  # -> --keep-workspace
 # model = ""
 # effort = "medium"                    # low | medium | high | xhigh | max
 # fast = false                         # Codex / Claude; project-sandbox >= 0.3.1
+
+# [profiles.review]                    # :config-profiles edits these in the TUI
+# agent = "codex"                      # launch forms offer profiles and custom
+# model = ""
+# effort = "high"
+# fast = false
+# extra_args = ["--memory=16g"]          # additional project-sandbox switches
 
 # [commands]                           # :name runs the shell command in the repository
 # test = "uv run pytest"               # :test -k merge appends the arguments
