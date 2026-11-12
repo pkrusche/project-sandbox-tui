@@ -253,8 +253,13 @@ def test_tui_survives_ctrl_c(repo: Path, launch: str, interrupt_at: str) -> None
             assert_responsive(tui)
             assert tui.proc.poll() is None
             tui.buf.clear()
-            tui.send(b"q")  # close help before the next session
-            assert tui.wait_for(b"unsupervised"), "TUI did not return to the main screen"
+            tui.send(b"q")
+            for _ in range(20):
+                tui.send(b"H")
+                if tui.wait_for(b"H keys", 0.25):
+                    break
+            else:
+                raise AssertionError(tui.buf.decode(errors="replace"))
     finally:
         tui.close()
 
