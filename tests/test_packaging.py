@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import sys
 import tarfile
 import tomllib
 import zipfile
@@ -16,6 +17,12 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         shutil.copytree(root / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("pyproject.toml", "README.md", "LICENSE", "uv.lock"):
         shutil.copy2(root / name, source / name)
+    # A future bump must reach the CLI without updating a Python version constant.
+    project = source / "pyproject.toml"
+    current_version = tomllib.loads(project.read_text())["project"]["version"]
+    project.write_text(
+        project.read_text().replace(f'version = "{current_version}"', 'version = "9.8.7"')
+    )
     # No .gitignore: source archives and standalone jj workspaces must be safe too.
     for name in (
         ".jj/repo",
@@ -74,3 +81,33 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
             in wheel.read(f"{metadata}/entry_points.txt").decode()
         )
         assert all(name.startswith(("project_sandbox_tui/", f"{metadata}/")) for name in names)
+
+    environment = tmp_path / "venv"
+    # Reuse the test runner's dependencies without resolving packages offline.
+    subprocess.run(
+        ["uv", "venv", "--python", sys.executable, "--system-site-packages", str(environment)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--offline",
+            "--no-deps",
+            "--python",
+            str(environment / "bin/python"),
+            str(tmp_path / "dist" / f"project_sandbox_tui-{version}-py3-none-any.whl"),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    result = subprocess.run(
+        [str(environment / "bin/sbx-tui"), "--version"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == f"sbx-tui {version}"

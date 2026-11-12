@@ -196,7 +196,7 @@ def build_release_repo(path: Path) -> None:
     (path / "scripts/e2e-test.sh").chmod(0o755)
     (path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
     (path / "uv.lock").write_text("lock\n")
-    (path / ".gitignore").write_text(".release-status/\n")
+    (path / ".gitignore").write_text(".release-status/\ndist/\n")
     git(path, "add", ".")
     git(path, "commit", "-m", "initial")
 
@@ -243,8 +243,10 @@ elif args[0] == "venv":
     dest.mkdir(parents=True)
     (dest / "python").symlink_to(pathlib.Path(__file__).resolve())
     cli = dest / "sbx-tui"
-    cli.write_text("#!/bin/sh\\nexit 0\\n")
+    cli.write_text('#!/bin/sh\\necho "sbx-tui ${RELEASE_TEST_CLI_VERSION:-1.0.0}"\\n')
     cli.chmod(0o755)
+elif args[0] == "publish":
+    sys.exit(int(os.environ.get("RELEASE_TEST_PUBLISH_EXIT", "0")))
 """
     )
     fake.chmod(0o755)
@@ -289,11 +291,23 @@ def test_release_resume_targets_verified_commit_and_keeps_git_dir_scoped(
             capture_output=True,
         )
         path = workspace
+    state = path / ".release-status" / f"1.0.0-{commit}"
+    (state / "dist").mkdir(parents=True)
+    (state / "dist" / "partial.whl").write_text("old partial build")
+    (path / "dist").mkdir()
+    (path / "dist" / "old.whl").write_text("old release")
     first = run_release(path, "\ny\nn\n")
     assert first.returncode == 0, first.stdout + first.stderr
-    state = path / ".release-status" / f"1.0.0-{commit}"
     assert (state / "github").exists()
     assert not (state / "testpypi").exists()
+    assert not (state / "dist" / "partial.whl").exists()
+    assert sorted(p.name for p in (path / "dist").iterdir()) == [
+        "project_sandbox_tui-1.0.0-py3-none-any.whl",
+        "project_sandbox_tui-1.0.0.tar.gz",
+    ]
+    # Resuming restores the verified copies and discards unrelated builds again.
+    (path / "dist" / "old.whl").write_text("another build")
+    (path / "dist" / "project_sandbox_tui-1.0.0.tar.gz").unlink()
     second = run_release(path, "\ny\ntest-token\ny\nprod-token\n")
     assert second.returncode == 0, second.stdout + second.stderr
     calls = release_calls(path)
@@ -310,8 +324,43 @@ def test_release_resume_targets_verified_commit_and_keeps_git_dir_scoped(
     assert all(
         len([arg for arg in args if arg.endswith((".whl", ".tar.gz"))]) == 2 for args in publishes
     )
-    assert (state / "pypi").exists()
+    assert not (path / ".release-status").exists()
+    assert len(list((path / "dist").iterdir())) == 2
+    assert (path / "dist" / "project_sandbox_tui-1.0.0.tar.gz").read_text() == "artifact"
     assert "test-token" not in second.stdout + second.stderr
+
+
+def test_release_rejects_wrong_installed_version(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RELEASE_TEST_CLI_VERSION", "0.1.0")
+    result = run_release(release_repo, "\n")
+    assert result.returncode != 0 and "CLI version differs" in result.stderr
+    assert not any((release_repo / ".release-status").glob("*/build"))
+    assert not any(name == "gh" for name, _, _ in release_calls(release_repo))
+
+
+def test_release_keeps_state_on_failed_pypi_upload_and_preserves_other_releases(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = release_repo
+    first = run_release(path, "\ny\ny\ntest-token\nn\n")
+    assert first.returncode == 0, first.stdout + first.stderr
+    state = next((path / ".release-status").iterdir())
+    assert (state / "testpypi").exists()
+    monkeypatch.setenv("RELEASE_TEST_PUBLISH_EXIT", "1")
+    failed = run_release(path, "\ny\nprod-token\n")
+    assert failed.returncode != 0
+    assert (state / "testpypi").exists()
+    assert not (state / "pypi").exists()
+    other = path / ".release-status" / "unfinished"
+    other.mkdir()
+    (other / "checks").touch()
+    monkeypatch.delenv("RELEASE_TEST_PUBLISH_EXIT")
+    completed = run_release(path, "\ny\nprod-token\n")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert not state.exists()
+    assert (other / "checks").exists()
 
 
 def test_release_rejects_dirty_source_and_changed_artifacts(release_repo: Path) -> None:

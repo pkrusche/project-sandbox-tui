@@ -139,8 +139,12 @@ then runs the real container smoke test above through `scripts/e2e-test.sh`, so
 project-sandbox and a running container runtime are required (set
 `SBX_E2E_RUNTIME` to choose the runtime). It builds the sdist and wheel and checks the installed CLI and
 application import in a separate environment before creating a GitHub release
-at the verified commit. GitHub release creation, TestPyPI, and PyPI each require
-confirmation; registry tokens are read without echo and passed only to uv.
+at the verified commit. The installed CLI version must match the release version;
+it is read from package metadata, so version bumps need no separate source edit.
+Verified artifacts replace all previous contents of the top-level `dist/`
+directory, including when resuming. GitHub release creation, TestPyPI, and PyPI
+each require confirmation; registry tokens are read without echo and passed only
+to uv.
 
 Progress and artifacts are kept under `.release-status/<version>-<commit>/`.
 Rerun to resume after a declined prompt or failed step; completed steps are
@@ -149,7 +153,9 @@ publishing, and only that release's wheel and sdist are uploaded. Existing remot
 tags/releases are rejected rather than overwritten. If a remote operation succeeds
 but its local progress marker is not saved, inspect the remote result before
 reconciling the corresponding marker; blindly restarting can attempt a duplicate
-upload. Keep the state directory until the release is complete. It is ignored by
-version control and excluded from distribution archives.
+upload. After successful PyPI publication, the script removes that release's
+state directory and removes `.release-status/` if it is empty; unfinished releases
+retain their state. The final artifacts remain in `dist/`. Release state is
+ignored by version control and excluded from distribution archives.
 
 See [architecture](architecture.md) for modules and job handling.

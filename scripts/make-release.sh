@@ -14,7 +14,8 @@ the real container smoke test (scripts/e2e-test.sh; SBX_E2E_RUNTIME selects the
 runtime); build and verify artifacts; create a GitHub release; publish to TestPyPI
 and PyPI with separate confirmations and hidden token prompts.
 Resume by running again. Progress and artifacts live in .release-status/ and are
-scoped to the release version and source commit. Requires uv, git, jj, gh,
+scoped to the release version and source commit; completed state is removed.
+Verified artifacts replace old builds in dist/. Requires uv, git, jj, gh,
 project-sandbox, and a running container runtime.
 HELP
             exit 0 ;;
@@ -101,13 +102,17 @@ ARTIFACTS="$STATE/dist"
 WHEEL="$ARTIFACTS/project_sandbox_tui-$VERSION-py3-none-any.whl"
 SDIST="$ARTIFACTS/project_sandbox_tui-$VERSION.tar.gz"
 if ! done_step build; then
+    # Discard partial output from a failed build before trying again.
+    rm -rf -- "$ARTIFACTS"
     uv build --out-dir "$ARTIFACTS"
     [[ -f "$WHEEL" && -f "$SDIST" ]] || die "Expected release artifacts are missing."
     uv venv "$STATE/venv" --clear
     uv pip install --python "$STATE/venv/bin/python" "$WHEEL"
     (
         cd "$STATE"
-        "$STATE/venv/bin/sbx-tui" --version
+        CLI_VERSION=$("$STATE/venv/bin/sbx-tui" --version)
+        echo "$CLI_VERSION"
+        [[ "$CLI_VERSION" == "sbx-tui $VERSION" ]] || die "Installed CLI version differs from $VERSION."
         "$STATE/venv/bin/sbx-tui" --help
         "$STATE/venv/bin/python" -I -c 'import project_sandbox_tui.app'
     )
@@ -130,6 +135,10 @@ actual = [hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sys.argv[2:]
 if actual != expected:
     raise SystemExit("Release artifacts changed since verification; refusing to publish.")
 PY
+# Keep the conventional build directory current, including on resumed releases.
+rm -rf -- "$ROOT/dist"
+mkdir -p "$ROOT/dist"
+cp -- "$WHEEL" "$SDIST" "$ROOT/dist/"
 # Checks and build tools must not have changed the source being released.
 EXPECTED_COMMIT="$COMMIT"
 check_clean
@@ -170,4 +179,9 @@ publish() {
 }
 publish TestPyPI testpypi --publish-url https://test.pypi.org/legacy/
 publish PyPI pypi
-echo "Release $TAG complete. State retained in $STATE."
+rm -rf -- "$STATE"
+# Other unfinished releases may still need their progress and verified artifacts.
+if [[ -z "$(ls -A "$ROOT/.release-status")" ]]; then
+    rmdir -- "$ROOT/.release-status"
+fi
+echo "Release $TAG complete. Artifacts are in $ROOT/dist; completed release state removed."
