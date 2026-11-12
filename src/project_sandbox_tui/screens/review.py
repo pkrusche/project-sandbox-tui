@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from rich.text import Text
 from textual import events
@@ -17,6 +18,12 @@ from project_sandbox_tui.widgets import KeyHints, PrefixKeys
 
 STATUS_STYLES = {"A": "green", "D": "red", "M": "yellow", "R": "cyan", "C": "cyan"}
 COLUMNS = ("seen", "status", "file", "lines", "size")
+
+
+@dataclass(frozen=True)
+class ReviewPosition:
+    commit: str = ""
+    row: int = 0
 
 
 def human_size(size: int) -> str:
@@ -54,7 +61,7 @@ def size_cell(change: FileChange) -> Text:
     return Text(human_size(change.size), justify="right")
 
 
-class DiffReviewScreen(Screen[None]):
+class DiffReviewScreen(Screen[ReviewPosition]):
     DEFAULT_CSS = """
     DiffReviewScreen #review-title { height: 1; background: $panel; padding: 0 1; }
     DiffReviewScreen DataTable { height: 1fr; }
@@ -86,6 +93,8 @@ class DiffReviewScreen(Screen[None]):
         changes: FileChanges,
         seen: SeenFiles,
         view: Callable[[Sequence[FileChange]], None],
+        *,
+        position: ReviewPosition | None = None,
     ) -> None:
         super().__init__()
         self.title_text = title
@@ -94,6 +103,7 @@ class DiffReviewScreen(Screen[None]):
         self.seen = seen.seen() & {f.key for f in self.files}
         self.view = view
         self._prefix = PrefixKeys()
+        self._initial_row = position.row if position else 0
 
     def compose(self) -> ComposeResult:
         yield Static("", id="review-title")
@@ -107,6 +117,7 @@ class DiffReviewScreen(Screen[None]):
             table.add_column(label, key=key)
         for index, change in enumerate(self.files):
             table.add_row(*self._cells(change), key=str(index))
+        table.move_cursor(row=self._initial_row)
         self._title()
         table.focus()
 
@@ -114,7 +125,11 @@ class DiffReviewScreen(Screen[None]):
         self._prefix.other_key(event.key)
 
     def action_back(self) -> None:
-        self.dismiss(None)
+        self.dismiss(self.position)
+
+    @property
+    def position(self) -> ReviewPosition:
+        return ReviewPosition(row=self.current_row or 0)
 
     def _cells(self, change: FileChange) -> tuple[Text, ...]:
         seen = change.key in self.seen
@@ -219,11 +234,31 @@ class CommitReviewScreen(DiffReviewScreen):
         changes: Sequence[FileChanges],
         seen: SeenFiles,
         view: Callable[[ReviewCommit, Sequence[FileChange]], None],
+        *,
+        position: ReviewPosition | None = None,
     ) -> None:
         self.commits = commits
         self.changes = changes
         self.commit_index = 0
-        super().__init__(title, changes[0], seen, lambda files: view(self.current_commit, files))
+        if position is not None:
+            index = next(
+                (i for i, commit in enumerate(commits) if commit.commit == position.commit), None
+            )
+            if index is None:
+                position = None
+            else:
+                self.commit_index = index
+        super().__init__(
+            title,
+            changes[self.commit_index],
+            seen,
+            lambda files: view(self.current_commit, files),
+            position=position,
+        )
+
+    @property
+    def position(self) -> ReviewPosition:
+        return ReviewPosition(self.current_commit.commit, self.current_row or 0)
 
     @property
     def current_commit(self) -> ReviewCommit:
