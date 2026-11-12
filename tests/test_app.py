@@ -2256,10 +2256,14 @@ def test_review_marks_follow_shared_diffs_across_bookmarks(
         async def open_review(bookmark: str) -> DiffReviewScreen:
             app.marked = ["main", bookmark] if direct else [bookmark]
             await pilot.press("equals_sign")
+            # Auto-focus can precede on_mount populating the table. Moving the
+            # cursor while it is empty would clamp the requested row to zero.
             await wait_until(
                 pilot,
                 lambda: (
-                    isinstance(app.screen, DiffReviewScreen) and isinstance(app.focused, DataTable)
+                    isinstance(app.screen, DiffReviewScreen)
+                    and isinstance(app.focused, DataTable)
+                    and app.focused.row_count == len(app.screen.files)
                 ),
             )
             if not direct:
@@ -2278,6 +2282,7 @@ def test_review_marks_follow_shared_diffs_across_bookmarks(
         row = next(i for i, f in enumerate(screen.files) if f.path == "c.txt")
         screen.query_one(DataTable).move_cursor(row=row)
         await pilot.press("space")
+        assert screen.seen == {screen.files[row].key}
         await close_review()
         assert count("feature-1") == ("0/3" if direct else "1/3")
         assert count("feature-2") == ("0/4" if direct else "1/4")
