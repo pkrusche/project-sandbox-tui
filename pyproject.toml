@@ -1,6 +1,6 @@
 [project]
 name = "project-sandbox-tui"
-version = "0.1.2"
+version = "0.1.3"
 description = "Minimal vim/ranger-style TUI for running project-sandbox sessions per branch"
 readme = "README.md"
 license = "MIT"

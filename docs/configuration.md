@@ -49,16 +49,33 @@ keeping current settings on error; running sessions retain their launch settings
 
 ## Agent profiles
 
-Run `:config-profiles` in the TUI to create or edit a named agent profile.
-Choose **new profile** or an existing profile, enter its name, and configure
-agent, model, effort and fast mode. **CLI args** accepts additional
-project-sandbox switches, using shell quoting to keep values with spaces together
-(for example, `--extra-domain example.org --memory '16g'`). Arguments are passed
-directly to project-sandbox; shell expressions are not executed.
-Press `ctrl+s` or click **save** to write the profile to the project's
-`.project-sandbox-tui.toml`. Saving an existing name updates that profile;
-entering another name saves a copy. `esc` discards edits. Other settings and
-comments in the file are preserved, and existing config trust rules still apply.
+Profiles save an agent setup for reuse in interactive (`i`), background (`r`),
+and merge or rebase launch forms. To create one in the TUI:
+
+1. Run `:config-profiles`, leave **new profile** selected, and enter a name,
+   for example `Deep review`.
+2. Use `tab` / `shift+tab` to move between fields and `h` / `l` on choice
+   fields to set the agent, model, effort and fast mode. Choose **custom (enter
+   model name)** in the model field to enter a model that is not suggested.
+3. Optionally fill **CLI args** with project-sandbox switches, such as
+   `--extra-domain example.org --memory '16g'`. Shell quoting groups arguments;
+   shell expressions are passed literally. Unclosed quotes prevent saving or
+   launching until corrected.
+4. Press `ctrl+s` or click **save**. Then open a launch form with `i` or `r`,
+   choose `Deep review` in the **profile** field, and check the command preview.
+   Background runs still need a prompt and can have a timeout.
+
+The editor writes to the project's `.project-sandbox-tui.toml`, preserving
+other settings and comments. Select an existing profile to edit it. Saving an
+existing name updates it; changing the name saves a copy and keeps the original.
+`esc` discards edits. Names can contain spaces and punctuation but cannot have
+surrounding whitespace; `custom` is reserved, regardless of case.
+
+Saving to a trusted project config keeps it trusted. If the file already has
+unreviewed changes, review and trust the resulting diff before the profile takes
+effect; see [config trust](#trusting-the-project-config).
+
+Profiles use TOML tables such as:
 
 ```toml
 [profiles."Deep review"]
@@ -69,17 +86,49 @@ fast = false
 extra_args = ["--memory=16g"]
 ```
 
-Interactive and unsupervised launch forms offer these profiles plus **custom**.
-Selecting **custom** shows the individual agent controls and CLI arguments.
+| Field | Meaning | Default when omitted |
+|---|---|---|
+| `agent` | `claude`, `codex`, `opencode`, `pi` or `bash` | `claude` |
+| `model` | Model name; blank uses the agent's default | `""` |
+| `effort` | Blank, `low`, `medium`, `high`, `xhigh` or `max` | `""` |
+| `fast` | Fast mode for Codex or Claude; requires project-sandbox ≥ 0.3.1 | `false` |
+| `extra_args` | Additional project-sandbox arguments, as an array of strings | `[]` |
+
+A named profile supplies these fields directly. After merging global and project
+config, omitted fields use the defaults in the table rather than `[defaults]` or
+remembered launch choices. The remaining project, image, network and sandbox
+settings still apply. Profile arguments are
+appended after `sandbox.extra_args`; a run records the selected settings at
+launch, so later profile edits do not change running sessions.
+
+Launch forms offer the configured profiles plus **custom**. Selecting **custom**
+shows the individual agent controls and CLI arguments, using remembered launch
+choices and [defaults](#settings-reference). Custom CLI arguments are remembered
+after a successful Custom launch; launching a named profile preserves those
+Custom arguments. Switching to Custom does not copy the selected profile into
+the controls. To adapt a profile, save a copy in `:config-profiles`.
+
 The last successfully launched profile (including Custom) is remembered per
 repository; before the first choice, the first available profile is selected.
 If a remembered profile is removed, the form falls back to Custom.
-Prompts and timeouts remain run-specific. Profile arguments follow
-`sandbox.extra_args`; a run records the selected profile's settings at launch.
+Prompts and timeouts are not saved in profiles; timeouts use the usual remembered
+launch defaults. Cancelling a launch does not change the remembered profile.
 Host-agent commands and configured agent actions do not select profiles.
 
-Profiles can also be edited with keys such as `profiles.review.agent` and
-`profiles.review.extra_args` through `sbx-tui config set --project`.
+Profiles can also be defined globally or edited from the command line:
+
+```sh
+sbx-tui config set --global profiles.review.agent codex
+sbx-tui config set --global profiles.review.effort high
+sbx-tui config set --project profiles.review.extra_args '["--memory=16g"]'
+sbx-tui config get profiles.review.extra_args
+```
+
+Project fields override global fields of the same profile; arrays replace the
+inherited array. The TUI editor saves all fields as a project profile, including
+when editing an inherited global profile. To remove a profile, delete its entire
+`[profiles.NAME]` table from the config file and reload with `ctrl+l`. Removing
+only its project table reveals any global profile with the same name.
 
 ## From the command line
 
@@ -114,9 +163,12 @@ settings take effect:
 
 ## Settings reference
 
-Precedence: remembered launch choices → trusted project → global → built-in.
-The last agent, effort, timeout and per-agent model and fast mode are remembered
-per repository.
+For Custom launches, precedence is remembered launch choices → trusted project
+→ global → built-in. The last agent, effort, timeout and per-agent model and
+fast mode are remembered per repository. A successful named-profile launch also
+updates these agent choices; the profile's fields take precedence when it is
+selected. Profile selection and Custom CLI arguments are remembered separately;
+see [agent profiles](#agent-profiles).
 
 ```toml
 [defaults]
@@ -155,7 +207,7 @@ build_version = ""                # --python / --rust for a generated build
 worktree_dir = ""                 # default: sibling <repo>-workspaces
 keep_workspace = true             # reuse the workspace across runs
 default_branch_start = ""         # new bookmarks: auto main/master/trunk, else @- (or @ with no bookmarks)
-main_branch = ""                  # main for diff, fast-forward and cleanup; auto main/master/trunk
+main_branch = ""                  # main for diff, fast-forward, @ saves and cleanup; auto main/master/trunk
 
 [ui]
 notify_command = ""     # "" = platform default; {title} {message}
@@ -178,6 +230,13 @@ T = "*test"             # in each selected workspace
 [actions.review]        # :review starts the prompt on each selected bookmark
 prompt = "Review {bookmark} against {main} and fix what you find."
 effort = "high"         # agent, model, effort, timeout: launch defaults if unset
+
+[profiles.review]       # select in i/r forms; edit with :config-profiles
+agent = "codex"
+model = ""
+effort = "high"
+fast = false
+extra_args = ["--memory=16g"]
 
 [models]                # extra launch-form suggestions, listed first
 claude = ["opus", "sonnet"]
@@ -278,7 +337,7 @@ sbx-tui config set --project actions.chores.effort low
 | Location | Contents |
 |---|---|
 | `models.json` | Downloaded model catalog |
-| `<repo>-<hash>/last_used.json` | Launch defaults |
+| `<repo>-<hash>/last_used.json` | Launch defaults, selected profile, Custom CLI arguments and host command |
 | `<repo>-<hash>/prompt_history.json` | Prompt history |
 | `<repo>-<hash>/command_history.json` | Command-line history |
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
@@ -291,6 +350,10 @@ sbx-tui config set --project actions.chores.effort low
 
 Job records include full argv and prompts. Repository state, job and log
 directories use mode `0700` (user-only access), including older directories.
+
+Diff review positions (commit and file row) are kept only in the current TUI
+instance and reset on exit. Seen marks in `diff_review.json` persist across
+restarts and are shared between instances.
 
 TUI instances on one repository share these files: each change re-reads its
 file under a [lock](architecture.md#concurrency-and-locking) and replaces it

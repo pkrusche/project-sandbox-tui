@@ -4,6 +4,7 @@
 
 ```sh
 sbx-tui [REPO]               # open the TUI; default: current directory
+sbx-tui --version            # show the installed package version
 sbx-tui --init               # detect project type; initialize config, setup skill and model catalog
 sbx-tui --print-config       # show effective config and an interactive command
 sbx-tui --trust-config       # review changed project config
@@ -111,12 +112,28 @@ target and refusing bookmark or file conflicts. Equal tips do nothing; commits
 and working-copy files stay unchanged. `u` moves main back unless it has moved
 again since.
 
+### Switching the working copy
+
 `@` saves an unbookmarked working-copy change, including edits, as
 `saved/<change-id>` for later recovery unless the change is already an ancestor
 of main. It then runs `jj new` on the chosen bookmark and checks out its files.
 This uses the configured main bookmark, or detects `main` / `master` / `trunk`;
 if main is missing or conflicted, the change is saved. Running sessions in `@`
 block the move.
+
+| Previous working-copy state | Recovery bookmark |
+|---|---|
+| A local bookmark already points at it | Uses that existing bookmark |
+| Unbookmarked, but already included in main | No `saved/…` bookmark needed |
+| Unbookmarked and outside main, even if empty | Creates `saved/<change-id>` |
+| Unbookmarked and main is missing or conflicted | Creates `saved/<change-id>` |
+
+For example, highlight `feature/parser` and press `@`. Unbookmarked edits on the
+old working copy are snapshotted before the move and kept under `saved/…` when
+they are outside main. To return to that work later, highlight the saved bookmark
+and press `@` again, or run `jj new 'saved/<change-id>'` using the actual name.
+Saved names use the first eight characters of the change ID and add a numeric
+suffix if the name already exists.
 
 When the bookmark's commit is still the working copy of another workspace,
 typically one [kept from a session](sessions.md#kept-workspaces), `@` asks
@@ -348,6 +365,16 @@ Returning to the bookmark list with `q`, `esc` or `h` remembers the commit ID an
 selected file row for that bookmark during the current TUI session. Press `=`
 again to resume there. If the saved commit is no longer in the review, it opens
 at the first commit instead. Direct comparisons also remember their file row.
+Positions are separate for each bookmark and baseline, or each ordered pair of
+revisions in a direct comparison. They reset when sbx-tui exits and are not
+shared with other TUI instances. The saved row is a position in the table;
+if the file list changes, that row may identify a different file.
+
+For example, review three commits of `feature/parser`, select a file in the third,
+and press `q` to check another bookmark. Reopening `feature/parser` with `=`
+returns to that commit and row. If the commit was rewritten or merged into main,
+the review starts at its first remaining commit. Seen marks persist separately
+as described below.
 
 | Key | Action |
 |---|---|
@@ -428,12 +455,22 @@ from the highlighted bookmark.
 Choose a saved [agent profile](configuration.md#agent-profiles), or **custom**
 to show the agent, model, effort, fast mode and extra CLI arguments.
 Use `:config-profiles` to name and save profiles for this project.
+Named profiles show a settings summary; the command preview includes their extra
+arguments. To edit the profile, close the launch form and use `:config-profiles`.
+Profiles are also available in merge and rebase forms.
 
-For Codex and Claude, the **fast** field enables fast mode in interactive and
-background runs. It requires project-sandbox 0.3.1 or later and adds `--fast`
+Under Custom, **CLI args** accepts project-sandbox arguments with shell quoting,
+for example `--memory=16g --extra-domain example.org`. These follow the configured
+`sandbox.extra_args`. The preview updates as fields change; invalid quoting shows
+an error and prevents launching. A successful Custom launch remembers these
+arguments per repository, including across restarts.
+
+For Codex and Claude, the Custom **fast** field enables fast mode in interactive
+and background runs. It requires project-sandbox 0.3.1 or later and adds `--fast`
 to the command preview. It starts off unless `defaults.fast = true` is configured;
 successful launches remember the choice separately for each agent. Other agents
-hide the field and do not receive the flag. Agent actions also use this preference.
+hide the field and do not receive the flag. Named profiles use their own `fast`
+setting. Agent actions use the remembered preference or defaults.
 
 An edited background prompt that was cancelled, or whose launch failed, comes
 back the next time `r` opens on the same bookmark (or the same merge inputs),

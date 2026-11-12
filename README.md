@@ -9,6 +9,8 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 > 🤖 Written largely by AI, reviewed by a human. Use at your own risk.
 
 - Run agents interactively or in the background with completion notifications.
+- Save agent, model and sandbox options as named [profiles](docs/configuration.md#agent-profiles), selectable in launch forms.
+- [Review changes commit by commit](docs/usage.md#diff-review), with shared seen marks and your place remembered during the TUI session.
 - Merge or rebase tasks from separate jj workspaces with agent assistance.
 - Follow each bookmark's prompts and merges in a history graph (`L` for every run); delete and undo with `dd` / `u`.
 - Run shell or configured commands in the foreground (`:!make`, `:test`), once in the repository background (`:&test`), or in each selected workspace (`:*test`); see the [command comparison](docs/usage.md#choosing-how-to-run-a-shell-command). Map any form to leader keys.
@@ -49,6 +51,10 @@ sbx-tui             # launch
 ```
 
 Press `?` for full help.
+
+Highlight `@` or a feature bookmark and press `i` for an interactive sandbox
+session or `r` for a background run. Use `:config-profiles` to save an agent setup,
+then choose it in either launch form. Select **custom** to adjust settings for a run.
 
 `--init` detects a root `Dockerfile`, Python/uv, Rust/Cargo or Node/npm project
 (in that order). It installs a gitignored `sbx-tui-config` agent skill to help

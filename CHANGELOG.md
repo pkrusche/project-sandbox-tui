@@ -4,6 +4,39 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-12
+
+### Added
+
+- Named agent profiles for interactive and background launches, with agent,
+  model, effort, fast mode and extra project-sandbox arguments. Use
+  `:config-profiles` to create or edit profiles in the project config; launch
+  forms remember the last successfully used profile per repository and offer
+  **custom** for individual settings. See
+  [agent profiles](docs/configuration.md#agent-profiles).
+- Diff review remembers the current commit and selected file row when returning
+  to the bookmark list during the current TUI session. Direct comparisons also
+  remember their selected row; reviews fall back to the first commit if the
+  saved commit is no longer present.
+
+### Changed
+
+- Moving the working copy with `@` skips creating a `saved/…` bookmark when the
+  previous change is already an ancestor of main. This respects the configured
+  main bookmark or detects `main`, `master` or `trunk`; unbookmarked work is
+  still saved when main is missing or conflicted.
+- The release script keeps verified artifacts in `dist/` and removes completed
+  release state after PyPI publication, while retaining unfinished releases.
+
+### Fixed
+
+- The bookmark table clamps horizontal scrolling when its contents shrink,
+  keeping columns visible after refreshes.
+- The CLI reports the installed package version instead of a hard-coded version;
+  release verification now checks that it matches the release version.
+- Moving the working copy correctly handles bookmark names in jj's template
+  output.
+
 ## [0.1.2] - 2026-11-12
 
 ### Changed
@@ -77,7 +110,8 @@ Initial release.
   `sbx-tui config`, `sbx-tui doctor` and `--update-models`.
 - Project config is only loaded after review.
 
-[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/pkrusche/project-sandbox-tui/releases/tag/v0.1.0

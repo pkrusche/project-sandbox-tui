@@ -22,6 +22,7 @@ require a `.jj/` directory.
 | `review.py` | Diff review: repository-wide per-commit and direct-comparison file marks |
 | `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
+| `screens/agent.py`, `screens/profiles.py` | Shared agent controls and the project profile editor |
 
 ## Launches and job lifecycle
 
@@ -29,6 +30,12 @@ require a `.jj/` directory.
 preventing leading `-` characters from becoming options. Bookmark launches add
 `--branch`; background launches add `--prompt-text`, `--log`, `--json-summary`
 and optional `--timeout`.
+
+Launch forms resolve a named profile or Custom controls into a `LaunchSpec`
+containing the profile name, agent, model, effort, fast mode and extra arguments.
+These values are stored in the job record as a snapshot. Argument construction
+uses that snapshot, without looking up the profile again; per-run extra arguments
+follow `sandbox.extra_args`.
 
 1. **Guard:** reject busy workspaces. Project-sandbox records in
    `$XDG_STATE_HOME/project-sandbox/sessions/` lack branch names; match
@@ -58,6 +65,11 @@ after the run ended. See [sessions](sessions.md) for terminal behavior and
 [state storage](configuration.md#state-directory) for paths and permissions.
 
 ## Concurrency and locking
+
+Diff review positions live in the app's memory, keyed by review type, baseline
+and target. Commit reviews restore a commit ID and row; direct comparisons
+restore only the row. Positions are local to the TUI instance, while seen marks
+are persisted and shared through `diff_review.json`.
 
 Several TUI instances may run on one repository, and each does its jj, file and
 process work in worker threads. These locks order what they do:

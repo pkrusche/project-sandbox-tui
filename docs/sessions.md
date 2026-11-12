@@ -71,6 +71,12 @@ Sessions reuse a bookmark's workspace when it is kept (`keep_workspace`, or
 
 ## Interactive sessions
 
+`i` opens the [launch form](usage.md#launch-form). Select a saved
+[agent profile](configuration.md#agent-profiles) or **custom**, check the command
+preview, then press `enter`. `r` offers the same settings for a background run,
+with a prompt and optional timeout; `ctrl+s` launches it. Profile settings are
+recorded at launch, so editing the profile later affects future runs.
+
 `ui.terminal` controls where `i` opens the agent. Inline sessions suspend the TUI
 until the agent exits; multiplexer modes fall back to inline outside that multiplexer.
 
@@ -124,6 +130,9 @@ workspace when none are marked. The `*` and `&` prefixes are not accepted.
 as `i`. For custom terminals, `{repo}` is the target workspace and `{cmd}` is
 the host command. Host sessions run without project-sandbox or its container
 settings. Main and targets with active agent sessions are protected.
+
+Sandbox profiles are selected only in `i` / `r` launch forms. `I` and `:host`
+use the host command and the agent's own host settings described above.
 
 Host sessions appear as `host agent` or `host agent (ext)` and reserve their
 workspace just like sandbox sessions, including across TUI instances and

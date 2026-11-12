@@ -1,5 +1,10 @@
 # Model suggestions
 
+In a launch form, select **custom** in the **profile** field to show individual
+agent and model controls. The same controls are available when creating or
+editing an [agent profile](configuration.md#agent-profiles) with
+`:config-profiles`. A named profile uses its saved model.
+
 Cycle models with `h`/`l` or `←`/`→`. Except for `bash`, **custom (enter model
 name)** then `tab` lets you type a name. Blank uses the agent default.
 
