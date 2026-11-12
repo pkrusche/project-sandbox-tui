@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-12
+
+### Changed
+
+- Seen marks are shared across bookmarks by commit ID and file change, including
+  bookmarks created later. Existing saved marks are shared automatically; marking
+  a file seen or unseen updates every bookmark containing that commit.
+- Direct tip-to-tip comparisons share seen marks by file change across revisions,
+  independently of per-commit marks and the bookmark list's reviewed count.
+
 ### Fixed
 
 - Faster startup and bookmark refreshes: review counts read commit metadata in
@@ -67,6 +77,7 @@ Initial release.
   `sbx-tui config`, `sbx-tui doctor` and `--update-models`.
 - Project config is only loaded after review.
 
-[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/pkrusche/project-sandbox-tui/releases/tag/v0.1.0
