@@ -2975,6 +2975,101 @@ def test_host_launch_rechecks_reservation_after_creating_workspace(
     run_app(repo, cfg, scenario)
 
 
+@pytest.mark.parametrize("back", ["q", "escape", "h"])
+def test_commit_review_resumes_commit_and_row(
+    repo: Path, fake_cfg: Callable[..., Config], back: str
+) -> None:
+    jj(repo, "new", "feature/x", "-m", "many files")
+    for index in range(35):
+        (repo / f"file-{index:02}.txt").write_text(f"{index}\n")
+    jj(repo, "bookmark", "move", "feature/x", "--to", "@")
+    jj(repo, "new", "feature/x", "-m", "follow-up")
+    (repo / "tail.txt").write_text("tail\n")
+    jj(repo, "bookmark", "move", "feature/x", "--to", "@")
+    jj(repo, "bookmark", "create", "other", "-r", "feature/x")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+
+        async def open_review(bookmark: str) -> CommitReviewScreen:
+            app.marked = [bookmark]
+            await pilot.press("equals_sign")
+            return await wait_for_screen(app, pilot, CommitReviewScreen)
+
+        async def close_review() -> None:
+            await pilot.press(back)
+            await wait_until(pilot, lambda: app.screen is app.main)
+
+        screen = await open_review("feature/x")
+        first = screen.current_commit.commit
+        await pilot.press("right_square_bracket", "G")
+        saved = screen.current_commit.commit
+        assert screen.current_row == 34
+        await close_review()
+
+        # A second bookmark has its own position, even when its commits match.
+        screen = await open_review("other")
+        assert screen.current_commit.commit == first and screen.current_row == 0
+        await pilot.press("right_square_bracket", "j")
+        await close_review()
+        screen = await open_review("feature/x")
+        assert screen.current_commit.commit == saved and screen.current_row == 34
+        assert screen.files[screen.current_row].display == "file-34.txt"
+        await wait_until(pilot, lambda: screen.query_one(DataTable).scroll_y > 0)
+        await close_review()
+
+        # Resolve the saved ID again: its index changes when main advances.
+        jj(repo, "bookmark", "move", "main", "--to", first)
+        screen = await open_review("feature/x")
+        assert screen.commit_index == 0
+        assert screen.current_commit.commit == saved and screen.current_row == 34
+        await close_review()
+
+        # Rewriting the saved commit invalidates both the ID and its file row.
+        jj(repo, "describe", "-r", saved, "-m", "rewritten")
+        screen = await open_review("feature/x")
+        assert screen.current_commit.commit != saved
+        assert screen.commit_index == 0 and screen.current_row == 0
+        await close_review()
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_direct_diff_review_resumes_row_and_clamps_after_changes(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    (repo / "a.txt").write_text("changed\n")
+    (repo / "c.txt").write_text("new\n")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+
+        async def open_review() -> DiffReviewScreen:
+            app.marked = ["main", "@"]
+            await pilot.press("equals_sign")
+            return await wait_for_screen(app, pilot, DiffReviewScreen)
+
+        async def close_review() -> None:
+            await pilot.press("q")
+            await wait_until(pilot, lambda: app.screen is app.main)
+
+        screen = await open_review()
+        await pilot.press("G")
+        assert screen.current_row == 1
+        await close_review()
+        screen = await open_review()
+        assert screen.current_row == 1
+        await close_review()
+
+        # The same revisions now have fewer files; clamp to a valid row.
+        (repo / "c.txt").unlink()
+        screen = await open_review()
+        assert len(screen.files) == 1 and screen.current_row == 0
+        await close_review()
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_commit_review_groups_persists_and_invalidates_rewritten_commits(
     repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -341,6 +341,11 @@ table lists its changed files with status (`A`dded, `M`odified, `D`eleted,
 a later commit reverts, and every side of a merge. Empty commits show an empty
 file table and can be passed with `]`.
 
+Returning to the bookmark list with `q`, `esc` or `h` remembers the commit ID and
+selected file row for that bookmark during the current TUI session. Press `=`
+again to resume there. If the saved commit is no longer in the review, it opens
+at the first commit instead. Direct comparisons also remember their file row.
+
 | Key | Action |
 |---|---|
 | `[` / `]` | Previous / next commit |

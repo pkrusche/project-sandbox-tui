@@ -78,7 +78,7 @@ from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
 from project_sandbox_tui.screens.profiles import ProfilesScreen
-from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen
+from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen, ReviewPosition
 from project_sandbox_tui.screens.tasks import TasksScreen
 from project_sandbox_tui.settings import Editor
 from project_sandbox_tui.tasks import TaskManager, TaskRecord
@@ -495,6 +495,7 @@ class SandboxTUI(App[None]):
         self.branches: list[Branch] = []
         self._reviews: dict[str, tuple[int, int]] = {}
         self._review_keys: dict[tuple[str, str], set[str]] = {}
+        self._review_positions: dict[tuple[str, str, str], ReviewPosition] = {}
         self.sessions: dict[str, SessionRecord] = {}
         self.filter_text = ""
         self._prefix = PrefixKeys()  # gg and dd
@@ -1250,10 +1251,19 @@ class SandboxTUI(App[None]):
                 self.backend.diff_commit_files_command(commit, paths),
             )
 
-        async def closed(_: None) -> None:
+        key = ("commits", base, target)
+
+        async def closed(position: ReviewPosition | None) -> None:
+            if position is not None:
+                self._review_positions[key] = position
             await self.refresh_data()
 
-        self.push_screen(CommitReviewScreen(title, commits, changes, seen, view), closed)
+        self.push_screen(
+            CommitReviewScreen(
+                title, commits, changes, seen, view, position=self._review_positions.get(key)
+            ),
+            closed,
+        )
 
     @work(exclusive=True, group="diff")
     async def _review_diff(self, base: str, target: str) -> None:
@@ -1277,10 +1287,17 @@ class SandboxTUI(App[None]):
                 self.backend.diff_files_command(changes.base, changes.target, paths),
             )
 
-        async def closed(_: None) -> None:
+        key = ("diff", base, target)
+
+        async def closed(position: ReviewPosition | None) -> None:
+            if position is not None:
+                self._review_positions[key] = position
             await self.refresh_data()
 
-        self.push_screen(DiffReviewScreen(title, changes, seen, view), closed)
+        self.push_screen(
+            DiffReviewScreen(title, changes, seen, view, position=self._review_positions.get(key)),
+            closed,
+        )
 
     def _show_diff(self, title: str, argv: list[str]) -> None:
         try:
