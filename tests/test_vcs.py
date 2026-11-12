@@ -568,7 +568,7 @@ def test_move_working_copy_only_saves_work_outside_main(
     assert backend._jj("file", "show", "-r", vcs.revset_symbol(main), "a.txt") == expected
 
 
-@pytest.mark.parametrize("case", ["diverged", "missing", "configured-missing"])
+@pytest.mark.parametrize("case", ["diverged", "missing", "configured-missing", "conflicted"])
 def test_move_working_copy_preserves_work_not_in_main(repo: Path, case: str) -> None:
     from tests.conftest import add_bookmark, jj
 
@@ -577,6 +577,13 @@ def test_move_working_copy_preserves_work_not_in_main(repo: Path, case: str) -> 
         jj(repo, "bookmark", "move", "main", "--to", "side")
     elif case == "missing":
         jj(repo, "bookmark", "delete", "main")
+    elif case == "conflicted":
+        add_bookmark(repo, "side", "side.txt", "side\n")
+        operation = jj(repo, "op", "log", "--no-graph", "-n", "1", "-T", "id").strip()
+        jj(repo, "bookmark", "move", "main", "--to", "side")
+        jj(repo, "--at-op", operation, "bookmark", "move", "main", "--to", "feature/x")
+        with pytest.raises(vcs.VcsError, match="unambiguous target"):
+            vcs.detect(repo)._bookmark_commit("main")
     (repo / "a.txt").write_text("unfinished\n")
     backend = vcs.detect(repo)
     saved = backend.move_working_copy_to(
