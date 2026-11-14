@@ -177,7 +177,7 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
                 job.argv = ["project-sandbox", "--prompt", prompt]
                 job.log_path, job.stdout_path = str(log), str(log.with_suffix(".out"))
                 state.add_run(job).status = "completed" if i else "failed"
-        await pilot.press("j", "L")  # starts on feature/x's newest run
+        await pilot.press("j", "O")  # starts on feature/x's newest run
         screen = app.screen
         assert isinstance(screen, OpLogScreen)
         rows = [[str(c) for c in screen.table.get_row_at(i)] for i in range(3)]
@@ -215,7 +215,7 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         await pilot.press("k", "l")  # an earlier run's log
         screen = await wait_for_screen(app, pilot, LogScreen)
         assert "output of first try" in "\n".join(screen.query_one(Log).lines)
-        await pilot.press("q", "q")
+        await pilot.press("q", "O")
         assert app.screen is app.main
 
     run_app(repo, fake_cfg(), scenario, size=(80, 24))
@@ -834,9 +834,11 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
 
         await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
         assert app.jobs.jobs["feature/x"].running
-        # one sandbox per branch: a second launch is refused before the form opens
+        # Busy bookmarks accept another prompt; cancelling leaves the queue empty.
         await pilot.press("r")
-        assert not isinstance(app.screen, LaunchScreen)
+        assert isinstance(app.screen, LaunchScreen)
+        await pilot.press("escape")
+        assert not app.queue.get("feature/x").tasks
 
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].status == "completed")
         await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].notified)
@@ -1120,9 +1122,11 @@ def test_working_copy_background_session(repo: Path, fake_cfg: Callable[..., Con
         assert not any(
             arg.startswith(("--branch", "--worktree-dir", "--keep-workspace")) for arg in job.argv
         )
-        for key in ("i", "r"):
-            await pilot.press(key)
-            assert app.screen is app.main
+        await pilot.press("i")
+        assert app.screen is app.main
+        await pilot.press("r")
+        assert isinstance(app.screen, LaunchScreen)
+        await pilot.press("escape")
         assert any("@ already has" in str(n.message) for n in app._notifications)
         await wait_until(pilot, lambda: not app.jobs.jobs["@"].running)
         assert (app.jobs.jobs["@"].status, app.jobs.jobs["@"].exit_code) == ("completed", 0)

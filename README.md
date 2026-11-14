@@ -12,7 +12,7 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 - Save agent, model and sandbox options as named [profiles](docs/configuration.md#agent-profiles), selectable in launch forms.
 - [Review changes commit by commit](docs/usage.md#diff-review), with shared seen marks and your place remembered during the TUI session.
 - Merge or rebase tasks from separate jj workspaces with agent assistance.
-- Follow each bookmark's prompts and merges in a history graph (`L` for every run); delete and undo with `dd` / `u`.
+- Follow each bookmark's prompts and merges in a history graph (`O` for every run); delete and undo with `dd` / `u`.
 - Run shell or configured commands in the foreground (`:!make`, `:test`), once in the repository background (`:&test`), or in each selected workspace (`:*test`); see the [command comparison](docs/usage.md#choosing-how-to-run-a-shell-command). Map any form to leader keys.
 - Let project-sandbox handle isolation, credentials and workspace teardown.
 

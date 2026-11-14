@@ -343,6 +343,7 @@ sbx-tui config set --project actions.chores.effort low
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
 | `<repo>-<hash>/diff_review.json` | File changes marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
+| `<repo>-<hash>/queue.json`, `<repo>-<hash>/queue.lock` | Pending unsupervised prompts, pause state, queue undo/redo and named marks |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
 | `<repo>-<hash>/jobs/history/<bookmark>-<hash>/` | [Replaced and cleared job records](sessions.md#one-sandbox-per-bookmark), the last 50 per bookmark |
 | `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output, including `:&` and `:*` tasks |

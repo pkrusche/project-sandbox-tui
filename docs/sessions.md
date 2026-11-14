@@ -159,3 +159,30 @@ a desktop notification via `osascript` (macOS), `notify-send` (Linux) or
 | `130` | Interrupted |
 | Other | Failed |
 | Vanished process, no summary or exit code | Orphaned |
+
+## Unsupervised task queues
+
+`r` accepts prompts even while a bookmark is busy. Submitting starts the task
+when the bookmark is free, or appends it to that bookmark's FIFO queue. Each
+entry saves its agent, model, effort, profile settings, extra arguments, prompt
+and timeout. Later profile changes do not alter queued entries. Interactive
+sessions (`i` and `I`) must still be started manually and are never queued.
+
+Press `L` on a bookmark to open its queue. The bookmark list shows the pending
+count and whether dispatch is paused. In the queue, `n` adds a task, `e` or
+`enter` edits its prompt and settings, and `p` pauses or resumes dispatch. Pause
+lets the current session finish. Queues for other bookmarks keep running.
+
+Queued tasks start one at a time after the previous session ends, including
+failed, timed-out or cancelled sessions. A launch error or a deleted/protected
+bookmark pauses that queue and displays the reason; fix the issue and press
+`p` to resume. Shell commands (`:&` and `:*`) retain their existing independent
+behavior and are not part of the prompt queue.
+
+Pending tasks, order, pause state, marks, and the last 100 queue edits for
+undo/redo are saved in the repository's state directory and shared across TUI
+instances. Undo never restores a task that has already started. Dispatch runs
+while at least one sbx-tui instance is open and refreshing; the current detached
+run survives quitting, and remaining tasks resume when sbx-tui reopens. Inline
+interactive sessions suspend refresh until control returns to the TUI. Dry-run
+mode previews submitted prompts without consuming saved queue entries.

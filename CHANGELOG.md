@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Persistent per-bookmark queues for unsupervised prompts and configured agent
+  actions. Busy bookmarks accept more prompts, executed in order when free.
+  `L` opens the queue with Vim navigation, selection, editing, reordering,
+  undo/redo and named marks; `p` pauses or resumes dispatch for that bookmark.
+  Pending tasks resume when sbx-tui reopens; interactive sessions remain manual.
+
+### Changed
+
+- Operation history opens with `O`; `L` opens the prompt queue.
+
 ## [0.1.3] - 2026-11-12
 
 ### Added

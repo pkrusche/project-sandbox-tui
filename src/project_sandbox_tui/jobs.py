@@ -101,6 +101,7 @@ class JobRecord:
     session_seen: bool = False  # external only: a project-sandbox session was observed
     runtime: str = ""
     host: bool = False
+    queue_id: str = ""  # durable identity of a dispatched unsupervised task
 
     @property
     def mode(self) -> str:
@@ -146,6 +147,7 @@ class JobRecord:
             "session_seen": self.session_seen,
             "runtime": self.runtime,
             "host": self.host,
+            "queue_id": self.queue_id,
         }
 
     @classmethod
@@ -177,6 +179,7 @@ class JobRecord:
             session_seen=bool(raw.get("session_seen")),
             runtime=str(raw.get("runtime") or ""),
             host=bool(raw.get("host")),
+            queue_id=str(raw.get("queue_id") or ""),
         )
 
 
@@ -346,9 +349,16 @@ class JobManager:
             stdout=Path(f"{base}.out"),
         )
 
-    def start_background(self, spec: LaunchSpec, sessions: dict[str, SessionRecord]) -> JobRecord:
+    def start_background(
+        self, spec: LaunchSpec, sessions: dict[str, SessionRecord], *, queue_id: str = ""
+    ) -> JobRecord:
         with self._locked():
             self.load()
+            if queue_id:
+                current = self.jobs.get(spec.branch)
+                records = ([current] if current else []) + self.history(spec.branch)
+                if previous := next((j for j in records if j.queue_id == queue_id), None):
+                    return previous
             reason = self._busy_reason(spec.branch, sessions)
             if reason:
                 raise BusyError(reason)
@@ -382,6 +392,7 @@ class JobManager:
                 log_path=str(paths.log),
                 summary_path=str(paths.summary),
                 stdout_path=str(paths.stdout),
+                queue_id=queue_id,
             )
             self.jobs[spec.branch] = job
             try:

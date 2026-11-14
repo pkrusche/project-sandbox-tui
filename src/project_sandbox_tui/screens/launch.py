@@ -99,10 +99,16 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         branches: list[str] | None = None,
         octopus: OctopusSetup | None = None,
         draft: str = "",
+        submit_label: str = "launch",
+        fixed_branch: bool = False,
+        save: Callable[[LaunchSpec], str | None] | None = None,
     ) -> None:
         """``draft``: a prompt typed earlier but not launched; shown instead of ``prompt_text``."""
         super().__init__()
         self.branch = branch
+        self.submit_label = submit_label
+        self.fixed_branch = fixed_branch
+        self.save = save
         self.mode = mode
         self.cfg = cfg
         self.last = last
@@ -162,6 +168,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                         ),
                         select_on_focus=False,
                         id="branch",
+                        disabled=self.fixed_branch,
                     )
                 with Horizontal(classes="field"):
                     yield Static("base", classes="field-label")
@@ -202,12 +209,12 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 yield Static("", classes="preview", id="preview")
             keys = "tab/j/k fields · h/l change · enter launch · esc cancel"
             if self.mode == "background":
-                keys = "tab fields · h/l change · ctrl+s launch · esc cancel"
+                keys = f"tab fields · h/l change · ctrl+s {self.submit_label} · esc cancel"
             self.default_hint = keys
             if self.mode == "background":
                 with Horizontal(id="launch-row"):
                     yield Static(KeyHints(keys), classes="hint", id="launch-hint")
-                    yield Button("launch", variant="primary", compact=True, id="launch")
+                    yield Button(self.submit_label, variant="primary", compact=True, id="launch")
             else:
                 yield Static(KeyHints(keys), classes="hint", id="launch-hint")
 
@@ -216,7 +223,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         hint = self.default_hint
         if modifier:
             if modifier == "ctrl":
-                hint = "ctrl+s / ctrl+enter launch"
+                hint = f"ctrl+s / ctrl+enter {self.submit_label}"
                 if isinstance(self.focused, PromptArea):
                     hint += " · ctrl+p/n history · ctrl+r search · ctrl+f complete · ctrl+l clear"
             elif modifier == "shift":
@@ -228,6 +235,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     def _title(self) -> Text:
         what = "interactive session" if self.mode == "interactive" else "unsupervised run"
+        if self.submit_label != "launch":
+            what = f"{self.submit_label} · unsupervised task"
         title = Text(what)
         if self.octopus is not None:
             op = self._value("#operation", "merge") or "merge"
@@ -495,6 +504,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             self.notify("an unsupervised run needs a prompt", severity="warning")
             self.query_one("#prompt").focus()
             return
+        if self.save is not None and (error := self.save(spec)):
+            self.notify(error, severity="error")
+            return  # keep the edited prompt visible if persistence or a concurrent edit fails
         self._keep_draft()  # until the launch has started
         self.dismiss(spec)
 

@@ -1,4 +1,4 @@
-"""L: the operations history, one line per bookmark creation, merge, rebase and run.
+"""O: the operations history, one line per bookmark creation, merge, rebase and run.
 
 Drawn like ``jj log`` over the nodes of the bookmark history: each prompt or
 session continues its bookmark's line, merges and rebases join their inputs.
@@ -47,7 +47,7 @@ class OpLogScreen(Screen[None]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q,escape,h,L", "app.pop_screen", show=False),
+        Binding("q,escape,h,O", "app.pop_screen", show=False),
         Binding("j", "cursor(1)", show=False),
         Binding("k", "cursor(-1)", show=False),
         Binding("ctrl+d", "page(1)", show=False),

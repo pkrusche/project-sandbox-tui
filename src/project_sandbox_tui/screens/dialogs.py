@@ -463,10 +463,10 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
             (
                 ("i / I", "interactive / host agent"),
                 (":host", "host agent with CLI args"),
-                ("r", "unsupervised run"),
+                ("r / L", "run / prompt queue"),
                 ("x", "cancel · 3×: forget"),
                 ("l / enter", "log, else details"),
-                ("P / L / T", "details / op log / tasks"),
+                ("P / O / T", "details / op log / tasks"),
             ),
         ),
         (

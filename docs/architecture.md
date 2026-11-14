@@ -13,6 +13,7 @@ require a `.jj/` directory.
 | `vcs.py` | Bookmark discovery, creation, changed files, working-copy moves and fast-forwarding |
 | `sandbox.py` | `LaunchSpec`, argv construction and session matching |
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |
+| `queue.py`, `screens/queue.py` | Persistent per-bookmark unsupervised queues, Vim editing and dispatch |
 | `tasks.py` | `:&` / `:*` host commands: detached, output and exit status captured |
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `host_session.py` | External host agent runner: persistent PID and exit status |
@@ -92,15 +93,19 @@ process work in worker threads. These locks order what they do:
 
 A lock is only taken while holding the ones above it, never the reverse, so
 actions cannot deadlock. The diff review, prompt history and command history
-each have their own `<file>.lock`, taken alone.
+each have their own `<file>.lock`, taken alone. Queue edits take `queue.lock`
+alone; dispatch takes `queue.lock` → `jobs.lock`, releasing both before
+recording the run under the graph lock.
 
 Which actions take which locks. *history* is `_history_lock`, *graph*
 `opgraph.json.lock`; `A → B` takes B while holding A, `A, B` one after the other:
 
 | Action | Locks | Done under them |
 |---|---|---|
-| Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks | Adopt new bookmarks and record finished runs; poll jobs and claim their notifications; the same for tasks |
-| `r` / `i`, `:NAME` actions | jobs, graph | Recheck busy, spawn and write the job record; add the run node. A new bookmark typed into the form is recorded first, under graph |
+| Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, graph, queue → jobs, graph | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
+| `i` | jobs, graph | Recheck busy, reserve the session and add the run node |
+| `r`, `:NAME` actions | queue; queue → jobs, graph | Save the prompt, launch when idle and add the run node. A new bookmark typed into the form is recorded first, under graph |
+| `L` edits / pause / resume | queue | Reload and atomically save pending tasks, history, marks and pause state |
 | `I` | jobs, graph | Create a missing workspace; recheck busy and reserve the target before launching the host agent; add the run node |
 | `r` / `i` with bookmarks selected | history → (jobs, graph); then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark |
 | `n` | history → graph | Create with jj, then record the creation and its undo entry |
@@ -130,6 +135,26 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
   for `_history_lock` instead of cancelling the first after jj has already run.
 - `last_used.json` and the trusted project config are replaced atomically
   without a lock; the last write wins.
+
+## Unsupervised queue dispatch
+
+`queue.json` holds pending launch snapshots, per-bookmark pause/error state,
+named marks, and bounded undo/redo snapshots. Mutations reload under
+`queue.lock` and replace the file atomically. Dispatch holds that lock while
+`JobManager.start_background` takes `jobs.lock`, so multiple instances cannot
+claim the same task. No caller holds a graph, jobs or host-task lock when
+acquiring the queue lock. Graph recording happens after releasing the queue lock.
+
+The dispatched job stores the task's unique `queue_id`. Retrying after a crash
+between saving the job and removing the queue entry finds that job in the current
+record or retained job history instead of spawning it again. Consuming a task
+also removes it from every undo/redo snapshot, preventing replay through undo.
+A launch error pauses only that bookmark's queue. Corrupt queue state is reported
+without overwriting the file.
+
+Refresh polls jobs, captures finished runs in the bookmark history, then starts
+at most one queued task for each idle bookmark. Pending prompts and pause state
+survive TUI restarts; dispatch needs a live, refreshing TUI instance.
 
 ## Limitations
 

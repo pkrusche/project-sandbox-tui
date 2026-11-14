@@ -532,7 +532,7 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
         assert LastUsed.load(repo).agent == ""  # nor launch-form choices
         await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
 
-        # One target that is not main: no question. Busy targets are skipped.
+        # One target that is not main: no question. Busy targets accept queued actions.
         names = [r.branch.name for r in app.visible_rows()]
         app.table.move_cursor(row=names.index("feature/x"))
         await pilot.press("backslash", "r", "c")
@@ -540,9 +540,11 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
             pilot, lambda: app.jobs.jobs["feature/x"].spec.prompt_text.endswith("sleep:1\n")
         )
         assert app.jobs.jobs["feature/x"].running
+        app.queue.pause("feature/x", True)
         await pilot.press("backslash", "r", "c")
         await pilot.pause()
-        assert any("skipped: feature/x already has" in m for m in messages(app))
+        assert any("feature/x: prompt queued" in m for m in messages(app))
+        assert len(app.queue.get("feature/x").tasks) == 1
 
         # The main bookmark is blocked even when it is the only target.
         await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)

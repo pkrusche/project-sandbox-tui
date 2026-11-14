@@ -65,8 +65,9 @@ to review or the comparison is unavailable. Counts follow the saved marks from
 | `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark) or running [tasks](#tasks): repeat to cancel harder, a third time to forget a run; clears a finished status at once; asks first before signalling several |
 | `l` / `enter` | [Logs](#log-viewer) and the latest task output, or run details while a bookmark has neither |
 | `P` | Last run details (agent, times, IDs, log, command line), history, recent tasks and the interactive command |
-| `L` | [Op history](#op-history): every prompt, session, merge and rebase as a graph |
+| `O` | [Op history](#op-history): every prompt, session, merge and rebase as a graph |
 | `T` | [Tasks](#tasks): every background task in all workspaces |
+| `L` | [Prompt queue](#prompt-queue) for the highlighted bookmark |
 | `n` | New bookmark: name and start revision |
 | `e` | Edit the full description of one bookmark or the working copy (`ctrl+s` saves, `esc` cancels) |
 | `dd` · `u` · `ctrl+r` | Delete bookmark, keeping its history · [undo · redo](#bookmark-history) |
@@ -245,8 +246,8 @@ finish and are announced, then older records and their output are pruned.
 An [`[actions]`](configuration.md#agent-actions) entry names a prompt: `:review`
 starts it as an unsupervised sandbox run on each target, like `r` with the
 prompt filled in. Words after the name are appended to the prompt, e.g.
-`:review focus on error handling`. Targets already running a session are
-skipped, as is the protected main bookmark. `@` runs in the current checkout.
+`:review focus on error handling`. Targets already running a session receive a queued prompt; the protected main
+bookmark is skipped. `@` runs in the current checkout.
 sbx-tui asks first for several runnable targets. Action runs use the launch
 defaults unless the action sets its own agent, model, effort or timeout. They
 don't change the remembered defaults or the prompt history.
@@ -294,7 +295,7 @@ covers the rest. The history is kept in the
 
 ## Op history
 
-`L` opens the operations history: the [bookmark history](#bookmark-history)
+`O` opens the operations history: the [bookmark history](#bookmark-history)
 with a line for every event rather than every bookmark. Each prompt or session
 continues its bookmark's line, so repeated runs stack up in order; merges and
 rebases join the lines of their inputs. Newest first, starting at the
@@ -326,7 +327,7 @@ focus the pane with `tab` to scroll with arrow keys, Page Up/Down or Home/End.
 | `tab` / `shift+tab` | Switch focus between the table and the details pane |
 | `enter` / `P` | Expand the selected operation's details |
 | `l` | [Log viewer](#log-viewer) for a background run, including earlier runs |
-| `q` / `esc` / `h` / `L` | Back to the list |
+| `q` / `esc` / `h` / `O` | Back to the list |
 
 New runs retain the full prompt and command line. Older entries may have only
 the prompt's first line and no recorded command. Logs of earlier runs stay in the
@@ -488,3 +489,25 @@ Each repository remembers the latest 500 distinct launched background prompts.
 | `ctrl+p` / `ctrl+n` | Older / newer prompt matching the typed prefix |
 | `ctrl+r` | Search: type words, `↑`/`↓` choose, `enter` inserts |
 | `ctrl+l` · `ctrl+z` | Clear · undo |
+
+## Prompt queue
+
+Press `L` on a bookmark to manage its persistent [unsupervised queue](sessions.md#unsupervised-task-queues).
+The list contains pending tasks in execution order. Pause with `p` before
+editing if you want the whole list to remain pending while the bookmark is idle.
+
+| Key | Action |
+|---|---|
+| `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
+| `/` | Filter prompts; `enter` keeps the filter, `esc` clears it |
+| `n` / `r` | Add a prompt with the launch form; `ctrl+s` queues it |
+| `e` / `l` / `enter` | Edit the highlighted task's prompt and launch settings; `ctrl+s` saves |
+| `dd` | Delete selected tasks, or the highlighted task |
+| `J` / `K` | Move selected tasks down/up one position |
+| `v` / `V` · `space` | Select a range / mark individual tasks; `esc` clears selection |
+| `u` · `ctrl+r` | Undo / redo queue edits, including additions, deletions and reordering |
+| `m` then a letter | Save a named mark on the highlighted task |
+| `'` or `backtick`, then a letter | Jump to a named mark, clearing the filter |
+| `p` | Pause / resume this bookmark's queue without stopping a running session |
+| `q` / `h` / `L` | Return to the bookmark list |
+| `esc` | Clear filter or selection; otherwise return to the bookmark list |

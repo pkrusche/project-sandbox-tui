@@ -41,6 +41,7 @@ from project_sandbox_tui.config import (
     Config,
     ConfigError,
     LastUsed,
+    LaunchDefaults,
     ProjectTrust,
     command_warning,
     load,
@@ -54,6 +55,7 @@ from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
 from project_sandbox_tui.processes import reap_later
+from project_sandbox_tui.queue import QueuedTask, TaskQueue
 from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
@@ -78,6 +80,7 @@ from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
 from project_sandbox_tui.screens.profiles import ProfilesScreen
+from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen, ReviewPosition
 from project_sandbox_tui.screens.tasks import TasksScreen
 from project_sandbox_tui.settings import Editor
@@ -136,6 +139,8 @@ class Row:
     review: tuple[int, int] | None = None  # seen/total file changes across commits outside main
     tasks: list[TaskRecord] = dataclasses.field(default_factory=list)  # host tasks, newest first
     protected: bool = False
+    queued: int = 0
+    queue_paused: bool = False
 
     def name_cell(self, selected: bool = False) -> Text:
         b = self.branch
@@ -172,6 +177,9 @@ class Row:
             glyph, colour = GLYPHS["external"]
             status = "busy (other)"
         if tag := self.task_tag():
+            status = f"{status} · {tag}" if status else tag
+        if self.queued or self.queue_paused:
+            tag = f"{self.queued} queued" + (" (paused)" if self.queue_paused else "")
             status = f"{status} · {tag}" if status else tag
         return glyph, colour, status
 
@@ -267,8 +275,9 @@ MAIN_BINDINGS: list[BindingType] = [
     Binding("f", "app.fast_forward_main", show=False),
     Binding("at", "app.move_working_copy", show=False),
     Binding("P", "app.preview", show=False),
-    Binding("L", "app.op_log", show=False),
+    Binding("O", "app.op_log", show=False),
     Binding("T", "app.tasks", show=False),
+    Binding("L", "app.task_queue", show=False),
     Binding("W", "app.cleanup_workspaces", show=False),
     Binding("x", "app.cancel", show=False),
     Binding("R", "app.refresh", show=False),
@@ -303,8 +312,8 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("x", "cancel · 3×: forget"),
             ("l ⏎", "log / transcript"),
             ("P", "details / command"),
-            ("L", "op history graph"),
-            ("T", "tasks"),
+            ("O", "op history graph"),
+            ("T L", "tasks / prompt queue"),
         ),
     ),
     (
@@ -444,8 +453,8 @@ class MainScreen(Screen[None]):
         if modifier:
             hints = {
                 "ctrl": "ctrl+d/u half page down/up · ctrl+r redo · ctrl+l reload configuration",
-                "shift": "G bottom · V select · P details · L op history · T tasks · R refresh"
-                " · W clean up · H sheet",
+                "shift": "G bottom · V select · P details · O op history · L queue · T tasks"
+                " · R refresh · W clean up · H sheet",
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
@@ -491,6 +500,7 @@ class SandboxTUI(App[None]):
         self.dry_run = dry_run
         self.jobs = jobs or JobManager(repo, cfg)
         self.tasks = TaskManager(self.jobs.state_dir)  # background host commands
+        self.queue = TaskQueue(self.jobs.state_dir)
         self.sessions_dir = sessions_dir
         self.branches: list[Branch] = []
         self._reviews: dict[str, tuple[int, int]] = {}
@@ -631,6 +641,25 @@ class SandboxTUI(App[None]):
             self._state_problem("tasks", f"could not update the task records: {exc}")
         else:
             self._state_problem("tasks", "")
+        try:
+            await asyncio.to_thread(self.queue.load)
+            if (
+                listed
+                and not self.dry_run
+                and any(q.tasks and not q.paused for q in self.queue.queues.values())
+            ):
+                # Finalise the previous run against a fresh bookmark snapshot
+                # before a queued launch replaces its job record.
+                self.branches = sort_branches(await asyncio.to_thread(self.backend.list_branches))
+                await self._sync_graph(time.time())
+                for job in await asyncio.to_thread(self._dispatch_queue):
+                    self._record_run(job)
+                    self.notify(f"{job.branch}: started queued {job.spec.label()} (pid {job.pid})")
+            self._report_queue_errors()
+        except (OSError, ValueError, VcsError) as exc:
+            self._state_problem("queue", f"could not update the task queue: {exc}")
+        else:
+            self._state_problem("queue", "")
         # NoMatches: the app is shutting down (e.g. a worker finishing after quit)
         with contextlib.suppress(NoMatches):
             self._render_table()
@@ -778,6 +807,8 @@ class SandboxTUI(App[None]):
                 self._reviews.get(n),
                 self.tasks.for_bookmark(n),
                 protected=bool(self._session_target_error(n)),
+                queued=len(self.queue.get(n).tasks),
+                queue_paused=self.queue.get(n).paused,
             )
             for n in names
         ]
@@ -1330,7 +1361,7 @@ class SandboxTUI(App[None]):
             self.notify(reason, severity="warning")
             return
         reason = self.jobs.busy_reason(name, self.sessions)
-        if reason:
+        if reason and mode == "interactive":
             self.notify(reason, severity="warning")
             return
         last = LastUsed.load(self.repo)
@@ -1354,6 +1385,7 @@ class SandboxTUI(App[None]):
             prompt_history=self.prompt_history,
             branches=[b.name for b in self.branches],
             draft=self._drafts.get((name,), ""),
+            submit_label="run / queue" if mode == "background" else "launch",
         )
         known_branches = {b.name for b in self.branches}
 
@@ -1363,6 +1395,84 @@ class SandboxTUI(App[None]):
             self._launch_chosen(spec, new_branch_start=start, draft_key=(name,))
 
         self.push_screen(screen, chosen)
+
+    def action_task_queue(self) -> None:
+        name = self._require_branch()
+        if name is None:
+            return
+        if reason := self._session_target_error(name):
+            self.notify(reason, severity="warning")
+            return
+        self.push_screen(QueueScreen(self.queue, name, self._edit_queued_task))
+
+    def _edit_queued_task(self, name: str, task: QueuedTask | None) -> None:
+        last = LastUsed.load(self.repo)
+        defaults = resolve_launch_defaults(self.cfg, last)
+        if task:
+            spec = task.spec
+            # Edit the saved settings, even if the named profile has changed.
+            last = LastUsed(
+                agent=spec.agent,
+                profile="",
+                extra_args=list(spec.extra_args),
+                model_by_agent={spec.agent: spec.model},
+                fast_by_agent={spec.agent: spec.fast},
+            )
+            defaults = LaunchDefaults(spec.agent, spec.model, spec.effort, spec.timeout, spec.fast)
+
+        def save(spec: LaunchSpec) -> str | None:
+            try:
+                if task:
+                    spec.operation, spec.inputs, spec.base = (
+                        task.spec.operation,
+                        list(task.spec.inputs),
+                        task.spec.base,
+                    )
+                    self.queue.edit(name, task.id, spec, expected=task.spec)
+                else:
+                    self.queue.add(spec)
+            except (OSError, ValueError) as exc:
+                return str(exc)
+            self.prompt_history.add(spec.prompt_text)
+            return None
+
+        screen = LaunchScreen(
+            name,
+            "background",
+            self.cfg,
+            last,
+            defaults,
+            self._form_preview,
+            task.spec.prompt_text if task else "",
+            prompt_history=self.prompt_history,
+            branches=[name],
+            fixed_branch=True,
+            submit_label="save" if task else "queue",
+            save=save,
+        )
+
+        def chosen(spec: LaunchSpec | None) -> None:
+            if spec is not None:
+                self.call_later(self.refresh_data)
+
+        self.push_screen(screen, chosen)
+
+    def _dispatch_queue(self) -> list[JobRecord]:
+        names = [b.name for b in self.branches]
+
+        def valid(name: str) -> str | None:
+            if name not in names:
+                return f"{name} no longer exists; restore it before resuming"
+            return self._session_target_error(name) or None
+
+        return self.queue.dispatch(self.jobs, lambda: self._sessions_now(names), valid)
+
+    def _report_queue_errors(self) -> None:
+        for name, queue in self.queue.queues.items():
+            self._state_problem(
+                f"queue:{name}",
+                f"{name}: queue paused: {queue.error} (L to edit or resume)" if queue.error else "",
+            )
 
     def _launch_octopus(self, mode: Mode, chosen: list[str]) -> None:
         """r / i with bookmarks selected: merge or rebase into a new bookmark."""
@@ -1535,14 +1645,23 @@ class SandboxTUI(App[None]):
                 self.worktree_dir,
             )
             if spec.mode == "background":
-                job = self.jobs.start_background(spec, self.sessions)
-                self._record_run(job, history_text)
-                self.notify(f"{spec.branch}: started {spec.label()} (pid {job.pid})")
+                if self.dry_run:
+                    # Preview only this submission; never consume pending real tasks.
+                    started = [self.jobs.start_background(spec, self.sessions)]
+                else:
+                    self.queue.add(spec)
+                    started = self._dispatch_queue()
+                    self._report_queue_errors()
+                for job in started:
+                    self._record_run(job, history_text if job.spec == spec else None)
+                    self.notify(f"{job.branch}: started {job.spec.label()} (pid {job.pid})")
+                if not any(job.spec == spec for job in started):
+                    self.notify(f"{spec.branch}: prompt queued (L to edit or pause)")
             elif launchers.effective_mode(self.cfg.ui.terminal_mode()) != "inline":
                 self._launch_external(spec)
             else:
                 self._launch_interactive(spec, banner)
-        except (BusyError, ConfigError, VcsError, launchers.LaunchError) as exc:
+        except (BusyError, ConfigError, VcsError, ValueError, launchers.LaunchError) as exc:
             self.notify(str(exc), severity="error", timeout=8)
         except OSError as exc:
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
@@ -1553,7 +1672,10 @@ class SandboxTUI(App[None]):
                 return
             if spec.mode == "background":
                 self.prompt_history.add(spec.prompt_text if history_text is None else history_text)
-            # Only a launch that actually started becomes the new default.
+                if self.queue.get(spec.branch).error:
+                    self.call_later(self.refresh_data)
+                    return
+            # Remember accepted launches and queued prompts, but not launch errors.
             remember(
                 self.repo,
                 spec.agent,
@@ -1673,6 +1795,11 @@ class SandboxTUI(App[None]):
             return
         try:
             with self.graph.transaction() as state:
+                if job.queue_id and any(
+                    n.kind == "run" and (n.bookmark, n.job) == (job.branch, job.started_at)
+                    for n in state.nodes.values()
+                ):
+                    return  # retry after a queue write failed: the run is already recorded
                 if job.branch not in state.current:  # created elsewhere since the last refresh
                     main = self.main_name() or ""
                     state.adopt(self.branches, self.backend.bookmarked_ancestors, main)
@@ -2223,7 +2350,7 @@ class SandboxTUI(App[None]):
         self.push_screen(MessageScreen(title, "\n\n".join(sections)))
 
     def action_op_log(self) -> None:
-        """L: every creation, merge, rebase and run, starting at the highlighted bookmark."""
+        """O: every creation, merge, rebase and run, starting at the highlighted bookmark."""
         name = self.selected_branch_name()
         head = self.graph.state.head(name) if name else None
         self.push_screen(OpLogScreen(self.graph, self.jobs, head.id if head else None))
@@ -2686,13 +2813,13 @@ class SandboxTUI(App[None]):
         targets = self._action_branches()
         if not targets:
             return
-        idle, busy = [], []
+        eligible, skipped = [], []
         for name in targets:
-            reason = self._session_target_error(name) or self.jobs.busy_reason(name, self.sessions)
-            (busy if reason else idle).append(reason or name)
-        for reason in busy:
+            reason = self._session_target_error(name)
+            (skipped if reason else eligible).append(reason or name)
+        for reason in skipped:
             self.notify(f"skipped: {reason}", severity="warning")
-        if not idle:
+        if not eligible:
             return
         last = LastUsed.load(self.repo)
         d = resolve_launch_defaults(self.cfg, last)
@@ -2710,7 +2837,7 @@ class SandboxTUI(App[None]):
                 prompt_text=action.render(name, main, command.args),
                 timeout=action.timeout if action.timeout is not None else d.timeout,
             )
-            for name in idle
+            for name in eligible
         ]
 
         def go() -> None:
@@ -2719,12 +2846,12 @@ class SandboxTUI(App[None]):
                 # Each start re-lists bookmarks and rechecks sessions, as r does.
                 self.call_after_refresh(self._start_launch, spec, remember_defaults=False)
 
-        body = f"Each starts :{command.action} as an unsupervised {specs[0].label()} run."
-        if len(idle) == 1:
+        body = f"Each starts or queues :{command.action} as an unsupervised {specs[0].label()} run."
+        if len(eligible) == 1:
             go()
             return
-        title = f"start :{command.action} on {len(idle)} bookmark{'s' * (len(idle) != 1)}?"
-        self._confirm_targets(idle, title, body, "start", go)
+        title = f"start :{command.action} on {len(eligible)} bookmark{'s' * (len(eligible) != 1)}?"
+        self._confirm_targets(eligible, title, body, "start", go)
 
     async def action_quit(self) -> None:
         """Quit, asking first while runs or sessions are still going (q and ctrl+q)."""

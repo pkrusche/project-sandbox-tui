@@ -12,6 +12,7 @@ from project_sandbox_tui.app import CHEATSHEET, MAIN_BINDINGS
 from project_sandbox_tui.screens.dialogs import HELP, CleanupScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
+from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.screens.tasks import TasksScreen
 
 DOCS = Path(__file__).parent.parent / "docs"
@@ -23,6 +24,7 @@ SPELLING = {
     "question_mark": "?",
     "escape": "esc",
     "colon": ":",
+    "apostrophe": "'",
 }
 PREFIXES = {"g": "gg", "d": "dd"}  # bound per key, typed twice
 
@@ -80,9 +82,10 @@ def test_cheatsheet_lists_every_bookmark_list_key_but_esc() -> None:
         (LogScreen.BINDINGS, "usage.md"),
         (OpLogScreen.BINDINGS, "usage.md"),
         (TasksScreen.BINDINGS, "usage.md"),
+        (QueueScreen.BINDINGS, "usage.md"),
         (CleanupScreen.BINDINGS, "cleanup.md"),
     ],
-    ids=["bookmark-list", "log-viewer", "op-history", "tasks", "cleanup"],
+    ids=["bookmark-list", "log-viewer", "op-history", "tasks", "queue", "cleanup"],
 )
 def test_docs_list_every_key(bindings: list[Binding], doc: str) -> None:
     missing = bound_keys([b for b in bindings if isinstance(b, Binding)]) - docs_keys(doc)
