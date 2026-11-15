@@ -615,6 +615,27 @@ def test_history_keeps_newest_records(tmp_path: Path, monkeypatch: pytest.Monkey
     assert [j.spec.prompt_text for j in jobs.history("topic")] == ["3", "2"]
 
 
+@pytest.mark.parametrize("operation", ["write_text", "replace"])
+def test_failed_archive_leaves_no_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    jobs = JobManager(tmp_path, Config())
+    jobs.save(JobRecord("topic", bg("topic", "go"), 0, "2026-01-01Z", status="completed"))
+    history = jobs._history_dir("topic")
+    original = getattr(Path, operation)
+
+    def fail(path: Path, *args, **kwargs):
+        if path.parent == history:
+            if operation == "write_text":
+                original(path, *args, **kwargs)  # a partial write also needs cleanup
+            raise OSError("disk full")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, fail)
+    assert jobs.clear("topic")  # best-effort archiving must not prevent forgetting
+    assert not list(history.iterdir())
+
+
 def test_discarded_launch_stays_out_of_history(tmp_path: Path) -> None:
     jobs = JobManager(tmp_path, Config())
     first = jobs.record_external(LaunchSpec("topic", "codex"), ["first"])
@@ -646,7 +667,9 @@ def test_external_host_session_lifetime_and_adoption(tmp_path: Path, code: int) 
     second = JobManager(tmp_path, Config())
     assert second.busy_reason("topic", {})
     # No sandbox session, even after its usual external grace period.
-    proc = subprocess.Popen(host_command(argv, job.summary_path), cwd=tmp_path)
+    proc = subprocess.Popen(
+        host_command(argv, job.summary_path), cwd=tmp_path, start_new_session=True
+    )
     wait_for(lambda: Path(job.summary_path).exists())
     second.refresh({}, external_grace_s=-1)
     adopted = second.jobs["topic"]
@@ -677,7 +700,9 @@ def test_external_host_runner_launch_failure_and_missing_runner(tmp_path: Path) 
 
     jobs = JobManager(tmp_path, Config())
     job = jobs.record_external(LaunchSpec("topic", "codex"), [str(tmp_path / "missing")], host=True)
-    proc = subprocess.Popen(host_command(job.argv, job.summary_path), cwd=tmp_path)
+    proc = subprocess.Popen(
+        host_command(job.argv, job.summary_path), cwd=tmp_path, start_new_session=True
+    )
     assert proc.wait(timeout=5) == 127
     [finished] = jobs.refresh({})
     assert (finished.status, finished.exit_code) == ("failed", 127)

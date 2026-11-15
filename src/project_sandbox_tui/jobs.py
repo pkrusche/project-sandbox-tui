@@ -235,8 +235,12 @@ class JobManager:
             target = history / f"{stamp}.json"
             if not target.exists():
                 tmp = history / f".{uuid.uuid4().hex}.tmp"
-                tmp.write_text(text, encoding="utf-8")
-                tmp.replace(target)
+                try:
+                    tmp.write_text(text, encoding="utf-8")
+                    tmp.replace(target)
+                finally:
+                    with contextlib.suppress(OSError):
+                        tmp.unlink(missing_ok=True)
             for old in sorted(history.glob("*.json"))[:-HISTORY_PER_BRANCH]:
                 old.unlink(missing_ok=True)
         except OSError:
@@ -414,6 +418,7 @@ class JobManager:
                     with contextlib.suppress(OSError):
                         path.unlink(missing_ok=True)
                 raise
+            reap_later(proc)
             return job
 
     @contextlib.contextmanager
@@ -691,8 +696,8 @@ class JobManager:
         self._missed = {run: n for run, n in self._missed.items() if run[0] != branch}
 
     def _release_process(self, branch: str) -> None:
-        if proc := self._procs.pop(branch, None):
-            reap_later(proc)
+        # The waiter started at launch owns the child even without this handle.
+        self._procs.pop(branch, None)
 
     def _cancel(self, branch: str, sessions: dict[str, SessionRecord]) -> str:
         job = self.jobs.get(branch)

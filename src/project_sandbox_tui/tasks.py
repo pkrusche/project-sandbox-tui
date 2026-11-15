@@ -178,8 +178,7 @@ class TaskManager:
             with contextlib.suppress(OSError):
                 Path(path).unlink(missing_ok=True)
         self.tasks.pop(task.id, None)
-        if proc := self._procs.pop(task.id, None):
-            reap_later(proc)
+        self._procs.pop(task.id, None)  # the launch's waiter still owns the child
         self._stop_stage.pop(task.id, None)
         self._stop_last.pop(task.id, None)
 
@@ -252,6 +251,7 @@ class TaskManager:
                 proc.wait()
                 self._forget(task)
                 raise
+            reap_later(proc)
             self._prune(bookmark)
             return task
 

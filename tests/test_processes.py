@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import os
 import shlex
 import signal
@@ -11,12 +12,16 @@ from typing import Any
 
 import pytest
 
-from project_sandbox_tui import launchers, notify
-from tests.conftest import wait_for
+from project_sandbox_tui import host_session, launchers, notify
+from project_sandbox_tui.config import Config
+from project_sandbox_tui.jobs import JobManager
+from project_sandbox_tui.sandbox import LaunchSpec
+from project_sandbox_tui.tasks import TaskManager
+from tests.conftest import child_processes, wait_for
 
 
-@pytest.mark.parametrize("launcher", ["notification", "terminal"])
-def test_detached_helper_is_reaped_without_another_spawn(
+@pytest.mark.parametrize("launcher", ["notification", "terminal", "job", "task"])
+def test_detached_child_is_reaped_without_refresh_or_another_spawn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launcher: str
 ) -> None:
     release = tmp_path / "release"
@@ -39,21 +44,31 @@ def test_detached_helper_is_reaped_without_another_spawn(
     monkeypatch.setattr(subprocess, "Popen", spawn)
     if launcher == "notification":
         assert notify.send("title", "body", shlex.join(argv))
-    else:
+    elif launcher == "terminal":
         launchers.start(launchers.ExternalLaunch(argv, "", detached=True), cwd=tmp_path)
+    elif launcher == "job":
+        cfg = Config()
+        cfg.project.base_image = "unused"
+        cfg.sandbox.command = shlex.join(argv)
+        jobs = JobManager(tmp_path, cfg)
+        jobs.start_background(LaunchSpec("topic", "bash", mode="background", prompt_text="go"), {})
+    else:
+        tasks = TaskManager(tmp_path / "state")
+        tasks.start("topic", "&go", shlex.join(argv), tmp_path, os.environ)
     [proc] = children
     assert proc.returncode is None  # the launch returned while the child was still running
     release.touch()
     # poll()/wait() here would hide the leak by reaping the child ourselves.
     wait_for(lambda: proc.returncode is not None)
-    assert proc.returncode == 7
+    assert proc.returncode == (0 if launcher == "task" else 7)  # task wrapper saves the code
     with pytest.raises(ChildProcessError):
         os.waitpid(proc.pid, os.WNOHANG)
 
 
 @pytest.mark.parametrize("grandchild", [False, True])
+@pytest.mark.parametrize("group", ["session", "process_group"])
 def test_test_teardown_stops_children_even_after_an_assertion_failure(
-    tmp_path: Path, grandchild: bool
+    tmp_path: Path, grandchild: bool, group: str
 ) -> None:
     if grandchild and sys.platform != "linux":
         pytest.skip("Linux subreaper regression; other systems use init to reap orphans")
@@ -72,8 +87,9 @@ def test_test_teardown_stops_children_even_after_an_assertion_failure(
         "from pathlib import Path\n"
         "from tests.conftest import child_processes, wait_for\n"
         "def test_failure():\n"
-        f"    proc = subprocess.Popen([sys.executable, '-c', {script!r}], start_new_session=True)\n"
-        f"    Path({str(pid_file)!r}).write_text(str(proc.pid))\n"
+        f"    proc = subprocess.Popen([sys.executable, '-c', {script!r}], "
+        + ("start_new_session=True)\n" if group == "session" else "process_group=0)\n")
+        + f"    Path({str(pid_file)!r}).write_text(str(proc.pid))\n"
         + (f"    wait_for(Path({str(grandchild_file)!r}).exists)\n" if grandchild else "")
         + "    assert False, 'deliberate failure after spawning a child'\n"
     )
@@ -101,3 +117,51 @@ def test_test_teardown_stops_children_even_after_an_assertion_failure(
                 with contextlib.suppress(ChildProcessError):
                     while True:
                         os.waitpid(-int(pid_file.read_text()), 0)
+
+
+def test_test_teardown_closes_child_pipes() -> None:
+    # Run the fixture through its lifetime here so assertions observe teardown.
+    with pytest.MonkeyPatch.context() as patch:
+        cleanup = inspect.unwrap(child_processes)(patch)
+        next(cleanup)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        finally:
+            cleanup.close()
+    assert proc.returncode is not None
+    assert all(
+        stream is not None and stream.closed for stream in (proc.stdin, proc.stdout, proc.stderr)
+    )
+
+
+@pytest.mark.parametrize("operation", ["write_text", "replace"])
+@pytest.mark.parametrize("phase", ["start", "finish"])
+def test_failed_host_summary_write_leaves_no_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, phase: str
+) -> None:
+    summary = tmp_path / "run.summary.json"
+    marker = tmp_path / "started"
+    original = getattr(Path, operation)
+    calls = 0
+
+    def fail(path: Path, *args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        if path == summary.with_suffix(".tmp"):
+            calls += 1
+            if calls == (1 if phase == "start" else 2):
+                if operation == "write_text":
+                    original(path, *args, **kwargs)
+                raise OSError("disk full")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, fail)
+    argv = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"]
+    with pytest.raises(OSError, match="disk full"):
+        host_session.run(summary, argv)
+    assert summary.exists() == marker.exists() == (phase == "finish")
+    assert not summary.with_suffix(".tmp").exists()

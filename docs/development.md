@@ -27,7 +27,8 @@ Tests cover units, Textual Pilot interactions and pseudo-terminal sessions.
   `CODEX_HOME` and `JJ_CONFIG` per test. The offline packaging test reuses uv's
   dependency cache; its checkout and build artifacts live in `tmp_path`.
 - `conftest.py` tracks real child processes and stops and reaps them at teardown,
-  including detached job/task groups when an assertion fails. Keep explicit
+  including detached job/task groups and groups created with `process_group=0`
+  when an assertion fails, and closes their pipes. Keep explicit
   cleanup for resources outside those groups, such as containers and tmux servers.
   On Linux it also adopts and reaps orphaned descendants in those groups, so tests
   do not depend on a container's PID 1 to collect them.

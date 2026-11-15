@@ -87,7 +87,9 @@ def child_processes(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, No
 
     def track(proc: subprocess.Popen[Any], *args: Any, **kwargs: Any) -> None:
         init(proc, *args, **kwargs)
-        children.append((proc, bool(kwargs.get("start_new_session"))))
+        children.append(
+            (proc, bool(kwargs.get("start_new_session")) or kwargs.get("process_group") == 0)
+        )
 
     monkeypatch.setattr(subprocess.Popen, "__init__", track)
     try:
@@ -125,6 +127,11 @@ def child_processes(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, No
                             assert time.monotonic() < deadline, f"child group {proc.pid} survived"
                             time.sleep(0.01)
         finally:
+            for proc, _group in children:
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream is not None:
+                        with contextlib.suppress(OSError):
+                            stream.close()
             if prctl is not None:
                 assert prctl(36, was_subreaper.value, 0, 0, 0) == 0
 

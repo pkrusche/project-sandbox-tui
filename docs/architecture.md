@@ -50,10 +50,10 @@ follow `sandbox.extra_args`.
 4. **Notify:** claim `notified` atomically so only one instance announces completion.
 5. **Restart:** adopt live processes; finalise dead ones.
 
-Detached helpers (notifications, editors, terminal launchers and container stop
-commands) are reaped by daemon waiters. Forgotten or replaced job handles are
-handed to the same waiters so their children are collected even without another
-refresh. Waiters do not stop live processes or delay quitting the TUI.
+Detached jobs, host tasks and helpers (notifications, editors, terminal launchers
+and container stop commands) get daemon waiters at launch, so their children are
+collected even without another refresh or after their manager is discarded.
+Waiters do not stop live processes or delay quitting the TUI.
 
 Inline sessions use temporary job records to mark workspaces busy across
 instances. Host agents use the same reservations. External host agents report
