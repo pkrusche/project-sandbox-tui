@@ -58,9 +58,10 @@ Sessions reuse a bookmark's workspace when it is kept (`keep_workspace`, or
 - **Test sessions on real bookmarks.** Trying out launch options, e.g.
   `project-sandbox --branch=<bookmark> --keep-workspace --fast`, edits that
   bookmark like any other session. Use a throwaway bookmark for experiments.
-- **Sessions started from a shell are not guarded by sbx-tui.** sbx-tui skips
-  bookmarks that already have a session, including ones started from a shell
-  once their project-sandbox session record exists. project-sandbox itself does
+- **Sessions started from a shell are not guarded by sbx-tui.** sbx-tui blocks
+  interactive launches and queues background prompts while a bookmark has a
+  session, including one started from a shell once its project-sandbox session
+  record exists. project-sandbox itself does
   not check sbx-tui's runs, so a session started from a shell on a bookmark that
   sbx-tui is running can share its workspace and both edit the same files.
   Check the bookmark's status column before starting one by hand.
@@ -73,9 +74,8 @@ Sessions reuse a bookmark's workspace when it is kept (`keep_workspace`, or
 
 `i` opens the [launch form](usage.md#launch-form). Select a saved
 [agent profile](configuration.md#agent-profiles) or **custom**, check the command
-preview, then press `enter`. `r` offers the same settings for a background run,
-with a prompt and optional timeout; `ctrl+s` launches it. Profile settings are
-recorded at launch, so editing the profile later affects future runs.
+preview, then press `enter`. For background prompts, use `r` and `ctrl+s` to
+[run or queue](#unsupervised-task-queues).
 
 `ui.terminal` controls where `i` opens the agent. Inline sessions suspend the TUI
 until the agent exits; multiplexer modes fall back to inline outside that multiplexer.
@@ -131,9 +131,6 @@ as `i`. For custom terminals, `{repo}` is the target workspace and `{cmd}` is
 the host command. Host sessions run without project-sandbox or its container
 settings. Main and targets with active agent sessions are protected.
 
-Sandbox profiles are selected only in `i` / `r` launch forms. `I` and `:host`
-use the host command and the agent's own host settings described above.
-
 Host sessions appear as `host agent` or `host agent (ext)` and reserve their
 workspace just like sandbox sessions, including across TUI instances and
 restarts. While one runs, another host or sandbox session cannot start there,
@@ -168,10 +165,11 @@ entry saves its agent, model, effort, profile settings, extra arguments, prompt
 and timeout. Later profile changes do not alter queued entries. Interactive
 sessions (`i` and `I`) must still be started manually and are never queued.
 
-Press `L` on a bookmark to open its queue. The bookmark list shows the pending
-count and whether dispatch is paused. In the queue, `n` adds a task, `e` or
-`enter` edits its prompt and settings, and `p` pauses or resumes dispatch. Pause
-lets the current session finish. Queues for other bookmarks keep running.
+The bookmark list shows the pending count and whether dispatch is paused.
+Press `L` for [queue controls](usage.md#prompt-queue), logs and recorded commits.
+All background prompt runs appear there, including tasks that start immediately
+and dry-run previews. Pausing lets the current session finish; other bookmarks'
+queues keep running.
 
 Queued tasks start one at a time after the previous session ends, including
 failed, timed-out or cancelled sessions. A launch error or a deleted/protected
@@ -180,9 +178,14 @@ bookmark pauses that queue and displays the reason; fix the issue and press
 behavior and are not part of the prompt queue.
 
 Pending tasks, order, pause state, marks, and the last 100 queue edits for
-undo/redo are saved in the repository's state directory and shared across TUI
-instances. Undo never restores a task that has already started. Dispatch runs
+undo/redo are saved in the repository's
+[state directory](configuration.md#state-directory) and shared across TUI
+instances. Task records retain launch settings, status, logs and pinned commit
+links. Completed records
+remain until explicitly deleted, independently of the bounded job history.
+Undo never restores a task that has already started. Dispatch runs
 while at least one sbx-tui instance is open and refreshing; the current detached
 run survives quitting, and remaining tasks resume when sbx-tui reopens. Inline
 interactive sessions suspend refresh until control returns to the TUI. Dry-run
-mode previews submitted prompts without consuming saved queue entries.
+mode previews submitted prompts without consuming saved queue entries or changing
+their order or pause state.

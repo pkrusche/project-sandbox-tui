@@ -19,7 +19,7 @@ import signal
 import subprocess
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -102,6 +102,7 @@ class JobRecord:
     runtime: str = ""
     host: bool = False
     queue_id: str = ""  # durable identity of a dispatched unsupervised task
+    base_commit: str = ""  # pinned immediately before a queued launch
 
     @property
     def mode(self) -> str:
@@ -148,6 +149,7 @@ class JobRecord:
             "runtime": self.runtime,
             "host": self.host,
             "queue_id": self.queue_id,
+            "base_commit": self.base_commit,
         }
 
     @classmethod
@@ -180,6 +182,7 @@ class JobRecord:
             runtime=str(raw.get("runtime") or ""),
             host=bool(raw.get("host")),
             queue_id=str(raw.get("queue_id") or ""),
+            base_commit=str(raw.get("base_commit") or ""),
         )
 
 
@@ -354,7 +357,12 @@ class JobManager:
         )
 
     def start_background(
-        self, spec: LaunchSpec, sessions: dict[str, SessionRecord], *, queue_id: str = ""
+        self,
+        spec: LaunchSpec,
+        sessions: dict[str, SessionRecord],
+        *,
+        queue_id: str = "",
+        base_commit: Callable[[], str] | None = None,
     ) -> JobRecord:
         with self._locked():
             self.load()
@@ -366,6 +374,7 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions)
             if reason:
                 raise BusyError(reason)
+            commit = base_commit() if base_commit else ""
             self._stop_stage.pop(spec.branch, None)
             self._stop_last.pop(spec.branch, None)
             paths = self.new_run_paths(spec.branch)
@@ -397,6 +406,7 @@ class JobManager:
                 summary_path=str(paths.summary),
                 stdout_path=str(paths.stdout),
                 queue_id=queue_id,
+                base_commit=commit,
             )
             self.jobs[spec.branch] = job
             try:

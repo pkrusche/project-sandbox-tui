@@ -53,13 +53,13 @@ sbx-tui             # launch
 Press `?` for full help.
 
 Highlight `@` or a feature bookmark and press `i` for an interactive sandbox
-session or `r` for a background run. Use `:config-profiles` to save an agent setup,
+session or `r` to run or queue a background prompt (`L` manages the queue).
+Use `:config-profiles` to save an agent setup,
 then choose it in either launch form. Select **custom** to adjust settings for a run.
 
-`--init` detects a root `Dockerfile`, Python/uv, Rust/Cargo or Node/npm project
-(in that order). It installs a gitignored `sbx-tui-config` agent skill to help
-tailor the configuration. Existing config and skill files are preserved; see
-[initialization](docs/configuration.md#initialization) for detection and skill paths.
+See [initialization](docs/configuration.md#initialization) for project detection
+and the local `sbx-tui-config` setup skill. Existing config and skill files are
+preserved.
 
 ## Documentation
 

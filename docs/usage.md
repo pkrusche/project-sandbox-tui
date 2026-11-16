@@ -1,17 +1,17 @@
 # Usage and keys
 
-## Command line
+## CLI
 
 ```sh
 sbx-tui [REPO]               # open the TUI; default: current directory
 sbx-tui --version            # show the installed package version
 sbx-tui --init               # detect project type; initialize config, setup skill and model catalog
-sbx-tui --print-config       # show effective config and an interactive command
+sbx-tui --print-config       # show effective config and a working-copy sandbox command
 sbx-tui --trust-config       # review changed project config
 sbx-tui --dry-run            # preview sandbox calls or workspace cleanup
 sbx-tui --update-models      # refresh model suggestions
 sbx-tui --cleanup-workspaces # remove eligible workspaces and bookmarks
-sbx-tui doctor               # check dependencies and runtime
+sbx-tui doctor               # check dependencies, runtime, config and comparisons to main
 sbx-tui config …             # read or edit settings
 ```
 
@@ -19,9 +19,13 @@ Subcommands accept `-R/--repository PATH` and `--config PATH`. Open repositories
 named `config` or `doctor` as `./config` or `./doctor`.
 
 `doctor` checks jj (tested minimum 0.46), project-sandbox ≥ 0.2.2 and runtime
-health; failed checks exit 1. It also warns about untrusted config and missing
-image sources, multiplexers or notifiers. Automatic runtime selection tries
-Apple `container`, Docker, then Podman.
+health; failed checks exit 1, while warnings alone exit 0. It also warns about
+untrusted config and missing image sources, multiplexers or notifiers.
+Automatic runtime selection tries
+Apple `container` on macOS, then Docker and Podman, choosing the first installed
+CLI and checking its health. It also calculates comparisons to main
+and explains unavailable results. Inside the TUI, `:doctor` diagnoses the current
+bookmark list without running dependency or runtime probes.
 
 See [configuration](configuration.md), [models](models.md) and
 [cleanup](cleanup.md) for the corresponding commands.
@@ -48,6 +52,10 @@ omit zeros:
 | `?` | Comparison unavailable, e.g. missing main or conflicted bookmark |
 
 `@` includes edits captured on refresh; its commit counts toward `↑N` even if empty.
+Use `:doctor` to see why a row shows `?`: it reports the baseline, affected
+revisions, and the failing jj command and output when available. The report
+captures the current list so a later successful refresh does not erase the error
+you are inspecting. `R` or `:refresh` retries unavailable comparisons.
 
 The `reviewed` column (`seen` in narrow terminals) shows reviewed file changes
 out of all file changes in commits outside main, for example `2/5`. A file
@@ -60,7 +68,7 @@ to review or the comparison is unavailable. Counts follow the saved marks from
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
 | `/` | Filter (`enter` keeps it, `esc` clears) |
 | `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
-| `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · background run with prompt and optional timeout; `@` uses the current checkout, main requires a new bookmark |
+| `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · run or queue a background prompt with optional timeout; `@` uses the current checkout, main requires a new bookmark |
 | `I` | [Host agent](sessions.md#host-agent-sessions) in each selected workspace, creating missing ones; uses `ui.terminal` |
 | `x` | [Cancel a run](sessions.md#one-sandbox-per-bookmark) or running [tasks](#tasks): repeat to cancel harder, a third time to forget a run; clears a finished status at once; asks first before signalling several |
 | `l` / `enter` | [Logs](#log-viewer) and the latest task output, or run details while a bookmark has neither |
@@ -78,7 +86,7 @@ to review or the comparison is unavailable. Counts follow the saved marks from
 | `o` | Open workspace in editor, first creating a missing one on the bookmark (`jj workspace add`); asks before opening more than three |
 | `W` | [Clean up workspaces](cleanup.md) |
 | `R` · `ctrl+l` | Refresh list · reload configuration |
-| `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs continue; asks first while any are running) |
+| `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs and shell tasks continue; asks first while agent sessions are running) |
 
 Selections apply to `x`, `dd`, `o`, `P`, [`:*`](#running-in-each-workspace) and
 [agent actions](#agent-actions); `l` and `e` require one bookmark.
@@ -101,7 +109,6 @@ The latest [background task](#tasks) follows while it runs or until
 a newer run starts: `:pytest ▶` (`+N` more running), `:pytest ✓`, `:pytest ✗1`
 with its exit status.
 
-
 `e` edits the tip commit's description with `jj describe`. The editor loads the
 full description, including multiple paragraphs; `enter` inserts a newline.
 Saving refreshes the list. If the target changes while the editor is open,
@@ -115,12 +122,9 @@ again since.
 
 ### Switching the working copy
 
-`@` saves an unbookmarked working-copy change, including edits, as
-`saved/<change-id>` for later recovery unless the change is already an ancestor
-of main. It then runs `jj new` on the chosen bookmark and checks out its files.
-This uses the configured main bookmark, or detects `main` / `master` / `trunk`;
-if main is missing or conflicted, the change is saved. Running sessions in `@`
-block the move.
+`@` runs `jj new` on the chosen bookmark and checks out its files, preserving
+the previous working copy as follows. Main is `project.main_branch`, or the
+first existing bookmark main/master/trunk. Running sessions in `@` block the move.
 
 | Previous working-copy state | Recovery bookmark |
 |---|---|
@@ -129,10 +133,8 @@ block the move.
 | Unbookmarked and outside main, even if empty | Creates `saved/<change-id>` |
 | Unbookmarked and main is missing or conflicted | Creates `saved/<change-id>` |
 
-For example, highlight `feature/parser` and press `@`. Unbookmarked edits on the
-old working copy are snapshotted before the move and kept under `saved/…` when
-they are outside main. To return to that work later, highlight the saved bookmark
-and press `@` again, or run `jj new 'saved/<change-id>'` using the actual name.
+Edits are snapshotted before moving. To return, highlight the saved bookmark
+and press `@` again, or run `jj new 'saved/<change-id>'` with the actual name.
 Saved names use the first eight characters of the change ID and add a numeric
 suffix if the name already exists.
 
@@ -158,6 +160,7 @@ removes the workspace instead.
 | `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
 | `:config-profiles` | Create or edit saved agent profiles in the project config |
+| `:doctor` | Explain unavailable comparisons to main in a scrollable report; `sbx-tui doctor` also checks dependencies, runtime and configuration |
 
 | Key | Action in the command line |
 |---|---|
@@ -206,49 +209,35 @@ completion and leader mappings.
 
 ### Background commands
 
-Use `:&!uv run pytest` or `:&test` to start a command in the background and
-keep using the TUI. It runs once in the repository root, ignoring marked rows,
-with the same environment as the foreground form. The task is tracked under
-`@` because it runs in the repository, even when another bookmark is highlighted.
-It does not create a workspace.
-
 Put `&` before `!` or the configured command name. A trailing shell `&`, as
 in `:!uv run pytest &`, does not create a tracked sbx-tui background task.
 
-`T` lists the task and opens its captured output with `enter`; `x` in that view
-cancels it. On the bookmark list, `l` and `x` on `@` show its output and cancel
-it. Tasks keep running after sbx-tui exits. For one task per selected workspace,
-use `:*` below. Both forms support command history, completion and leader mappings.
+Repository background tasks appear under `@`; on the bookmark list, `l` opens
+their output and `x` cancels them. [`T`](#tasks) lets you inspect or cancel one
+task at a time.
 
 ### Running in each workspace
 
-`:*` runs a shell command once per target: the marked rows, or the highlighted
-one, as for `x` and `o`. Use it to run tests in several bookmarks at once:
-`:*!uv run pytest -x`, or `:*test` for a `[commands]` entry. Each runs in the
-background in its bookmark's workspace (the repository for `@`); a missing
-workspace is created first, as `o` does. `SBX_BOOKMARK` and `SBX_WORKSPACE`
-name that target. More than three targets ask first. A sandbox session on a
-target does not block the command; a warning says it may still be changing
-the files. Tasks don't block sandbox runs either. `W` keeps a workspace while a
-task runs in it, and `dd` and `@` list the running tasks and ask first.
+Use `:*test` or `:*!uv run pytest -x` to run tests in the target workspaces
+as described in the comparison above. More than three targets ask first.
+An agent session on a target does not block the command; a warning says it may
+still be changing the files. Tasks don't block agent runs either. `W` keeps a
+workspace while a task runs in it, and `dd` and `@` list the running tasks and
+ask first.
 
-Tasks keep running after sbx-tui exits. The status column, header and a
-notification show how each ended. `l` shows the output (`tab` switches to the
-run's logs), `P` lists recent tasks and [`T`](#tasks) shows those of every
-workspace. `x` sends SIGINT to the target's
-running tasks, then SIGTERM and SIGKILL on further presses. Output is kept in
-the [state directory](configuration.md#state-directory), the last ten tasks per
-bookmark. Running tasks and completions awaiting notification are kept until they
-finish and are announced, then older records and their output are pruned.
+On the bookmark list, `l` shows the target's latest task output (`tab` switches
+to the agent run's logs), and `P` lists recent tasks. `x` signals all running
+tasks on the target; use [`T`](#tasks) to cancel a single task.
 
 ### Agent actions
 
 An [`[actions]`](configuration.md#agent-actions) entry names a prompt: `:review`
 starts it as an unsupervised sandbox run on each target, like `r` with the
 prompt filled in. Words after the name are appended to the prompt, e.g.
-`:review focus on error handling`. Targets already running a session receive a queued prompt; the protected main
+`:review focus on error handling`. Busy targets and targets with pending or paused
+queues receive a queued prompt; the protected main
 bookmark is skipped. `@` runs in the current checkout.
-sbx-tui asks first for several runnable targets. Action runs use the launch
+sbx-tui asks first for several eligible targets. Action runs use the launch
 defaults unless the action sets its own agent, model, effort or timeout. They
 don't change the remembered defaults or the prompt history.
 
@@ -352,6 +341,16 @@ bookmark's latest task.
 | `x` | Cancel a running task, harder on each press; forget a finished one and its output |
 | `q` / `esc` / `h` / `T` | Back to the list |
 
+Cancellation sends SIGINT, then SIGTERM and SIGKILL on further presses. The status
+column, header and a notification report completion. Tasks keep running after
+sbx-tui exits; shell tasks alone do not trigger a quit confirmation. Completion
+notifications wait until a TUI instance refreshes the repository.
+
+Records and output are kept in the
+[state directory](configuration.md#state-directory), the last ten tasks per
+bookmark. Running tasks and completions awaiting notification are retained until
+they finish and are announced, then older records and their output are pruned.
+
 ## Diff review
 
 For a single bookmark (or `@`), `=` opens a file review for each commit in
@@ -370,12 +369,6 @@ Positions are separate for each bookmark and baseline, or each ordered pair of
 revisions in a direct comparison. They reset when sbx-tui exits and are not
 shared with other TUI instances. The saved row is a position in the table;
 if the file list changes, that row may identify a different file.
-
-For example, review three commits of `feature/parser`, select a file in the third,
-and press `q` to check another bookmark. Reopening `feature/parser` with `=`
-returns to that commit and row. If the commit was rewritten or merged into main,
-the review starts at its first remaining commit. Seen marks persist separately
-as described below.
 
 | Key | Action |
 |---|---|
@@ -445,12 +438,12 @@ not snapshotted are recorded first and can be recovered via `jj op log`), and
 | `tab` | Next field (`j`/`k` on choice fields) |
 | `h` `l` | Cycle profile, or agent, effort, model and fast mode under Custom |
 | `enter` | Launch interactive session; newline in a background prompt |
-| `ctrl+s` / `ctrl+enter` | Launch background run (or click **launch**); `ctrl+enter` requires terminal support |
-| `esc` | Cancel, keeping an edited background prompt as a draft |
+| `ctrl+s` / `ctrl+enter` | Submit a background prompt (or click the submit button): run or queue from `r`, save or add from `L`; `ctrl+enter` requires terminal support |
+| `esc` | Cancel; `r` keeps an edited background prompt as a draft |
 
-The form remembers launch choices per repository; see
-[defaults and precedence](configuration.md#settings-reference). A bookmark
-name that does not exist yet is flagged under the field: launching creates it
+Interactive launches and accepted `r` submissions remember launch choices per
+repository; see [defaults and precedence](configuration.md#settings-reference).
+A bookmark name that does not exist yet is flagged under the field: submitting creates it
 from the highlighted bookmark.
 
 Choose a saved [agent profile](configuration.md#agent-profiles), or **custom**
@@ -463,24 +456,24 @@ Profiles are also available in merge and rebase forms.
 Under Custom, **CLI args** accepts project-sandbox arguments with shell quoting,
 for example `--memory=16g --extra-domain example.org`. These follow the configured
 `sandbox.extra_args`. The preview updates as fields change; invalid quoting shows
-an error and prevents launching. A successful Custom launch remembers these
-arguments per repository, including across restarts.
+an error and prevents submitting.
 
 For Codex and Claude, the Custom **fast** field enables fast mode in interactive
 and background runs. It requires project-sandbox 0.3.1 or later and adds `--fast`
-to the command preview. It starts off unless `defaults.fast = true` is configured;
-successful launches remember the choice separately for each agent. Other agents
-hide the field and do not receive the flag. Named profiles use their own `fast`
-setting. Agent actions use the remembered preference or defaults.
+to the command preview. Other agents hide the field and do not receive the flag.
+Named profiles use their own `fast` setting. Agent actions use the remembered
+preference or defaults.
 
-An edited background prompt that was cancelled, or whose launch failed, comes
+An edited background prompt cancelled from `r`, or whose submission failed, comes
 back the next time `r` opens on the same bookmark (or the same merge inputs),
-until a launch starts. Drafts last until sbx-tui exits; launched prompts go to
-the [prompt history](#prompt-history).
+until a submission is accepted. Drafts last until sbx-tui exits; submitted prompts
+go to the [prompt history](#prompt-history).
 
 ## Prompt history
 
-Each repository remembers the latest 500 distinct launched background prompts.
+Each repository remembers the latest 500 distinct background prompts submitted
+from `r` or saved in `L`, including queued prompts. Configured agent actions do
+not add to this history.
 
 | Key | Action in the prompt box |
 |---|---|
@@ -493,19 +486,24 @@ Each repository remembers the latest 500 distinct launched background prompts.
 ## Prompt queue
 
 Press `L` on a bookmark to manage its persistent [unsupervised queue](sessions.md#unsupervised-task-queues).
-The list contains pending tasks in execution order. Pause with `p` before
-editing if you want the whole list to remain pending while the bookmark is idle.
+The list shows pending tasks in execution order, followed by running and finished
+tasks, newest first. Each row shows its status and the commits it produced.
+Adding or editing a task, deleting, reordering, and undo/redo automatically pause
+this bookmark's queue. Press `p` to resume when you are done, even if you cancelled
+the editor. A running session continues, and other bookmarks' queues keep running.
 
 | Key | Action |
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
 | `/` | Filter prompts; `enter` keeps the filter, `esc` clears it |
 | `n` / `r` | Add a prompt with the launch form; `ctrl+s` queues it |
-| `e` / `l` / `enter` | Edit the highlighted task's prompt and launch settings; `ctrl+s` saves |
-| `dd` | Delete selected tasks, or the highlighted task |
+| `e` / `l` / `enter` | Edit a pending task (`ctrl+s` saves); open the log of a running or finished task |
+| `P` | Task details, full prompt, run times, log path and full commit IDs |
+| `c` | Review the commits in the task's recorded revision range |
+| `dd` | Delete selected tasks, or the highlighted task; running tasks must finish first |
 | `J` / `K` | Move selected tasks down/up one position |
 | `v` / `V` · `space` | Select a range / mark individual tasks; `esc` clears selection |
-| `u` · `ctrl+r` | Undo / redo queue edits, including additions, deletions and reordering |
+| `u` · `ctrl+r` | Undo / redo pending-task edits, including additions, deletions and reordering; deleting finished tasks is permanent |
 | `m` then a letter | Save a named mark on the highlighted task |
 | `'` or `backtick`, then a letter | Jump to a named mark, clearing the filter |
 | `p` | Pause / resume this bookmark's queue without stopping a running session |

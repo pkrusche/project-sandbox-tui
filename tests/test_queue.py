@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -11,11 +13,12 @@ from textual.widgets import Input, TextArea
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config
-from project_sandbox_tui.jobs import JobManager
-from project_sandbox_tui.queue import TaskQueue
+from project_sandbox_tui.jobs import BusyError, JobManager
+from project_sandbox_tui.queue import BookmarkQueue, TaskQueue
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.queue import QueueScreen
+from project_sandbox_tui.vcs import VcsError
 from tests.conftest import wait_for
 from tests.test_app import run_app, wait_for_screen, wait_until
 
@@ -297,18 +300,477 @@ def test_newer_queue_state_is_preserved(tmp_path: Path) -> None:
     assert queue.path.read_text() == contents
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("target", ["@", "feature/x"])
+def test_immediate_background_launch_retains_task(
+    repo: Path, fake_cfg: Callable[..., Config], dry_run: bool, target: str
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        await app.refresh_data()
+        app.dry_run = dry_run
+        if dry_run:
+            app.cfg.sandbox.extra_args.append("--dry-run")
+        spec = prompt("sleep:0.1 immediate run", target)
+        app._start_launch(spec)
+        job = app.jobs.jobs[target]
+        stored = TaskQueue(app.jobs.state_dir)
+        stored.load()
+        queue = stored.get(target)
+        assert not queue.tasks
+        (task,) = queue.history
+        assert task.id == job.queue_id
+        assert task.spec == spec
+        assert task.job and task.job.running
+        assert task.base_commit == app.backend._description_commit(target)
+        assert task.base_commit == job.base_commit
+        assert (stored.tasks_dir / f"{task.id}.json").is_file()
+        await wait_until(
+            pilot, lambda: (app.jobs.refresh({}), not app.jobs.jobs[target].running)[1]
+        )
+        await app.refresh_data()
+        app.jobs.clear(target)
+        await app.refresh_data()
+        stored.load()
+        (finished,) = stored.get(target).history
+        assert finished.id == task.id and finished.status == "completed"
+        assert finished.result_commit == task.base_commit
+        assert finished.job and any(p.is_file() for p in finished.job.output_files())
+        if target == "feature/x":
+            await pilot.press("j")
+        await pilot.press("L")
+        screen = await wait_for_screen(app, pilot, QueueScreen)
+        assert screen.visible_ids() == [task.id]
+        assert "completed" in [str(c) for c in screen.table.get_row(task.id)]
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_dry_run_does_not_consume_pending_tasks(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         app.dry_run = True
         app.cfg.sandbox.extra_args.append("--dry-run")
-        app.queue.add(prompt("real pending task"))
+        pending = app.queue.add(prompt("real pending task"))
+        app.queue.pause("feature/x", True)
+        before = app.queue.get("feature/x").to_dict()
         await app.refresh_data()
         assert not app.jobs.jobs
         app._start_launch(prompt("sleep:0.1 preview"))
         await wait_until(pilot, lambda: not app.jobs.jobs["feature/x"].running)
         assert "--dry-run" in app.jobs.jobs["feature/x"].argv
         assert prompts(app.queue) == ["real pending task"]
+        queue = app.queue.get("feature/x")
+        assert queue.tasks[0].id == pending.id
+        assert queue.paused
+        assert queue.to_dict()["undo"] == before["undo"]
+        assert len(queue.history) == 1
+        assert queue.history[0].id == app.jobs.jobs["feature/x"].queue_id
+        assert queue.history[0].spec.prompt_text == "sleep:0.1 preview"
 
     run_app(repo, fake_cfg(), scenario)
+
+
+def test_immediate_launch_failure_preserves_pending_queue(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(prompt("real pending task"))
+    queue.pause("feature/x", True)
+    before = queue.path.read_bytes()
+    reservation = jobs.record_external(LaunchSpec("feature/x", "claude"), ["external"])
+    with pytest.raises(BusyError):
+        queue.start(prompt("preview"), jobs, {})
+    assert queue.path.read_bytes() == before
+    assert prompts(queue) == ["real pending task"]
+    assert not queue.get("feature/x").history
+    assert jobs.jobs["feature/x"].started_at == reservation.started_at
+
+
+def test_legacy_queue_migrates_to_individual_records(tmp_path: Path) -> None:
+    import json
+
+    from project_sandbox_tui.config import STATE_VERSION
+
+    queue = TaskQueue(tmp_path)
+    task_id = "a" * 32
+    legacy = {"id": task_id, "spec": prompt("old prompt").to_dict()}
+    queue.path.write_text(
+        json.dumps(
+            {
+                "version": STATE_VERSION,
+                "bookmarks": {
+                    "feature/x": {
+                        "tasks": [legacy],
+                        "undo": [[]],
+                        "marks": {"a": task_id},
+                        "paused": True,
+                    }
+                },
+            }
+        )
+    )
+    assert prompts(queue) == ["old prompt"]
+    queue.edit("feature/x", task_id, prompt("edited"))
+    raw = json.loads(queue.path.read_text())
+    assert raw["bookmarks"]["feature/x"]["tasks"] == [task_id]
+    record = json.loads((queue.tasks_dir / f"{task_id}.json").read_text())
+    assert record["spec"]["prompt_text"] == "edited"
+    other = TaskQueue(tmp_path)
+    other.undo("feature/x")
+    assert prompts(other) == ["old prompt"]
+    assert other.get("feature/x").paused
+    assert other.get("feature/x").marks == {"a": task_id}
+
+
+@pytest.mark.parametrize("broken", ["missing", "corrupt", "wrong-id"])
+def test_bad_task_record_preserves_queue(tmp_path: Path, broken: str) -> None:
+    import json
+
+    queue = TaskQueue(tmp_path)
+    task = queue.add(prompt("keep this"))
+    before = queue.path.read_bytes()
+    path = queue.tasks_dir / f"{task.id}.json"
+    if broken == "missing":
+        path.unlink()
+    elif broken == "corrupt":
+        path.write_text("{")
+    else:
+        raw = json.loads(path.read_text())
+        raw["id"] = "b" * 32
+        path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="cannot read task queue"):
+        queue.add(prompt("should not be saved"))
+    assert queue.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("fail_on", ["record", "index"])
+def test_queue_recovers_partial_multifile_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_on: str,
+) -> None:
+    import project_sandbox_tui.queue as module
+
+    queue = TaskQueue(tmp_path)
+    task = queue.add(prompt("original"))
+    write = module.write_state
+    target = queue.path if fail_on == "index" else queue.tasks_dir / f"{task.id}.json"
+
+    def fail(path: Path, data: Any, *, durable: bool = False) -> None:
+        if path == target:
+            raise OSError("disk full")
+        write(path, data, durable=durable)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "write_state", fail)
+        with pytest.raises(OSError, match="disk full"):
+            queue.edit("feature/x", task.id, prompt("saved draft"))
+    other = TaskQueue(tmp_path)
+    assert prompts(other) == ["saved draft"]
+    assert not other.journal.exists()
+    other.undo("feature/x")
+    assert prompts(other) == ["original"]
+
+
+def test_finished_tasks_keep_logs_and_commits_until_deleted(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    queue = TaskQueue(jobs.state_dir)
+    first = queue.add(prompt("sleep:0.1 exit:3 first"))
+    second = queue.add(prompt("sleep:0.1 second"))
+    calls = []
+
+    def commit(branch: str) -> str:
+        calls.append(branch)
+        return "base" if len(calls) == 1 else "result"
+
+    queue.dispatch(jobs, lambda: {}, lambda _: None, commit)
+    with pytest.raises(ValueError, match="running tasks"):
+        queue.delete("feature/x", [first.id, second.id])
+    queue.dispatch(jobs, lambda: {}, lambda _: None, commit)
+    assert calls == ["feature/x"]  # a busy run must not pin the next task's base
+    wait_for(lambda: bool(jobs.refresh({})))
+    queue.refresh(jobs, lambda _: ("result", ["commit-one", "result"]))
+    queue.dispatch(jobs, lambda: {}, lambda _: None, commit)
+    wait_for(lambda: bool(jobs.refresh({})))
+    queue.refresh(jobs)
+    old = queue.get("feature/x").history[0]
+    assert old.status == "failed" and old.job and old.job.exit_code == 3
+    assert old.base_commit == "base" and old.result_commit == "result"
+    assert old.commits == ["commit-one", "result"]
+    assert queue.get("feature/x").history[1].base_commit == "result"
+    assert old.job.output_files()[-1].read_text()
+    # Retention is independent of the bounded job history and the latest run.
+    for path in jobs.jobs_dir.rglob("*.json"):
+        path.unlink()
+    restored = TaskQueue(jobs.state_dir)
+    restored.refresh(jobs)
+    assert [t.status for t in restored.get("feature/x").history] == ["failed", "completed"]
+    assert restored.get("feature/x").history[0].to_dict() == old.to_dict()
+    restored.delete("feature/x", [first.id])
+    restored.undo("feature/x")
+    restored.undo("feature/x", redo=True)
+    assert [t.id for t in restored.get("feature/x").entries] == [second.id]
+    assert not (restored.tasks_dir / f"{first.id}.json").exists()
+    assert restored.dispatch(jobs, lambda: {}, lambda _: None) == []
+
+
+@pytest.mark.parametrize("save", [True, False])
+def test_edit_pauses_dispatch_across_instances(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    save: bool,
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        await app.refresh_data()
+        task = app.queue.add(prompt("original"))
+        await pilot.press("j", "L", "e")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        other = TaskQueue(app.jobs.state_dir)
+        other.load()
+        assert other.get("feature/x").paused
+        assert other.dispatch(app.jobs, lambda: {}, lambda _: None) == []
+        form.query_one("#prompt", TextArea).text = "updated"
+        await pilot.press("ctrl+s" if save else "escape")
+        await wait_for_screen(app, pilot, QueueScreen)
+        assert prompts(other) == ["updated" if save else "original"]
+        assert other.get("feature/x").paused
+        assert other.get("feature/x").tasks[0].id == task.id
+        await pilot.press("p")
+        other.load()
+        assert not other.get("feature/x").paused
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_task_list_keeps_pinned_commits_and_opens_finished_logs(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+) -> None:
+    from project_sandbox_tui.screens.dialogs import MessageScreen
+    from project_sandbox_tui.screens.log import LogScreen
+    from project_sandbox_tui.screens.review import CommitReviewScreen
+    from tests.conftest import jj
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        await app.refresh_data()
+        task = app.queue.add(prompt("sleep:0.1 tracked run"))
+        job = app._dispatch_queue()[0]
+        # Deliberately omit graph recording, as after a crash just after launch.
+        base = job.base_commit
+        jj(repo, "new", "feature/x")
+        (repo / "produced.txt").write_text("first change\n")
+        jj(repo, "commit", "-m", "first task commit")
+        first = app.backend._jj("log", "--no-graph", "-r", "@-", "-T", "commit_id").strip()
+        (repo / "produced.txt").write_text("second change\n")
+        jj(repo, "commit", "-m", "second task commit")
+        jj(repo, "bookmark", "set", "feature/x", "-r", "@-")
+        result = app.backend._bookmark_commit("feature/x")
+        wait_for(lambda: bool(app.jobs.refresh({})))
+        await app.refresh_data()
+        tracked = app.queue.get("feature/x").history[0]
+        assert tracked.status == "completed"
+        assert tracked.base_commit == base and tracked.result_commit == result
+        assert tracked.commits == [first, result]
+        # The next run and later bookmark changes cannot change this task's links.
+        app.queue.add(prompt("sleep:0.1 later run"))
+        app._dispatch_queue()
+        jj(repo, "describe", "feature/x", "-m", "later rewritten commit")
+        wait_for(lambda: bool(app.jobs.refresh({})))
+        await app.refresh_data()
+        assert app.queue.get("feature/x").history[0].commits == [first, result]
+        await pilot.press("j", "L")
+        screen = await wait_for_screen(app, pilot, QueueScreen)
+        assert screen.table.row_count == 2
+        screen.table.move_cursor(row=screen.visible_ids().index(task.id))
+        assert "completed" in [str(c) for c in screen.table.get_row(task.id)]
+        await pilot.press("enter")
+        log = await wait_for_screen(app, pilot, LogScreen)
+        assert log.job and log.job.status == "completed"
+        assert log.current in job.output_files()
+        await pilot.press("q", "P")
+        details = await wait_for_screen(app, pilot, MessageScreen)
+        assert first in details.body
+        await pilot.press("q", "c")
+        await wait_for_screen(app, pilot, CommitReviewScreen)
+        await pilot.press("q", "d", "d")
+        await wait_for_screen(app, pilot, QueueScreen)
+        assert task.id not in screen.visible_ids()
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("journal", ['{"version": 999}', '{"version": 1}', "[]"])
+def test_corrupt_recovery_journal_is_reported_without_overwriting(
+    tmp_path: Path,
+    journal: str,
+) -> None:
+    queue = TaskQueue(tmp_path)
+    queue.add(prompt("keep this"))
+    before = queue.path.read_bytes()
+    queue.journal.write_text(journal)
+    with pytest.raises(ValueError, match="cannot recover task queue"):
+        queue.add(prompt("do not overwrite"))
+    assert queue.path.read_bytes() == before
+    assert queue.journal.read_text() == journal
+
+
+def test_commit_lookup_failure_pauses_only_its_queue(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+) -> None:
+    from project_sandbox_tui.vcs import VcsError
+
+    jobs = JobManager(repo, fake_cfg())
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(prompt("sleep:0.1", "broken"))
+    queue.add(prompt("sleep:0.1", "healthy"))
+
+    def commit(branch: str) -> str:
+        if branch == "broken":
+            raise VcsError("ambiguous bookmark")
+        return "base"
+
+    started = queue.dispatch(jobs, lambda: {}, lambda _: None, commit)
+    assert [j.branch for j in started] == ["healthy"]
+    assert queue.get("broken").paused
+    assert queue.get("broken").error == "ambiguous bookmark"
+    assert prompts(queue, "broken") == ["sleep:0.1"]
+    wait_for(lambda: bool(jobs.refresh({})))
+
+
+def test_forgetting_running_job_leaves_deletable_task_history(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    queue = TaskQueue(jobs.state_dir)
+    task = queue.add(prompt("sleep:10"))
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    log_source = queue.get("feature/x").history[0].job
+    assert log_source and log_source.running
+    jobs.clear("feature/x", force=True)
+    queue.refresh(jobs)
+    assert log_source.status == "orphaned"
+    finished = log_source.ended_at
+    queue.refresh(jobs)
+    assert log_source.status == "orphaned" and log_source.ended_at == finished
+    queue.delete("feature/x", [task.id])
+    assert not queue.get("feature/x").entries
+
+
+@pytest.mark.parametrize("abort", [False, True])
+def test_queue_readers_see_only_committed_transactions(tmp_path: Path, abort: bool) -> None:
+    queue = TaskQueue(tmp_path)
+    queue.add(prompt("original"))
+    editing, release = Event(), Event()
+
+    def edit() -> None:
+        with queue.transaction() as queues:
+            queues["feature/x"].tasks[0].spec.prompt_text = "updated"
+            queues["other"] = BookmarkQueue(paused=True)
+            editing.set()
+            assert release.wait(5)
+            if abort:
+                raise RuntimeError("abort edit")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(edit)
+        try:
+            assert editing.wait(5)
+            assert queue.get("feature/x").tasks[0].spec.prompt_text == "original"
+            assert "other" not in queue.queues
+        finally:
+            release.set()
+        if abort:
+            with pytest.raises(RuntimeError, match="abort edit"):
+                future.result(timeout=5)
+        else:
+            future.result(timeout=5)
+    assert queue.get("feature/x").tasks[0].spec.prompt_text == ("original" if abort else "updated")
+    assert ("other" in queue.queues) is not abort
+    assert prompts(TaskQueue(tmp_path)) == ["original" if abort else "updated"]
+
+
+@pytest.mark.parametrize("failure", ["outcome", "validation"])
+def test_bookmark_lookup_errors_do_not_block_other_queues(
+    repo: Path, fake_cfg: Callable[..., Config], failure: str
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    queue = TaskQueue(jobs.state_dir)
+    if failure == "outcome":
+        queue.add(prompt("sleep:0.1", "broken"))
+        queue.dispatch(jobs, lambda: {}, lambda _: None)
+        wait_for(lambda: bool(jobs.refresh({})))
+    queue.add(prompt("pending", "broken"))
+    queue.add(prompt("sleep:0.1", "healthy"))
+
+    def outcome(task: Any) -> tuple[str, list[str]] | None:
+        raise VcsError("cannot resolve old revision")
+
+    def valid(branch: str) -> str | None:
+        if failure == "validation" and branch == "broken":
+            raise VcsError("cannot resolve old revision")
+        return None
+
+    started = queue.dispatch(jobs, lambda: {}, valid, outcome=outcome)
+    assert [j.branch for j in started] == ["healthy"]
+    assert queue.get("broken").paused
+    assert queue.get("broken").error == "cannot resolve old revision"
+    assert prompts(queue, "broken") == ["pending"]
+    if failure == "outcome":
+        assert queue.get("broken").history[0].status == "completed"
+    wait_for(lambda: bool(jobs.refresh({})))
+
+
+@pytest.mark.parametrize("broken", ["wrong-branch", "duplicate-id"])
+def test_recovery_validates_bookmark_invariants_before_writing(tmp_path: Path, broken: str) -> None:
+    from project_sandbox_tui.config import STATE_VERSION
+
+    queue = TaskQueue(tmp_path)
+    task = queue.add(prompt("original"))
+    task_path = queue.tasks_dir / f"{task.id}.json"
+    index_before, task_before = queue.path.read_bytes(), task_path.read_bytes()
+    bookmarks = {name: q.to_dict() for name, q in queue.queues.items()}
+    bookmarks["feature/x"]["tasks"][0]["spec"]["prompt_text"] = "do not persist"
+    if broken == "wrong-branch":
+        bookmarks["other"] = bookmarks.pop("feature/x")
+    else:
+        bookmarks["feature/x"]["tasks"] *= 2
+    journal = json.dumps({"version": STATE_VERSION, "bookmarks": bookmarks})
+    queue.journal.write_text(journal)
+    with pytest.raises(ValueError, match="cannot recover task queue"):
+        queue.load()
+    assert queue.path.read_bytes() == index_before
+    assert task_path.read_bytes() == task_before
+    assert queue.journal.read_text() == journal
+
+
+def test_valid_journal_repairs_corrupt_task_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import project_sandbox_tui.queue as module
+
+    queue = TaskQueue(tmp_path)
+    task = queue.add(prompt("original"))
+    write = module.write_state
+
+    def fail(path: Path, data: Any, *, durable: bool = False) -> None:
+        if path == queue.path:
+            raise OSError("disk full")
+        write(path, data, durable=durable)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "write_state", fail)
+        with pytest.raises(OSError, match="disk full"):
+            queue.edit("feature/x", task.id, prompt("recover this"))
+    (queue.tasks_dir / f"{task.id}.json").write_text("{")
+    assert prompts(queue) == ["recover this"]
+    assert not queue.journal.exists()

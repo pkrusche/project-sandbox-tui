@@ -153,6 +153,28 @@ def test_bookmark_comparison_markers(
     run_app(repo, fake_cfg(main_branch=main), scenario)
 
 
+def test_queue_refresh_preserves_main_comparisons(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import Mock
+
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        dispatch = Mock(return_value=[])
+        monkeypatch.setattr(app, "_dispatch_queue", dispatch)
+        app.queue.add(LaunchSpec("feature/x", "claude", mode="background", prompt_text="queued"))
+        await app.refresh_data()
+        # An in-flight periodic refresh can coalesce with this explicit refresh.
+        dispatch.assert_called()
+        assert str(app.table.get_cell("main", "vs main")) == "="
+        assert str(app.table.get_cell("feature/x", "vs main")) == "↑1 Δ1"
+        assert all(b.comparison is not None for b in app.branches)
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Config]) -> None:
     from textual.containers import VerticalScroll
     from textual.widgets import Log
@@ -1243,7 +1265,8 @@ def test_cheatsheet_shown_on_start_and_toggles(repo: Path, fake_cfg: Callable[..
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         sheet = app.main.query_one("#cheatsheet")
         assert sheet.region.height > 0
-        assert "unsupervised" in app.export_screenshot()  # drawn on the welcome screen
+        shot = app.export_screenshot().replace("&#160;", " ")
+        assert "run or queue prompt" in shot  # drawn on the welcome screen
         await pilot.press("H")
         await pilot.pause()
         assert sheet.region.height == 0 and app.main.query_one("#footer").region.height == 1

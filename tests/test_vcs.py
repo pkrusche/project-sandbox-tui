@@ -78,6 +78,10 @@ def test_main_comparison_baseline(repo: Path, main: str) -> None:
     branches = {b.name: b for b in backend.list_branches(compare_to_main=configured)}
     assert branches["feature/x"].comparison == vcs.MainComparison(1, 0, 1)
     assert all(b.comparison is None for b in backend.list_branches(compare_to_main="missing"))
+    assert all(
+        b.comparison_error == "configured main bookmark 'missing' does not exist"
+        for b in backend.list_branches(compare_to_main="missing")
+    )
 
 
 def test_main_comparison_merge_and_equal_trees(repo: Path) -> None:
@@ -101,16 +105,28 @@ def test_main_comparison_error_retries(repo: Path, monkeypatch: pytest.MonkeyPat
 
     def fail_diff(*args: str) -> str:
         if args[0] == "diff":
-            raise vcs.VcsError("comparison unavailable")
+            raise vcs.VcsError("comparison unavailable", detail="jj diff failed: full diagnostic")
         return original(*args)
 
     monkeypatch.setattr(backend, "_jj", fail_diff)
     branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
     assert branches["main"].comparison == vcs.MainComparison(0, 0, 0)
     assert branches["feature/x"].comparison is None
+    assert branches["feature/x"].comparison_error == "jj diff failed: full diagnostic"
+    assert not branches["main"].comparison_error
     monkeypatch.setattr(backend, "_jj", original)
     branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
     assert branches["feature/x"].comparison == vcs.MainComparison(1, 0, 1)
+    assert not branches["feature/x"].comparison_error
+
+
+def test_vcs_error_retains_command_and_full_output(repo: Path) -> None:
+    with pytest.raises(vcs.VcsError) as error:
+        vcs.detect(repo)._jj("diff", "--invalid-option-for-doctor")
+    assert "jj --no-pager" in error.value.detail
+    assert "--invalid-option-for-doctor" in error.value.detail
+    assert "error:" in error.value.detail
+    assert "Usage:" in error.value.detail
 
 
 def test_working_copy_comparison_snapshots_edits_and_bookmarks(repo: Path) -> None:
@@ -134,6 +150,10 @@ def test_working_copy_comparison_snapshots_edits_and_bookmarks(repo: Path) -> No
     assert comparisons()["@"] == vcs.MainComparison(0, 0, 0)
     jj(repo, "bookmark", "delete", "main")
     assert comparisons()["@"] is None
+    assert all(
+        b.comparison_error == "no local main, master or trunk bookmark found"
+        for b in backend.list_branches(compare_to_main="")
+    )
 
 
 def test_not_a_repo(tmp_path: Path) -> None:
@@ -691,8 +711,12 @@ def test_fast_forward_refuses_conflicted_bookmarks(repo: Path, name: str) -> Non
     before = backend._jj("bookmark", "list")  # integrate the concurrent operations
     branches = {b.name: b for b in backend.list_branches(compare_to_main="")}
     assert branches[name].comparison is None
+    assert f"bookmark {name!r} is conflicted" in branches[name].comparison_error
     if name == "main":
         assert all(b.comparison is None for b in branches.values())
+        assert all(
+            "main bookmark 'main' is conflicted" in b.comparison_error for b in branches.values()
+        )
     with pytest.raises(vcs.VcsError, match="unambiguous target"):
         backend.fast_forward("main", "feature/x")
     assert backend._jj("bookmark", "list") == before

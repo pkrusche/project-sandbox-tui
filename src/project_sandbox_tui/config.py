@@ -781,7 +781,7 @@ base_image = "python:3.12-slim"
 # worktree_dir = ""                    # -> --worktree-dir (default: sibling <repo>-workspaces)
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new bookmarks
-# main_branch = "main"                 # cleanup offers workspaces/bookmarks fully merged into this
+# main_branch = "main"                 # baseline for diff, fast-forward, @ saves and cleanup
 
 # [defaults]
 # agent = "claude"                     # claude | codex | opencode | pi | bash

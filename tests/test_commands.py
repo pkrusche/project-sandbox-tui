@@ -22,6 +22,7 @@ CONFIGURED = {"test": "uv run pytest", "lint": "uv run ruff check ."}
         ("q", "quit", ""),
         ("quit", "quit", ""),
         ("help", "help", ""),
+        ("doctor", "doctor", ""),
         ("reload", "reload", ""),
     ],
 )
@@ -38,6 +39,9 @@ def test_parse(line: str, builtin: str, script: str) -> None:
         ("!", "needs a shell command"),
         ("pytest", "unknown command :pytest"),
         ("quit now", "takes no arguments"),
+        ("doctor main", "takes no arguments"),
+        ("*doctor", "cannot run per workspace"),
+        ("&doctor", "cannot run in the background"),
     ],
 )
 def test_parse_errors(line: str, message: str) -> None:

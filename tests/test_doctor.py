@@ -48,6 +48,31 @@ def test_healthy(repo: Path) -> None:
         assert checks[name].status == "ok", checks[name]
     assert checks["project-sandbox"].detail == "0.2.2 (project-sandbox)"
     assert "image" not in checks and "project config" not in checks
+    assert checks["comparisons to main"].status == "ok"
+
+
+@pytest.mark.parametrize("configured", ["", "missing"])
+def test_comparison_diagnostics_missing_baseline(repo: Path, configured: str) -> None:
+    from project_sandbox_tui.vcs import detect
+    from tests.conftest import jj
+
+    jj(repo, "bookmark", "delete", "main")
+    branches = detect(repo).list_branches(compare_to_main=configured)
+    checks = doctor.check_comparisons(branches, configured)
+    assert checks[0].status == "warn"
+    assert checks[1].detail == "0/2 revisions available; 2 show ?"
+    for check in checks[2:]:
+        assert check.status == "warn"
+        assert "set project.main_branch" in check.hint
+        assert ("'missing' does not exist" if configured else "no local main") in check.detail
+
+
+def test_comparison_diagnostics_unrequested_listing(repo: Path) -> None:
+    from project_sandbox_tui.vcs import detect
+
+    checks = doctor.check_comparisons(detect(repo).list_branches())
+    assert checks[0].status == "ok"
+    assert all("not requested" in check.detail for check in checks[2:])
 
 
 @pytest.mark.parametrize(

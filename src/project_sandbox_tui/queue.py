@@ -14,26 +14,57 @@ import json
 import uuid
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from project_sandbox_tui.config import STATE_VERSION, ConfigError, private_dir, write_state
-from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord
+from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _now
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord
+from project_sandbox_tui.vcs import VcsError
 
 
 @dataclass
 class QueuedTask:
     id: str
     spec: LaunchSpec
+    job: JobRecord | None = None
+    base_commit: str = ""
+    result_commit: str = ""
+    commits: list[str] = field(default_factory=list)
+
+    @property
+    def status(self) -> str:
+        return self.job.status if self.job else "pending"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "spec": self.spec.to_dict()}
+        return {
+            "id": self.id,
+            "spec": self.spec.to_dict(),
+            "job": self.job.to_dict() if self.job else None,
+            "base_commit": self.base_commit,
+            "result_commit": self.result_commit,
+            "commits": self.commits,
+        }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> QueuedTask:
-        task = cls(str(raw["id"]), LaunchSpec.from_dict(raw["spec"]))
-        if not task.id or task.spec.mode != "background" or not task.spec.prompt_text.strip():
+        task = cls(
+            str(raw["id"]),
+            LaunchSpec.from_dict(raw["spec"]),
+            JobRecord.from_dict(raw["job"]) if raw.get("job") else None,
+            str(raw.get("base_commit", "")),
+            str(raw.get("result_commit", "")),
+            list(raw.get("commits", [])),
+        )
+        if (
+            not task.id
+            or any(c not in "0123456789abcdef" for c in task.id)
+            or task.spec.mode != "background"
+            or not task.spec.prompt_text.strip()
+            or (task.job and (task.job.queue_id != task.id or task.job.branch != task.spec.branch))
+            or not all(isinstance(c, str) for c in task.commits)
+        ):
             raise ValueError("invalid queued task")
         return task
 
@@ -41,11 +72,17 @@ class QueuedTask:
 @dataclass
 class BookmarkQueue:
     tasks: list[QueuedTask] = field(default_factory=list)
+    history: list[QueuedTask] = field(default_factory=list)
     paused: bool = False
     error: str = ""
     undo: list[list[QueuedTask]] = field(default_factory=list)
     redo: list[list[QueuedTask]] = field(default_factory=list)
     marks: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def entries(self) -> list[QueuedTask]:
+        """Pending tasks in FIFO order, followed by runs newest first."""
+        return self.tasks + list(reversed(self.history))
 
     def checkpoint(self) -> None:
         self.undo.append(copy.deepcopy(self.tasks))
@@ -56,11 +93,11 @@ class BookmarkQueue:
         self.tasks = [t for t in self.tasks if t.id != task_id]
         self.undo = [[t for t in snapshot if t.id != task_id] for snapshot in self.undo]
         self.redo = [[t for t in snapshot if t.id != task_id] for snapshot in self.redo]
-        self.marks = {key: value for key, value in self.marks.items() if value != task_id}
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "tasks": [t.to_dict() for t in self.tasks],
+            "history": [t.to_dict() for t in self.history],
             "paused": self.paused,
             "error": self.error,
             "undo": [[t.to_dict() for t in snapshot] for snapshot in self.undo],
@@ -72,6 +109,7 @@ class BookmarkQueue:
     def from_dict(cls, raw: dict[str, Any]) -> BookmarkQueue:
         return cls(
             tasks=[QueuedTask.from_dict(t) for t in raw.get("tasks", [])],
+            history=[QueuedTask.from_dict(t) for t in raw.get("history", [])],
             paused=bool(raw.get("paused", False)),
             error=str(raw.get("error", "")),
             undo=[[QueuedTask.from_dict(t) for t in s] for s in raw.get("undo", [])],
@@ -84,60 +122,173 @@ class TaskQueue:
     def __init__(self, state_dir: Path) -> None:
         self.state_dir = state_dir
         self.path = state_dir / "queue.json"
+        self.tasks_dir = state_dir / "queue-tasks"
+        self.journal = state_dir / "queue-transaction.json"
         self.queues: dict[str, BookmarkQueue] = {}
 
     def load(self) -> None:
+        with self._locked():
+            self._recover()
+            self._load()
+
+    def _load(self) -> None:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if raw.get("version") != STATE_VERSION:
                 raise ValueError("unsupported queue state version")
-            queues = {name: BookmarkQueue.from_dict(q) for name, q in raw["bookmarks"].items()}
-            for name, queue in queues.items():
-                if any(
-                    t.spec.branch != name
-                    for s in [queue.tasks, *queue.undo, *queue.redo]
-                    for t in s
-                ):
-                    raise ValueError("queued task belongs to another bookmark")
-        except FileNotFoundError:
+            if raw.get("format", 1) not in (1, 2):
+                raise ValueError("unsupported queue storage format")
+            if raw.get("format") == 2:
+                for q in raw["bookmarks"].values():
+                    for key in ("tasks", "history"):
+                        records = []
+                        for task_id in q.get(key, []):
+                            if (
+                                not isinstance(task_id, str)
+                                or not task_id
+                                or any(c not in "0123456789abcdef" for c in task_id)
+                            ):
+                                raise ValueError("invalid task id")
+                            record = json.loads(
+                                (self.tasks_dir / f"{task_id}.json").read_text(encoding="utf-8")
+                            )
+                            if record["id"] != task_id:
+                                raise ValueError("task id does not match its file")
+                            records.append(record)
+                        q[key] = records
+            queues = self._decode_bookmarks(raw["bookmarks"])
+        except FileNotFoundError as exc:
+            if self.path.exists():
+                raise ValueError(f"cannot read task queue {self.path}: {exc}") from exc
             queues = {}
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise ValueError(f"cannot read task queue {self.path}: {exc}") from exc
+        self._publish(queues)
+
+    @staticmethod
+    def _decode_bookmarks(raw: dict[str, Any]) -> dict[str, BookmarkQueue]:
+        queues = {name: BookmarkQueue.from_dict(q) for name, q in raw.items()}
+        live_ids: set[str] = set()
+        for name, queue in queues.items():
+            for snapshot in [queue.entries, *queue.undo, *queue.redo]:
+                if any(t.spec.branch != name for t in snapshot):
+                    raise ValueError("queued task belongs to another bookmark")
+                if len({t.id for t in snapshot}) != len(snapshot):
+                    raise ValueError("duplicate queued task id")
+            for task in queue.entries:
+                if task.id in live_ids:
+                    raise ValueError("duplicate queued task id")
+                live_ids.add(task.id)
+        return queues
+
+    def _publish(self, queues: dict[str, BookmarkQueue]) -> None:
+        # Keep log viewers' job references current without changing an editor's
+        # saved spec (its optimistic concurrency check needs the original).
+        previous = {t.id: t for q in self.queues.values() for t in q.history}
+        for queue in queues.values():
+            for task in queue.history:
+                old = previous.get(task.id)
+                if old and old.job and task.job:
+                    old.job.__dict__.update(task.job.__dict__)
+                    task.job = old.job
         self.queues = queues
 
     def get(self, branch: str) -> BookmarkQueue:
         return self.queues.get(branch, BookmarkQueue())
 
     @contextlib.contextmanager
-    def transaction(self) -> Generator[dict[str, BookmarkQueue], None, None]:
+    def _locked(self) -> Generator[None, None, None]:
         private_dir(self.state_dir)
         with (self.state_dir / "queue.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                self.load()
-                queues = self.queues
-                before = copy.deepcopy({name: q.to_dict() for name, q in queues.items()})
-                yield queues
-                after = {name: q.to_dict() for name, q in queues.items()}
-                if after != before:
-                    write_state(
-                        self.path,
-                        {"version": STATE_VERSION, "bookmarks": after},
-                        durable=True,
-                    )
-                self.queues = queues
+                yield
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    def add(self, spec: LaunchSpec) -> QueuedTask:
+    def _persist(self, data: dict[str, Any]) -> None:
+        """Materialize a journaled transaction, then commit its index."""
+        private_dir(self.tasks_dir)
+        index = copy.deepcopy(data)
+        index["format"] = 2
+        live = set()
+        for queue in index["bookmarks"].values():
+            for key in ("tasks", "history"):
+                records = queue.get(key, [])
+                for record in records:
+                    task = QueuedTask.from_dict(record)
+                    path = self.tasks_dir / f"{task.id}.json"
+                    live.add(path)
+                    try:
+                        previous = json.loads(path.read_text(encoding="utf-8"))
+                    except (FileNotFoundError, ValueError):
+                        previous = None
+                    if previous != record:
+                        write_state(path, record, durable=True)
+                queue[key] = [record["id"] for record in records]
+        write_state(self.path, index, durable=True)
+        for path in self.tasks_dir.glob("*.json"):
+            if path not in live:
+                path.unlink()
+        self.journal.unlink(missing_ok=True)
+
+    def _recover(self) -> None:
+        if self.journal.exists():
+            try:
+                data = json.loads(self.journal.read_text(encoding="utf-8"))
+                if data.get("version") != STATE_VERSION:
+                    raise ValueError("unsupported queue transaction version")
+                # Validate the entire transaction before touching any records.
+                self._decode_bookmarks(data["bookmarks"])
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise ValueError(f"cannot recover task queue {self.journal}: {exc}") from exc
+            self._persist(data)
+
+    @contextlib.contextmanager
+    def transaction(self) -> Generator[dict[str, BookmarkQueue], None, None]:
+        """Publish a complete saved snapshot; failed edits remain private."""
+        with self._locked():
+            self._recover()
+            self._load()
+            queues = copy.deepcopy(self.queues)
+            before = copy.deepcopy({name: q.to_dict() for name, q in queues.items()})
+            yield queues
+            after = {name: q.to_dict() for name, q in queues.items()}
+            if after != before:
+                data = {"version": STATE_VERSION, "bookmarks": after}
+                write_state(self.journal, data, durable=True)
+                self._persist(data)
+            self._publish(queues)
+
+    @staticmethod
+    def _new_task(spec: LaunchSpec) -> QueuedTask:
         if spec.mode != "background" or not spec.prompt_text.strip():
             raise ValueError("only unsupervised tasks with a prompt can be queued")
-        task = QueuedTask(uuid.uuid4().hex, copy.deepcopy(spec))
+        return QueuedTask(uuid.uuid4().hex, copy.deepcopy(spec))
+
+    def add(self, spec: LaunchSpec) -> QueuedTask:
+        task = self._new_task(spec)
         with self.transaction() as queues:
             queue = queues.setdefault(spec.branch, BookmarkQueue())
             queue.checkpoint()
             queue.tasks.append(task)
         return task
+
+    def start(
+        self,
+        spec: LaunchSpec,
+        jobs: JobManager,
+        sessions: dict[str, SessionRecord],
+        commit: Callable[[], str] | None = None,
+    ) -> JobRecord:
+        """Retain an immediate run without dispatching or editing pending tasks."""
+        task = self._new_task(spec)
+        with self.transaction() as queues:
+            job = jobs.start_background(spec, sessions, queue_id=task.id, base_commit=commit)
+            task.job = copy.deepcopy(job)
+            task.base_commit = job.base_commit
+            queues.setdefault(spec.branch, BookmarkQueue()).history.append(task)
+        return job
 
     def edit(
         self, branch: str, task_id: str, spec: LaunchSpec, *, expected: LaunchSpec | None = None
@@ -159,9 +310,13 @@ class TaskQueue:
     def delete(self, branch: str, ids: list[str]) -> None:
         with self.transaction() as queues:
             queue = queues.setdefault(branch, BookmarkQueue())
+            if any(t.id in ids and t.status == "running" for t in queue.history):
+                raise ValueError("running tasks cannot be deleted; cancel the run first")
             if any(t.id in ids for t in queue.tasks):
                 queue.checkpoint()
                 queue.tasks = [t for t in queue.tasks if t.id not in ids]
+            queue.history = [t for t in queue.history if t.id not in ids]
+            queue.marks = {k: v for k, v in queue.marks.items() if v not in ids}
 
     def move(self, branch: str, ids: list[str], step: int) -> None:
         with self.transaction() as queues:
@@ -198,14 +353,62 @@ class TaskQueue:
     def mark(self, branch: str, key: str, task_id: str) -> None:
         with self.transaction() as queues:
             queue = queues.setdefault(branch, BookmarkQueue())
-            if any(t.id == task_id for t in queue.tasks):
+            if any(t.id == task_id for t in queue.entries):
                 queue.marks[key] = task_id
+
+    def refresh(
+        self,
+        jobs: JobManager,
+        outcome: Callable[[QueuedTask], tuple[str, list[str]] | None] | None = None,
+    ) -> None:
+        """Retain the exact run and its pinned commits, independently of job pruning."""
+        with self.transaction() as queues:
+            self._refresh(queues, jobs, outcome)
+
+    def _refresh(
+        self,
+        queues: dict[str, BookmarkQueue],
+        jobs: JobManager,
+        outcome: Callable[[QueuedTask], tuple[str, list[str]] | None] | None = None,
+    ) -> None:
+        with jobs._locked():
+            jobs.load()
+            for branch, queue in queues.items():
+                current = jobs.jobs.get(branch)
+                records = jobs.history(branch) + ([current] if current else [])
+                by_id = {job.queue_id: job for job in records if job.queue_id}
+                for task in queue.history:
+                    job = by_id.get(task.id)
+                    if job and (task.job is None or task.job.running or not job.running):
+                        if task.job:
+                            task.job.__dict__.update(copy.deepcopy(job.__dict__))
+                        else:
+                            task.job = copy.deepcopy(job)
+                    if (
+                        task.job
+                        and task.job.running
+                        and (current is None or current.queue_id != task.id)
+                    ):
+                        # Force-forgetting a run archives its last (running)
+                        # snapshot. It must not remain running forever here.
+                        task.job.status = "orphaned"
+                        task.job.ended_at = _now()
+                    if task.job and not task.job.running and not task.result_commit and outcome:
+                        try:
+                            result = outcome(task)
+                        except (OSError, ValueError, VcsError) as exc:
+                            queue.paused, queue.error = True, str(exc)
+                            continue
+                        if result:
+                            task.result_commit, task.commits = result
 
     def dispatch(
         self,
         jobs: JobManager,
         sessions: Callable[[], dict[str, SessionRecord]],
         valid: Callable[[str], str | None],
+        commit: Callable[[str], str] | None = None,
+        outcome: Callable[[QueuedTask], tuple[str, list[str]] | None] | None = None,
     ) -> list[JobRecord]:
         """Start at most one task per idle bookmark; failures pause that queue.
 
@@ -214,20 +417,29 @@ class TaskQueue:
         """
         started: list[JobRecord] = []
         with self.transaction() as queues:
+            self._refresh(queues, jobs, outcome)
             for branch, queue in queues.items():
                 if queue.paused or not queue.tasks:
                     continue
                 task = queue.tasks[0]
-                if error := valid(branch):
-                    queue.paused, queue.error = True, error
-                    continue
                 try:
-                    job = jobs.start_background(task.spec, sessions(), queue_id=task.id)
+                    if error := valid(branch):
+                        queue.paused, queue.error = True, error
+                        continue
+                    job = jobs.start_background(
+                        task.spec,
+                        sessions(),
+                        queue_id=task.id,
+                        base_commit=partial(commit, branch) if commit else None,
+                    )
                 except BusyError:
                     continue
-                except (OSError, ConfigError, ValueError) as exc:
+                except (OSError, ConfigError, ValueError, VcsError) as exc:
                     queue.paused, queue.error = True, str(exc)
                     continue
                 queue.consume(task.id)
+                task.job = copy.deepcopy(job)
+                task.base_commit = job.base_commit
+                queue.history.append(task)
                 started.append(job)
         return started

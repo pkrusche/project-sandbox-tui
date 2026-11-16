@@ -1,4 +1,4 @@
-"""``sbx-tui doctor``: check that jj, project-sandbox and a container runtime work."""
+"""Dependency checks and diagnostics for unavailable comparisons to main."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Literal
 from project_sandbox_tui import launchers, notify
 from project_sandbox_tui.config import Config, ConfigError, ProjectTrust, _load, load
 from project_sandbox_tui.sandbox import runtime_cli
-from project_sandbox_tui.vcs import VcsError, detect
+from project_sandbox_tui.vcs import Branch, VcsError, detect, main_branch
 
 # The jj release CI tests against; older ones may lack template keywords or flags.
 TESTED_JJ = (0, 46, 0)
@@ -89,6 +89,55 @@ def check_repo(path: Path) -> Check:
     except VcsError as exc:
         return Check("repository", "warn", str(exc), "run sbx-tui inside a jj repository")
     return Check("repository", "ok", str(backend.root))
+
+
+def check_comparisons(branches: list[Branch], configured: str = "") -> list[Check]:
+    """Explain the supplied listing without retrying away transient jj failures."""
+    bookmarks = {b.name: b for b in branches if not b.working_copy}
+    main = main_branch(bookmarks, configured)
+    baseline = bookmarks.get(main) if main else None
+    baseline_detail = (
+        f"{configured!r} (configured)" if configured else "auto: main / master / trunk"
+    )
+    if baseline:
+        baseline_detail = f"{main} ({baseline.commit or 'conflicted; multiple targets'})"
+    checks = [
+        Check(
+            "comparison baseline",
+            "ok" if baseline and baseline.commit else "warn",
+            baseline_detail,
+        )
+    ]
+    unavailable = [b for b in branches if b.comparison is None]
+    checks.append(
+        Check(
+            "comparisons to main",
+            "warn" if unavailable or not branches else "ok",
+            f"{len(branches) - len(unavailable)}/{len(branches)} revisions available; "
+            f"{len(unavailable)} show ?",
+            "R or :refresh retries comparisons; :reload reloads project.main_branch"
+            if unavailable
+            else "",
+        )
+    )
+    for branch in unavailable:
+        if main is None:
+            hint = "set project.main_branch to an existing local bookmark"
+        elif not baseline or not baseline.commit or not branch.commit:
+            hint = "resolve the conflicted bookmark with jj bookmark set --to REV NAME"
+        elif branch.comparison_error:
+            hint = "check the jj error above; sbx-tui retries on the next refresh"
+        else:
+            hint = "R or :refresh calculates comparisons"
+        checks.append(
+            Check(
+                f"? {branch.label}" + (f" ({branch.commit})" if branch.commit else ""),
+                "warn",
+                branch.comparison_error or "comparison was not requested for this listing",
+                hint,
+            )
+        )
+    return checks
 
 
 def check_project_sandbox(cfg: Config, runner: Runner) -> Check:
@@ -196,6 +245,13 @@ def run_checks(
         cfg = Config()
     checks += [check_project_sandbox(cfg, runner), check_runtime(cfg, runner, which)]
     checks += check_config(cfg, repo)
+    if repo is not None:
+        try:
+            branches = detect(repo).list_branches(compare_to_main=cfg.project.main_branch)
+        except VcsError as exc:
+            checks.append(Check("comparisons to main", "fail", exc.detail))
+        else:
+            checks += check_comparisons(branches, cfg.project.main_branch)
     return checks
 
 

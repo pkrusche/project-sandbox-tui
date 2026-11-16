@@ -439,10 +439,10 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 ("gg / G", "top / bottom"),
                 ("ctrl+d / u", "half page down / up"),
                 ("/", "filter (esc clears)"),
-                (":", "command line, :! shell"),
-                (":&!cmd", "background command"),
+                (":", "commands: :! :& :*"),
                 ("\\ keys", "[leader] key mappings"),
                 ("R / ctrl+l", "refresh / reload config"),
+                (":doctor", "diagnose ? comparisons"),
                 ("H / ?", "cheat-sheet / this help"),
                 ("q", "quit (runs continue)"),
             ),
@@ -450,7 +450,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
         (
             "prompt box (unsupervised runs)",
             (
-                ("ctrl+s", "launch (enter = newline)"),
+                ("ctrl+s", "submit (enter = newline)"),
                 ("→ / ctrl+f", "take the suggestion"),
                 ("ctrl+p / n", "older / newer prompt"),
                 ("ctrl+r", "search prompt history"),
@@ -463,7 +463,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
             (
                 ("i / I", "interactive / host agent"),
                 (":host", "host agent with CLI args"),
-                ("r / L", "run / prompt queue"),
+                ("r / L", "run/queue / prompt queue"),
                 ("x", "cancel · 3×: forget"),
                 ("l / enter", "log, else details"),
                 ("P / O / T", "details / op log / tasks"),

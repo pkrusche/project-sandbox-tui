@@ -19,6 +19,10 @@ from typing import Any
 class VcsError(RuntimeError):
     """A VCS command failed or the directory is not a repository."""
 
+    def __init__(self, message: str, *, detail: str = "") -> None:
+        super().__init__(message)
+        self.detail = detail or message
+
 
 class StaleWorkingCopyError(VcsError):
     """jj refuses to snapshot: another workspace rewrote this one's working-copy commit."""
@@ -57,6 +61,7 @@ class Branch:
     working_copy: bool = False
     comparison: MainComparison | None = None
     commit: str = ""  # full commit id; empty for a conflicted bookmark
+    comparison_error: str = ""  # why the comparison is unavailable in this listing
 
     @property
     def label(self) -> str:
@@ -130,7 +135,10 @@ def _completed(args: list[str], cwd: Path, *, text: bool) -> subprocess.Complete
     except FileNotFoundError as exc:
         raise VcsError(f"{args[0]} not found on PATH") from exc
     except subprocess.TimeoutExpired as exc:
-        raise VcsError(f"{' '.join(args[:3])} timed out") from exc
+        raise VcsError(
+            f"{' '.join(args[:3])} timed out",
+            detail=f"{shlex.join(args)} timed out after 30s",
+        ) from exc
     if proc.returncode != 0:
         output = proc.stderr or proc.stdout
         if isinstance(output, bytes):
@@ -138,7 +146,10 @@ def _completed(args: list[str], cwd: Path, *, text: bool) -> subprocess.Complete
         if "working copy is stale" in output:
             raise StaleWorkingCopyError("the jj working copy is stale")
         msg = output.strip().splitlines()
-        raise VcsError(msg[-1] if msg else f"{' '.join(args[:3])} failed")
+        raise VcsError(
+            msg[-1] if msg else f"{' '.join(args[:3])} failed",
+            detail=f"{shlex.join(args)}\n{output.strip()}",
+        )
     return proc
 
 
@@ -339,15 +350,28 @@ class JjBackend:
             comparisons: dict[tuple[str, str], MainComparison] = {}
             for index, branch in enumerate(branches):
                 target = targets[branch.name]
-                if not base or not target:  # missing main or a conflicted bookmark
+                error = ""
+                if main is None:
+                    error = (
+                        f"configured main bookmark {compare_to_main!r} does not exist"
+                        if compare_to_main
+                        else "no local main, master or trunk bookmark found"
+                    )
+                elif not base:
+                    error = f"main bookmark {main!r} is conflicted (multiple targets)"
+                elif not target:
+                    error = f"bookmark {branch.name!r} is conflicted (multiple targets)"
+                if error:
+                    branches[index] = replace(branch, comparison_error=error)
                     continue
                 key = (base, target)
                 comparison = comparisons.get(key) or self._comparisons.get(key)
                 if comparison is None:
                     try:
                         comparison = self._compare_commits(base, target)
-                    except VcsError:
+                    except VcsError as exc:
                         # Keep the list usable; retry unavailable comparisons next refresh.
+                        branches[index] = replace(branch, comparison_error=exc.detail)
                         continue
                 comparisons[key] = comparison
                 branches[index] = replace(branch, comparison=comparison)

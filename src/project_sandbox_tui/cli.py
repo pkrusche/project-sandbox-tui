@@ -23,7 +23,7 @@ def build_parser() -> ArgumentParser:
         prog="sbx-tui",
         description="Minimal vim/ranger-style TUI for project-sandbox sessions per jj bookmark.",
         epilog="subcommands: sbx-tui config {list,get,set,unset,path} …, sbx-tui doctor "
-        "(see sbx-tui config --help)",
+        "(use --help after a subcommand for details)",
     )
     p.add_argument("repo", nargs="?", default=".", help="repository (default: current directory)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -46,8 +46,8 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--print-config",
         action="store_true",
-        help="print the merged configuration and the interactive command for the current "
-        "bookmark or working copy, then exit",
+        help="print the merged configuration and an interactive sandbox command for the "
+        "working copy, then exit",
     )
     p.add_argument(
         "--cleanup-workspaces",
@@ -63,7 +63,8 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="preview workspace cleanup, or append --dry-run to project-sandbox invocations",
+        help="preview workspace cleanup or sandbox launches; "
+        "saved prompt queues are not dispatched",
     )
     return p
 
@@ -80,16 +81,25 @@ def build_subcommand_parser() -> ArgumentParser:
     common.add_argument("--config", type=Path, help="global config file (default: XDG config dir)")
     scope = ArgumentParser(add_help=False)
     group = scope.add_mutually_exclusive_group()
-    group.add_argument("--global", dest="scope", action="store_const", const="global")
-    group.add_argument("--project", dest="scope", action="store_const", const="project")
+    group.add_argument(
+        "--global", dest="scope", action="store_const", const="global", help="use the global file"
+    )
+    group.add_argument(
+        "--project",
+        dest="scope",
+        action="store_const",
+        const="project",
+        help="use the repository's .project-sandbox-tui.toml",
+    )
 
     p = ArgumentParser(prog="sbx-tui")
     sub = p.add_subparsers(dest="command", required=True)
     cfg = sub.add_parser(
         "config",
         help="read or change settings",
-        description="Read or change settings. --global edits the global config, --project "
-        "the repository's .project-sandbox-tui.toml (kept trusted if it was).",
+        description="Read or change settings. set, unset and path require --global or "
+        "--project. --project edits the repository's .project-sandbox-tui.toml "
+        "(kept trusted if it was).",
     )
     actions = cfg.add_subparsers(dest="action", required=True)
     actions.add_parser(
@@ -112,7 +122,9 @@ def build_subcommand_parser() -> ArgumentParser:
     sub.add_parser(
         "doctor",
         parents=[common],
-        help="check jj, project-sandbox and the container runtime",
+        help="check dependencies, runtime, configuration and comparisons to main",
+        description="Check dependencies, runtime, configuration and comparisons to main. "
+        "Failed checks exit 1; warnings alone exit 0.",
     )
     return p
 

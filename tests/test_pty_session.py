@@ -136,7 +136,7 @@ def start_tui(repo: Path, command: str, *, host_agent_command: str = "", **env_e
     env = {**os.environ, "TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra}
     tui = Tui(repo, env)
     try:
-        assert tui.wait_for(b"unsupervised", 20), (
+        assert tui.wait_for(b"run or queue", 20), (
             f"TUI did not show its startup marker:\n{tui.buf.decode(errors='replace')}"
         )
         tui.send(b"?")
@@ -201,7 +201,7 @@ def test_tui_responds_to_pty_resize(repo: Path) -> None:
         assert tui.wait_for(b"full help"), "small-terminal footer did not appear after resize"
         tui.buf.clear()
         tui.resize(110, 30)
-        assert tui.wait_for(b"unsupervised"), "cheat-sheet did not return after resize"
+        assert tui.wait_for(b"run or queue"), "cheat-sheet did not return after resize"
         assert_responsive(tui)
     finally:
         tui.close()

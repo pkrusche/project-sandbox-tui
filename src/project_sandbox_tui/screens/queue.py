@@ -13,10 +13,13 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 
 from project_sandbox_tui.queue import QueuedTask, TaskQueue
+from project_sandbox_tui.screens.dialogs import MessageScreen
+from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.widgets import KeyHints, PrefixKeys
 
 HINT = (
-    "q back · j/k ^d/^u gg/G move · / filter · n add · e/enter edit · dd delete"
+    "q back · j/k ^d/^u gg/G move · / filter · n add · e edit · l/enter edit/log"
+    " · P details · c commits · dd delete"
     " · J/K reorder · v/V/space select · u undo · ^r redo · p pause/resume · ma mark · 'a jump"
 )
 
@@ -42,6 +45,8 @@ class QueueScreen(Screen[None]):
         Binding("slash", "filter", show=False),
         Binding("n,r", "add", show=False),
         Binding("e,l", "edit", show=False),
+        Binding("P", "details", show=False),
+        Binding("c", "commits", show=False),
         Binding("d", "d_prefix", show=False),
         Binding("J", "reorder(1)", show=False),
         Binding("K", "reorder(-1)", show=False),
@@ -59,11 +64,13 @@ class QueueScreen(Screen[None]):
         queue: TaskQueue,
         branch: str,
         edit: Callable[[str, QueuedTask | None], None],
+        review: Callable[[str, str], object] | None = None,
     ) -> None:
         super().__init__()
         self.queue = queue
         self.branch = branch
         self.edit_task = edit
+        self.review = review
         self._prefix = PrefixKeys()
         self._mark_prefix = ""
         self.marked: list[str] = []
@@ -75,7 +82,7 @@ class QueueScreen(Screen[None]):
         yield Static("", id="queue-title")
         yield Input(placeholder="filter prompts", id="queue-filter")
         yield DataTable(cursor_type="row")
-        yield Static("No queued tasks. Press n to add a prompt.", id="queue-empty")
+        yield Static("No tasks. Press n to add a prompt.", id="queue-empty")
         yield Static(KeyHints(HINT), id="queue-hint")
 
     @property
@@ -83,7 +90,7 @@ class QueueScreen(Screen[None]):
         return self.query_one(DataTable)
 
     def on_mount(self) -> None:
-        for label in ("", "#", "agent", "prompt"):
+        for label in ("", "#", "status", "agent", "commits", "prompt"):
             self.table.add_column(label)
         self.table.focus()
         self.render_queue()
@@ -114,7 +121,7 @@ class QueueScreen(Screen[None]):
             self.query_one("#queue-title", Static).update(Text(str(exc), style="red"))
             return
         queue = self.queue.get(self.branch)
-        live = {t.id for t in queue.tasks}
+        live = {t.id for t in queue.entries}
         self.marked = [key for key in self.marked if key in live]
         selected = self.selected_id()
         chosen = set(self.selection()) if self.marked or self._visual_anchor else set()
@@ -123,18 +130,22 @@ class QueueScreen(Screen[None]):
                 task.id,
                 (
                     Text("+" if task.id in chosen else ""),
-                    Text(str(index)),
+                    Text(str(index) if task.status == "pending" else ""),
+                    Text(task.status),
                     Text(task.spec.label()),
+                    Text(", ".join(c[:12] for c in task.commits)),
                     Text(
                         " ".join(task.spec.prompt_text.split()), no_wrap=True, overflow="ellipsis"
                     ),
                 ),
             )
-            for index, task in enumerate(queue.tasks, 1)
+            for index, task in enumerate(queue.entries, 1)
             if self.filter_text.lower() in task.spec.prompt_text.lower() or task.id in chosen
         ]
         state = "paused" if queue.paused else "active"
         title = f" {self.branch} · {len(queue.tasks)} queued · {state}"
+        running = sum(t.status == "running" for t in queue.history)
+        title += f" · {running} running · {len(queue.history) - running} finished"
         if queue.error:
             title += f" · {queue.error}"
         self.query_one("#queue-title", Static).update(Text(title))
@@ -151,8 +162,10 @@ class QueueScreen(Screen[None]):
                 animate=False,
             )
 
-    def change(self, action: Callable[[], None]) -> None:
+    def change(self, action: Callable[[], None], *, pause: bool = True) -> None:
         try:
+            if pause:
+                self.queue.pause(self.branch, True)
             action()
         except (OSError, ValueError) as exc:
             self.notify(str(exc), severity="error")
@@ -171,7 +184,7 @@ class QueueScreen(Screen[None]):
                 return
             if command == "m":
                 if selected := self.selected_id():
-                    self.change(lambda: self.queue.mark(self.branch, key, selected))
+                    self.change(lambda: self.queue.mark(self.branch, key, selected), pause=False)
             else:
                 target = self.queue.get(self.branch).marks.get(key)
                 self.filter_text = ""
@@ -249,17 +262,55 @@ class QueueScreen(Screen[None]):
         self.change(lambda: self.queue.undo(self.branch, redo=True))
 
     def action_pause(self) -> None:
-        self.change(lambda: self.queue.pause(self.branch, not self.queue.get(self.branch).paused))
+        self.change(
+            lambda: self.queue.pause(self.branch, not self.queue.get(self.branch).paused),
+            pause=False,
+        )
 
     def action_add(self) -> None:
         self.edit_task(self.branch, None)
 
     def action_edit(self) -> None:
-        task = next(
-            (t for t in self.queue.get(self.branch).tasks if t.id == self.selected_id()), None
-        )
+        task = self.selected_task()
         if task:
-            self.edit_task(self.branch, task)
+            if task.job:
+                self.app.push_screen(LogScreen(task.job))
+            else:
+                self.edit_task(self.branch, task)
+
+    def selected_task(self) -> QueuedTask | None:
+        return next(
+            (t for t in self.queue.get(self.branch).entries if t.id == self.selected_id()), None
+        )
+
+    def action_details(self) -> None:
+        task = self.selected_task()
+        if task is None:
+            return
+        lines = [
+            f"task        {task.id}",
+            f"status      {task.status}",
+            f"agent       {task.spec.label()}",
+            f"base        {task.base_commit or '—'}",
+            f"result      {task.result_commit or '—'}",
+            "commits     " + ("\n            ".join(task.commits) or "—"),
+        ]
+        if task.job:
+            lines += [
+                f"started     {task.job.started_at}",
+                f"ended       {task.job.ended_at or '—'}",
+                f"exit code   {task.job.exit_code}",
+                f"log         {task.job.log_path}",
+            ]
+        lines += ["", task.spec.prompt_text]
+        self.app.push_screen(MessageScreen(f"{self.branch} task", "\n".join(lines)))
+
+    def action_commits(self) -> None:
+        task = self.selected_task()
+        if task and task.base_commit and task.result_commit and self.review:
+            self.review(task.base_commit, task.result_commit)
+        else:
+            self.notify("no recorded commit range for this task")
 
     @on(DataTable.RowSelected)
     def _selected(self, event: DataTable.RowSelected) -> None:

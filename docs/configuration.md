@@ -97,23 +97,26 @@ extra_args = ["--memory=16g"]
 A named profile supplies these fields directly. After merging global and project
 config, omitted fields use the defaults in the table rather than `[defaults]` or
 remembered launch choices. The remaining project, image, network and sandbox
-settings still apply. Profile arguments are
-appended after `sandbox.extra_args`; a run records the selected settings at
-launch, so later profile edits do not change running sessions.
+settings still apply. Profile arguments are appended after `sandbox.extra_args`.
+The selected settings are saved when submitted, so later profile edits do not
+change queued or running tasks.
 
 Launch forms offer the configured profiles plus **custom**. Selecting **custom**
 shows the individual agent controls and CLI arguments, using remembered launch
 choices and [defaults](#settings-reference). Custom CLI arguments are remembered
-after a successful Custom launch; launching a named profile preserves those
-Custom arguments. Switching to Custom does not copy the selected profile into
-the controls. To adapt a profile, save a copy in `:config-profiles`.
+after an interactive launch or accepted `r` submission, including queued prompts;
+using a named profile preserves those Custom arguments. Switching to Custom does
+not copy the selected profile into the controls. To adapt a profile, save a copy
+in `:config-profiles`.
 
-The last successfully launched profile (including Custom) is remembered per
-repository; before the first choice, the first available profile is selected.
+The profile selected for that launch or submission (including Custom) is
+remembered per repository; before the first choice, the first available profile
+is selected.
 If a remembered profile is removed, the form falls back to Custom.
 Prompts and timeouts are not saved in profiles; timeouts use the usual remembered
-launch defaults. Cancelling a launch does not change the remembered profile.
-Host-agent commands and configured agent actions do not select profiles.
+launch defaults. Cancelling a launch or editing the queue in `L` does not change
+the remembered choices. Host-agent commands and configured agent actions do not
+select profiles.
 
 Profiles can also be defined globally or edited from the command line:
 
@@ -165,7 +168,8 @@ settings take effect:
 
 For Custom launches, precedence is remembered launch choices → trusted project
 → global → built-in. The last agent, effort, timeout and per-agent model and
-fast mode are remembered per repository. A successful named-profile launch also
+fast mode are remembered per repository after an interactive launch or an
+accepted `r` submission, including queued prompts. A named-profile submission also
 updates these agent choices; the profile's fields take precedence when it is
 selected. Profile selection and Custom CLI arguments are remembered separately;
 see [agent profiles](#agent-profiles).
@@ -231,13 +235,6 @@ T = "*test"             # in each selected workspace
 prompt = "Review {bookmark} against {main} and fix what you find."
 effort = "high"         # agent, model, effort, timeout: launch defaults if unset
 
-[profiles.review]       # select in i/r forms; edit with :config-profiles
-agent = "codex"
-model = ""
-effort = "high"
-fast = false
-extra_args = ["--memory=16g"]
-
 [models]                # extra launch-form suggestions, listed first
 claude = ["opus", "sonnet"]
 codex = ["gpt-5.5"]
@@ -262,10 +259,10 @@ as `eval` can execute them even when passed safely.
 `[commands]` names shell commands for the [command line](usage.md#command-line):
 `:name args` runs the command with `sh -c` in the repository foreground, with `args`
 appended (`:test -k merge` runs `uv run pytest -k merge`). Names start with a
-letter and use letters, digits, `_` and `-`; built-in commands (`help`, `quit`,
-`q`, `refresh`, `reload`, `host`, `config-profiles`) cannot be redefined. Unlike `ui.*_command`, these are
-shell code: use `SBX_REPO`, `SBX_BOOKMARK` and `SBX_WORKSPACE` rather than
-placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
+letter and use letters, digits, `_` and `-`; built-in commands (`help`, `doctor`,
+`quit`, `q`, `refresh`, `reload`, `host`, `config-profiles`) cannot be redefined.
+Unlike `ui.*_command`, these are shell code: use `SBX_REPO`, `SBX_BOOKMARK` and
+`SBX_WORKSPACE` rather than placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 
 One command is built in as a default, and a `[commands]` entry of the same name
 replaces it:
@@ -279,15 +276,10 @@ inactive. Other workspaces' empty working-copy commits are empty heads too, so
 abandoning them leaves those workspaces stale; bookmarks on empty heads are
 deleted. A redefined `abandon-empty` runs without asking.
 
-`:&name` runs it once in the background in the repository, ignoring marked rows;
-see [background commands](usage.md#background-commands).
-`:*name` runs it in the background in each selected workspace instead, with `cwd`,
-`SBX_BOOKMARK` and `SBX_WORKSPACE` set for each; see
-[running in each workspace](usage.md#running-in-each-workspace).
-The [comparison table](usage.md#choosing-how-to-run-a-shell-command) explains
-selection, directories, environment variables, output and cancellation for all
-three forms. These prefixes choose how to run the same configured shell script;
-you do not need separate `[commands]` entries.
+The same entry supports foreground (`:name`), repository background (`:&name`)
+and workspace background (`:*name`) execution. See the
+[command comparison](usage.md#choosing-how-to-run-a-shell-command) for selection,
+directories, environment variables, output and cancellation.
 
 `[leader]` maps key sequences typed after `ui.leader` (one character, `\` by
 default) to command lines as typed after `:`, e.g. `t = "test"`, `b = "&test"`, `T = "*test"`,
@@ -343,7 +335,9 @@ sbx-tui config set --project actions.chores.effort low
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
 | `<repo>-<hash>/diff_review.json` | File changes marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
-| `<repo>-<hash>/queue.json`, `<repo>-<hash>/queue.lock` | Pending unsupervised prompts, pause state, queue undo/redo and named marks |
+| `<repo>-<hash>/queue.json`, `<repo>-<hash>/queue.lock` | Prompt task IDs and order, pause state, pending-task undo/redo and named marks |
+| `<repo>-<hash>/queue-tasks/` | One JSON file per pending, running or completed prompt task, including its run, log paths and commit links |
+| `<repo>-<hash>/queue-transaction.json` | Temporary recovery journal for updates spanning task records and the queue index |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
 | `<repo>-<hash>/jobs/history/<bookmark>-<hash>/` | [Replaced and cleared job records](sessions.md#one-sandbox-per-bookmark), the last 50 per bookmark |
 | `<repo>-<hash>/logs/` | Agent logs, transcripts, summaries and captured output, including `:&` and `:*` tasks |
@@ -351,10 +345,6 @@ sbx-tui config set --project actions.chores.effort low
 
 Job records include full argv and prompts. Repository state, job and log
 directories use mode `0700` (user-only access), including older directories.
-
-Diff review positions (commit and file row) are kept only in the current TUI
-instance and reset on exit. Seen marks in `diff_review.json` persist across
-restarts and are shared between instances.
 
 TUI instances on one repository share these files: each change re-reads its
 file under a [lock](architecture.md#concurrency-and-locking) and replaces it

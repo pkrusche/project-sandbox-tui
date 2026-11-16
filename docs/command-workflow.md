@@ -19,18 +19,9 @@ This adds `test = "uv run pytest -q"` under `[commands]` in the project
 configuration. The project must already have pytest available through uv.
 These commands run on the host; they do not launch a sandbox or an agent.
 
-You can run the same configured command three ways:
-
-| Enter in sbx-tui | Where the tests start | What you can do meanwhile |
-|---|---|---|
-| `:test` | Once in the repository root | Use the command's terminal; return when it exits |
-| `:&test` | Once in the repository root, ignoring marks | Keep navigating sbx-tui |
-| `:*test` | Once in each marked workspace, or the highlighted workspace if none are marked | Keep navigating sbx-tui |
-
-The literal equivalents are `:!uv run pytest -q`, `:&!uv run pytest -q`,
-and `:*!uv run pytest -q`. The prefix changes execution; the configured script
-stays the same. See the [full comparison](usage.md#choosing-how-to-run-a-shell-command)
-for environment variables and task persistence.
+The following steps use `:test`, `:&test` and `:*test` to run this command in
+the foreground, repository background and workspace background. See the
+[command comparison](usage.md#choosing-how-to-run-a-shell-command) for the reference.
 
 ## 2. Do a quick foreground check
 
@@ -123,8 +114,8 @@ On the bookmark list, `x` acts on the target bookmarks and can affect several
 running tasks or sandbox runs. Use the task list when you want to cancel only
 one command.
 
-Both `:&` and `:*` tasks keep running if you quit sbx-tui. Confirm the quit
-prompt when tasks are still running; reopening sbx-tui in the same repository
+Both `:&` and `:*` tasks keep running if you quit sbx-tui. Shell tasks alone do
+not trigger a quit confirmation; reopening sbx-tui in the same repository
 lets you inspect their status and logs. Background commands capture output
 and have no interactive input, so use the foreground form for commands that
 need terminal interaction.

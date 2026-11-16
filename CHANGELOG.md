@@ -6,15 +6,25 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `:doctor` explains unavailable comparisons to main, including missing or
+  conflicted bookmarks and the failing jj command's output. The CLI doctor also
+  checks comparisons. Queue dispatch refreshes retain comparison values.
 - Persistent per-bookmark queues for unsupervised prompts and configured agent
   actions. Busy bookmarks accept more prompts, executed in order when free.
   `L` opens the queue with Vim navigation, selection, editing, reordering,
   undo/redo and named marks; `p` pauses or resumes dispatch for that bookmark.
   Pending tasks resume when sbx-tui reopens; interactive sessions remain manual.
+- Individual JSON records for queued tasks, retained after completion with status,
+  logs and pinned commit links. In `L`, Enter opens a started task's log, `P` shows
+  details, `c` reviews its commits and `dd` deletes a finished task.
 
 ### Changed
 
 - Operation history opens with `O`; `L` opens the prompt queue.
+- Editing the prompt queue automatically pauses dispatch for that bookmark;
+  press `p` to resume after editing or cancelling the form.
+- Every background prompt run appears in the task list, including immediate
+  launches and dry-run previews.
 
 ## [0.1.3] - 2026-11-12
 

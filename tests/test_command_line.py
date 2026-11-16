@@ -16,7 +16,8 @@ from textual.widgets import Input, Static
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.screens.command import CommandScreen
-from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen
+from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen, MessageScreen
+from project_sandbox_tui.vcs import VcsError
 from tests.test_app import run_app
 
 
@@ -37,6 +38,49 @@ async def type_line(pilot: Any, line: str) -> None:
     await pilot.press("colon")
     assert isinstance(pilot.app.screen, CommandScreen)
     await pilot.press(*line)
+
+
+def test_doctor_explains_displayed_comparison_failures(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        original = app.backend._jj
+
+        def fail_diff(*args: str) -> str:
+            if args[0] == "diff":
+                raise VcsError("failed", detail="jj diff: transient [error]\nfull diagnostic")
+            return original(*args)
+
+        app.backend._comparisons.clear()
+        monkeypatch.setattr(app.backend, "_jj", fail_diff)
+        await app.refresh_data()
+        assert str(app.table.get_cell("feature/x", "vs main")) == "?"
+        await type_line(pilot, "doctor")
+        assert isinstance(app.screen, CommandScreen) and "doctor" in app.screen.names
+        await pilot.press("enter")
+        assert isinstance(app.screen, MessageScreen)
+        report = app.screen
+        assert "? feature/x" in report.body
+        assert "jj diff: transient [error]\nfull diagnostic" in report.body
+        assert "main (" in report.body and str(repo) in report.body
+        assert "R or :refresh retries" in report.body
+
+        # The report keeps the failure even if the next periodic refresh succeeds.
+        monkeypatch.setattr(app.backend, "_jj", original)
+        await app.refresh_data()
+        assert str(app.table.get_cell("feature/x", "vs main")) != "?"
+        assert "transient [error]" in report.body
+        await pilot.press("q")
+        await type_line(pilot, "doctor")
+        await pilot.press("enter")
+        assert isinstance(app.screen, MessageScreen)
+        assert "3/3 revisions available; 0 show ?" in app.screen.body
+        assert "transient" not in app.screen.body
+        await pilot.press("escape")
+        assert app.screen is app.main
+
+    run_app(repo, fake_cfg(), scenario)
 
 
 def test_shell_command_runs_in_the_repository(

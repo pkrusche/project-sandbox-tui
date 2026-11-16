@@ -38,7 +38,8 @@ These values are stored in the job record as a snapshot. Argument construction
 uses that snapshot, without looking up the profile again; per-run extra arguments
 follow `sandbox.extra_args`.
 
-1. **Guard:** reject busy workspaces. Project-sandbox records in
+1. **Guard:** defer queued background prompts while busy; reject interactive
+   launches into busy workspaces. Project-sandbox records in
    `$XDG_STATE_HOME/project-sandbox/sessions/` lack branch names; match
    `workspace_path` using its slug rule
    (`/` → `-`, plus sha256[:6]).
@@ -59,8 +60,8 @@ Inline sessions use temporary job records to mark workspaces busy across
 instances. Host agents use the same reservations. External host agents report
 their runner PID and exit code in an atomic summary file, so they can be
 tracked without project-sandbox session records. Job records keep only each
-bookmark's latest run; `opgraph.json`
-keeps every run as a node of the [bookmark history](usage.md#bookmark-history),
+bookmark's latest run and archive replaced or cleared records in bounded history;
+`opgraph.json` keeps every run as a node of the [bookmark history](usage.md#bookmark-history),
 finalised with the bookmark's commit on the first refresh that lists bookmarks
 after the run ended. See [sessions](sessions.md) for terminal behavior and
 [state storage](configuration.md#state-directory) for paths and permissions.
@@ -91,8 +92,8 @@ process work in worker threads. These locks order what they do:
                       tasks.lock                 background task records
 ```
 
-A lock is only taken while holding the ones above it, never the reverse, so
-actions cannot deadlock. The diff review, prompt history and command history
+Nested locks follow this order; an action may take a lower lock alone.
+The diff review, prompt history and command history
 each have their own `<file>.lock`, taken alone. Queue edits take `queue.lock`
 alone; dispatch takes `queue.lock` → `jobs.lock`, releasing both before
 recording the run under the graph lock.
@@ -126,8 +127,9 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
   session files read again. The UI's cached state only decides what to offer.
 - Inline sessions hold `jobs.lock` only while starting and finishing, not
   while the agent runs.
-- Readers take no lock. Files are replaced atomically, and a reload swaps the
-  in-memory records in one assignment, so readers see the old state or the new.
+- Most readers take no lock. Files are replaced atomically, and a reload swaps
+  the in-memory records in one assignment. Queue readers take `queue.lock` so
+  they can recover interrupted multi-file transactions before reading.
 - Locks are `flock`s on separately opened files, so they also order the threads
   of one TUI. They are not re-entrant: code holding one uses unlocked helpers
   such as `JobManager._busy_reason`.
@@ -138,23 +140,35 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 
 ## Unsupervised queue dispatch
 
-`queue.json` holds pending launch snapshots, per-bookmark pause/error state,
-named marks, and bounded undo/redo snapshots. Mutations reload under
-`queue.lock` and replace the file atomically. Dispatch holds that lock while
+`queue.json` indexes pending and started task IDs, per-bookmark pause/error state,
+named marks, and bounded pending-task undo/redo snapshots. Each task lives in
+`queue-tasks/<id>.json`, with its launch spec, retained job record and pinned
+starting/result revisions and commit IDs, including runs that start immediately
+and dry-run previews. Previews are recorded directly in task history without
+dispatching pending tasks or changing queue pause state. Mutations reload under
+`queue.lock`.
+A durable `queue-transaction.json` journal makes the per-task files and index
+recoverable as one transaction; readers finish an interrupted write under the
+same lock. Legacy inline task records migrate on the next mutation.
+Dispatch holds that lock while
 `JobManager.start_background` takes `jobs.lock`, so multiple instances cannot
 claim the same task. No caller holds a graph, jobs or host-task lock when
 acquiring the queue lock. Graph recording happens after releasing the queue lock.
 
 The dispatched job stores the task's unique `queue_id`. Retrying after a crash
-between saving the job and removing the queue entry finds that job in the current
-record or retained job history instead of spawning it again. Consuming a task
+between saving the job and moving the queue entry to history finds that job in the
+current record or retained job history instead of spawning it again. Consuming a task
 also removes it from every undo/redo snapshot, preventing replay through undo.
 A launch error pauses only that bookmark's queue. Corrupt queue state is reported
 without overwriting the file.
 
-Refresh polls jobs, captures finished runs in the bookmark history, then starts
-at most one queued task for each idle bookmark. Pending prompts and pause state
-survive TUI restarts; dispatch needs a live, refreshing TUI instance.
+The job captures its starting revision under the launch lock, after the busy
+check. Queue refresh retains status and log paths and captures the finished
+revision before dispatching the next run. It uses the graph's pinned outcome or,
+while holding `jobs.lock`, a fresh bookmark tip if this is still the current job.
+It never attributes a later job's tip to an earlier task. Completed tasks remain
+until deleted; pending-task undo cannot restore or rerun them. Queue editors pause
+dispatch persistently, including across TUI instances, until explicitly resumed.
 
 ## Limitations
 

@@ -28,7 +28,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 from textual.widgets.data_table import ColumnKey
 
-from project_sandbox_tui import commands, launchers, notify, octopus, terminal
+from project_sandbox_tui import commands, doctor, launchers, notify, octopus, terminal
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
@@ -308,7 +308,7 @@ CHEATSHEET: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("i", "interactive"),
             ("I", "host agent"),
-            ("r", "unsupervised run"),
+            ("r", "run or queue prompt"),
             ("x", "cancel · 3×: forget"),
             ("l ⏎", "log / transcript"),
             ("P", "details / command"),
@@ -642,7 +642,7 @@ class SandboxTUI(App[None]):
         else:
             self._state_problem("tasks", "")
         try:
-            await asyncio.to_thread(self.queue.load)
+            await asyncio.to_thread(self.queue.refresh, self.jobs, self._task_outcome)
             if (
                 listed
                 and not self.dry_run
@@ -650,7 +650,11 @@ class SandboxTUI(App[None]):
             ):
                 # Finalise the previous run against a fresh bookmark snapshot
                 # before a queued launch replaces its job record.
-                self.branches = sort_branches(await asyncio.to_thread(self.backend.list_branches))
+                self.branches = sort_branches(
+                    await asyncio.to_thread(
+                        self.backend.list_branches, compare_to_main=self.cfg.project.main_branch
+                    )
+                )
                 await self._sync_graph(time.time())
                 for job in await asyncio.to_thread(self._dispatch_queue):
                     self._record_run(job)
@@ -1403,9 +1407,21 @@ class SandboxTUI(App[None]):
         if reason := self._session_target_error(name):
             self.notify(reason, severity="warning")
             return
-        self.push_screen(QueueScreen(self.queue, name, self._edit_queued_task))
+        self.push_screen(
+            QueueScreen(self.queue, name, self._edit_queued_task, self._review_commits)
+        )
 
     def _edit_queued_task(self, name: str, task: QueuedTask | None) -> None:
+        try:
+            self.queue.pause(name, True)
+            if task:
+                task = next((t for t in self.queue.get(name).tasks if t.id == task.id), None)
+                if task is None:
+                    raise ValueError("task already started or was deleted")
+        except (OSError, ValueError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.notify(f"{name}: queue paused for editing; press p in the prompt queue to resume")
         last = LastUsed.load(self.repo)
         defaults = resolve_launch_defaults(self.cfg, last)
         if task:
@@ -1465,7 +1481,47 @@ class SandboxTUI(App[None]):
                 return f"{name} no longer exists; restore it before resuming"
             return self._session_target_error(name) or None
 
-        return self.queue.dispatch(self.jobs, lambda: self._sessions_now(names), valid)
+        return self.queue.dispatch(
+            self.jobs,
+            lambda: self._sessions_now(names),
+            valid,
+            self.backend._description_commit,
+            self._task_outcome,
+        )
+
+    def _task_outcome(self, task: QueuedTask) -> tuple[str, list[str]] | None:
+        """Use the run's pinned outcome, never a later run's bookmark tip."""
+        if task.job is None:
+            return None
+        node = next(
+            (
+                n
+                for n in self.graph.state.nodes.values()
+                if n.kind == "run"
+                and (n.bookmark, n.job) == (task.spec.branch, task.job.started_at)
+            ),
+            None,
+        )
+        result = node.commit if node and node.status and node.status != "unknown" else ""
+        if not result:
+            # Queue refresh holds jobs.lock. A fresh tip is safe only while
+            # this is still the current run; another TUI cannot launch yet.
+            current = self.jobs.jobs.get(task.spec.branch)
+            if current is None or current.queue_id != task.id or current.running:
+                return None
+            try:
+                result = self.backend._description_commit(task.spec.branch)
+            except VcsError:
+                return None  # bookmark removed; a graph outcome may arrive later
+        commits = (
+            [
+                c.commit
+                for c in self.backend.review_commits(task.base_commit, result, snapshot=False)
+            ]
+            if task.base_commit
+            else [result]
+        )
+        return result, commits
 
     def _report_queue_errors(self) -> None:
         for name, queue in self.queue.queues.items():
@@ -1647,7 +1703,14 @@ class SandboxTUI(App[None]):
             if spec.mode == "background":
                 if self.dry_run:
                     # Preview only this submission; never consume pending real tasks.
-                    started = [self.jobs.start_background(spec, self.sessions)]
+                    started = [
+                        self.queue.start(
+                            spec,
+                            self.jobs,
+                            self.sessions,
+                            lambda: self.backend._description_commit(spec.branch),
+                        )
+                    ]
                 else:
                     self.queue.add(spec)
                     started = self._dispatch_queue()
@@ -2619,6 +2682,17 @@ class SandboxTUI(App[None]):
 
     # ------------------------------------------------------------ commands
 
+    def action_doctor(self) -> None:
+        checks = doctor.check_comparisons(self.branches, self.cfg.project.main_branch)
+        body = (
+            f"Repository: {self.repo}\n\n"
+            "Comparisons from the current bookmark list (? means unavailable).\n"
+            "↑ commits ahead · ↓ commits behind · Δ files differing between tips\n\n"
+            + "\n\n".join(check.render() for check in checks)
+            + "\n\nFor dependency, runtime and configuration checks: sbx-tui doctor"
+        )
+        self.push_screen(MessageScreen("doctor · comparisons to main", body))
+
     def action_command_line(self) -> None:
         names = [*commands.BUILTINS, *self.cfg.commands, *self.cfg.actions]
         screen = CommandScreen(names, self.command_history, self.repo)
@@ -2683,6 +2757,8 @@ class SandboxTUI(App[None]):
             await self.action_quit()
         elif command.builtin == "help":
             self.action_help()
+        elif command.builtin == "doctor":
+            self.action_doctor()
         elif command.builtin == "refresh":
             await self.refresh_data()
         elif command.builtin == "reload":

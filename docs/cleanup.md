@@ -11,15 +11,18 @@ they are kept. `j` `k` move, `space` toggles a row, `a` selects all/none,
 reasons for keeping others.
 
 Candidates come from `jj workspace list`, regardless of name or location. The
-current workspace is excluded. Normal cleanup keeps `default` and workspaces
-with running sessions or [`:*` tasks](usage.md#running-in-each-workspace),
-uncommitted changes or files too large to snapshot; workspaces in use cannot
-be force-removed either.
+current workspace and `default` are protected. Workspaces with running sessions
+or [`:*` tasks](usage.md#running-in-each-workspace) cannot be removed, even by
+force. Normal cleanup also keeps files too large to snapshot and uncommitted
+changes not already included in main.
 Directories containing another registered workspace are protected from both
 normal and force removal; remove the nested workspace first and scan again.
 Running sessions also protect enclosing and nested workspace directories.
 
 ## Merged work
+
+Clean workspaces without ignored files can be removed even before merging;
+their bookmarks stay.
 
 The [main bookmark](configuration.md#settings-reference) defines merged work:
 
