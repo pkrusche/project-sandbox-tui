@@ -56,16 +56,21 @@ command -v uv >/dev/null || die "uv not found on PATH"
 
 # jj: the test treats doctor's "older than tested" warning as a failure.
 command -v jj >/dev/null || die "jj not found on PATH (need >= $min_jj): https://jj-vcs.github.io/jj/"
-jj_version=$(version_of "$(jj --version)")
+jj_output=$(jj --version) || die "jj --version failed"
+jj_version=$(version_of "$jj_output") || die "could not parse jj version"
 at_least "$jj_version" "$min_jj" || die "jj $jj_version is older than $min_jj"
 info "jj $jj_version"
 
 # project-sandbox: the default command may be installed on request; a custom one is only checked.
 ps_version() {
-    local -a cmd
-    read -ra cmd <<<"${command:-project-sandbox}"
-    command -v "${cmd[0]}" >/dev/null || return 1
-    version_of "$("${cmd[@]}" --version 2>&1)"
+    local output
+    # Parse quoted arguments exactly as the TUI and smoke test do.
+    output=$(uv run --locked --quiet python -c '
+import os, shlex, sys
+cmd = shlex.split(sys.argv[1])
+os.execvp(cmd[0], [*cmd, "--version"])
+' "${command:-project-sandbox}" 2>&1) || return 1
+    version_of "$output"
 }
 ps_found=$(ps_version || true)
 if [[ -z $command ]] && { [[ -z $ps_found ]] || ! at_least "$ps_found" "$min_ps"; }; then

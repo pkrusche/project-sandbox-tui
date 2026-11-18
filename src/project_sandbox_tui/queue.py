@@ -20,7 +20,7 @@ from typing import Any
 
 from project_sandbox_tui import feedback
 from project_sandbox_tui.config import STATE_VERSION, ConfigError, private_dir, write_state
-from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _now
+from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, SessionSource, _now
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord
 from project_sandbox_tui.vcs import VcsError, detect, main_branch
 
@@ -107,6 +107,18 @@ class BookmarkQueue:
     def entries(self) -> list[QueuedTask]:
         """Pending tasks in FIFO order, followed by runs newest first."""
         return self.tasks + list(reversed(self.history))
+
+    @property
+    def predecessor(self) -> QueuedTask | None:
+        """The latest real run, including in histories written before preview filtering."""
+        return next(
+            (
+                task
+                for task in reversed(self.history)
+                if task.job and "--dry-run" not in task.job.argv
+            ),
+            None,
+        )
 
     def checkpoint(self) -> None:
         self.undo.append(copy.deepcopy(self.tasks))
@@ -302,7 +314,7 @@ class TaskQueue:
         self,
         spec: LaunchSpec,
         jobs: JobManager,
-        sessions: dict[str, SessionRecord],
+        sessions: SessionSource,
         commit: Callable[[], str] | None = None,
     ) -> JobRecord:
         """Retain an immediate run without dispatching or editing pending tasks."""
@@ -428,19 +440,19 @@ class TaskQueue:
 
     def _decide(self, jobs: JobManager) -> None:
         """Commit successors before launching them; never replay a decision."""
-        policy = jobs.cfg.feedback
+        cfg = jobs.cfg
+        policy = cfg.feedback
         if not policy.makes_decisions:
             return
         with self.transaction() as queues:
             self._refresh(queues, jobs)
             for queue in queues.values():
-                if queue.paused or not queue.history:
+                task = queue.predecessor
+                if queue.paused or task is None:
                     continue
-                task = queue.history[-1]
                 job = task.job
                 if not job or job.running or task.decision_done:
                     continue
-                policy = jobs.cfg.feedback
                 result = job.reported_outcome
                 task.decision_done = True
                 successor = None
@@ -459,14 +471,17 @@ class TaskQueue:
                             queue.paused, queue.error = True, "feedback workflow step limit reached"
                             task.decision = queue.error
                         else:
-                            action = jobs.cfg.actions[action_name]
+                            action = cfg.actions[action_name]
                             spec = copy.deepcopy(task.spec)
-                            main = jobs.cfg.project.main_branch
+                            main = cfg.project.main_branch
                             if "{main}" in action.prompt and not main:
-                                main = (
-                                    main_branch([b.name for b in detect(jobs.repo).list_branches()])
-                                    or ""
-                                )
+                                try:
+                                    branches = detect(jobs.repo).list_branches()
+                                except (VcsError, OSError) as exc:
+                                    queue.paused, queue.error = True, str(exc)
+                                    task.decision_done = False  # retry the lookup on resume
+                                    continue
+                                main = main_branch([b.name for b in branches]) or ""
                             spec.prompt_text = action.render(spec.branch, main)
                             for key in ("agent", "model", "effort"):
                                 if value := getattr(action, key):
@@ -495,19 +510,23 @@ class TaskQueue:
     def _needs_decision(queue: BookmarkQueue, jobs: JobManager) -> bool:
         policy = jobs.cfg.feedback
         return bool(
-            policy.makes_decisions and queue.history and not queue.history[-1].decision_done
+            policy.makes_decisions
+            and (previous := queue.predecessor)
+            and not previous.decision_done
         )
 
     @staticmethod
     def _input_state(queue: BookmarkQueue, task: QueuedTask, jobs: JobManager) -> dict[str, Any]:
         keys = jobs.cfg.feedback.pass_state_keys
-        if not keys or (not queue.history and not task.parent_task):
+        if not keys:
             return {}
         source = (
             next((t for t in queue.history if t.id == task.parent_task), None)
             if task.parent_task
-            else (queue.history[-1] if queue.history else None)
+            else queue.predecessor
         )
+        if source is None and not task.parent_task:
+            return {}  # first real run
         job = source.job if source else None
         if not job or job.running or job.reported_outcome == "unknown" or not job.feedback_snapshot:
             raise ValueError("state handoff requires a valid final predecessor report")
@@ -552,7 +571,7 @@ class TaskQueue:
                         continue
                     job = jobs.start_background(
                         task.spec,
-                        sessions(),
+                        sessions,
                         queue_id=task.id,
                         base_commit=partial(commit, branch) if commit else None,
                         previous_state=self._input_state(queue, task, jobs),

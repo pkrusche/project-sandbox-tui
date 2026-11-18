@@ -211,12 +211,18 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--outcome", choices=OUTCOMES, required=True)
     args = parser.parse_args(argv)
     try:
+        state = read_json(args.state_file) if args.state_file else None
+        checks = read_json(args.checks_file) if args.checks_file else None
+        if args.state_file and not isinstance(state, dict):
+            raise FeedbackError("state must be an object")
+        if args.checks_file and not isinstance(checks, list):
+            raise FeedbackError("checks must be an array")
         report(
             args.context_dir,
             args.summary,
             getattr(args, "outcome", None),
-            read_json(args.state_file) if args.state_file else None,
-            read_json(args.checks_file) if args.checks_file else None,
+            state,
+            checks,
         )
     except (OSError, ValueError) as exc:
         print(f"sbx-report: {exc}", file=sys.stderr)

@@ -15,7 +15,9 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
     source.mkdir()
     for name in ("src", "docs", "tests", "scripts"):
         shutil.copytree(root / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
-    for name in ("pyproject.toml", "README.md", "LICENSE", "uv.lock"):
+    (source / ".github/workflows").mkdir(parents=True)
+    shutil.copy2(root / ".github/workflows/ci.yml", source / ".github/workflows/ci.yml")
+    for name in ("pyproject.toml", "README.md", "CHANGELOG.md", "LICENSE", "uv.lock"):
         shutil.copy2(root / name, source / name)
     # A future bump must reach the CLI without updating a Python version constant.
     project = source / "pyproject.toml"
@@ -51,6 +53,8 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
             Path(name).relative_to(f"project_sandbox_tui-{version}") for name in archive.getnames()
         }
         assert {name.parts[0] for name in names} <= {
+            ".github",
+            "CHANGELOG.md",
             "src",
             "docs",
             "tests",
@@ -66,6 +70,8 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         assert Path("src/project_sandbox_tui/skills/sbx-run-feedback/SKILL.md") in names
         assert Path("src/project_sandbox_tui/feedback.py") in names
         assert Path("src/project_sandbox_tui/feedback_host.py") in names
+        assert Path(".github/workflows/ci.yml") in names
+        assert Path("scripts/e2e-test.sh") in names
         assert Path("scripts/test.sh") in names
         assert Path("scripts/make-release.sh") in names
         assert Path("scripts/update-pins.py") in names

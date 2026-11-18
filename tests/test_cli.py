@@ -270,3 +270,12 @@ def test_trust_config_eof_is_a_decline(
     assert main([str(repo), "--trust-config"]) == 1
     assert "not trusted" in capsys.readouterr().out
     assert config.ProjectTrust.check(repo).needs_review
+
+
+def test_init_preserves_guidance_line_endings(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+    agents = repo / "AGENTS.md"
+    original = b"# Project\r\n\r\nUse local settings.\r\n"
+    agents.write_bytes(original)
+    assert main([str(repo), "--init"]) == 0
+    assert agents.read_bytes().startswith(original)

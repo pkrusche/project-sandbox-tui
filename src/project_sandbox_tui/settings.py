@@ -12,6 +12,7 @@ import contextlib
 import dataclasses
 import tomllib
 import uuid
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -33,6 +34,8 @@ from project_sandbox_tui.config import (
     global_config_path,
     load,
     project_config_path,
+    state_home,
+    state_lock,
     validate_profile_name,
 )
 
@@ -164,55 +167,79 @@ class Editor:
         except (OSError, ValueError) as exc:  # tomlkit's ParseError is a ValueError
             raise ConfigError(f"{self.path}: {exc}") from exc
 
+    @contextlib.contextmanager
+    def _edit(self) -> Generator[tomlkit.TOMLDocument]:
+        # Project and global files are validated together. Serialize both scopes,
+        # including the trusted-copy update, across CLI and TUI editors.
+        try:
+            with state_lock(state_home() / "config.lock"):
+                if self.scope == "project" and self.repo is not None:
+                    trust = ProjectTrust.check(self.repo)
+                    # Parse exactly the bytes whose trust status was checked.
+                    try:
+                        doc = tomlkit.parse(trust.current or "")
+                    except ValueError as exc:
+                        raise ConfigError(f"{self.path}: {exc}") from exc
+                    trusted = not trust.needs_review
+                else:
+                    doc = self.read()
+                    trusted = False
+                before = tomlkit.dumps(doc)
+                yield doc
+                text = tomlkit.dumps(doc)
+                if text != before:
+                    self._write(text, trusted)
+        except OSError as exc:
+            raise ConfigError(f"cannot write {self.path}: {exc}") from exc
+
     def set(self, key: Key, value: Any) -> None:
-        doc = self.read()
-        table: Any = doc
-        for part in key.path[:-1]:
-            inner = table.get(part)
-            if not isinstance(inner, dict):
-                inner = tomlkit.table(is_super_table=part in ("actions", "profiles"))
-                table[part] = inner
-            table = inner
-        table[key.path[-1]] = value
-        self.write(doc)
+        with self._edit() as doc:
+            table: Any = doc
+            for part in key.path[:-1]:
+                inner = table.get(part)
+                if not isinstance(inner, dict):
+                    inner = tomlkit.table(is_super_table=part in ("actions", "profiles"))
+                    table[part] = inner
+                table = inner
+            table[key.path[-1]] = value
 
     def save_profile(self, name: str, profile: AgentProfile) -> None:
         """Save all profile fields together, preserving unrelated project settings."""
         validate_profile_name(name)
         profile.validate(f"profiles.{name}")
-        doc = self.read()
-        if "profiles" not in doc:
-            doc["profiles"] = tomlkit.table(is_super_table=True)
-        profiles: Any = doc["profiles"]
-        if not isinstance(profiles, dict):
-            raise ConfigError("[profiles] must be a table")
-        if name not in profiles:
-            profiles[name] = tomlkit.table()
-        if not isinstance(profiles[name], dict):
-            raise ConfigError(f"[profiles.{name}] must be a table")
-        for key, value in dataclasses.asdict(profile).items():
-            profiles[name][key] = value
-        self.write(doc)
+        with self._edit() as doc:
+            if "profiles" not in doc:
+                doc["profiles"] = tomlkit.table(is_super_table=True)
+            profiles: Any = doc["profiles"]
+            if not isinstance(profiles, dict):
+                raise ConfigError("[profiles] must be a table")
+            if name not in profiles:
+                profiles[name] = tomlkit.table()
+            if not isinstance(profiles[name], dict):
+                raise ConfigError(f"[profiles.{name}] must be a table")
+            for key, value in dataclasses.asdict(profile).items():
+                profiles[name][key] = value
 
     def unset(self, key: Key) -> bool:
         """Remove ``key``; returns False if the file did not set it."""
-        doc = self.read()
-        tables: list[Any] = [doc]
-        for part in key.path[:-1]:
-            inner = tables[-1].get(part)
-            if not isinstance(inner, dict):
+        with self._edit() as doc:
+            tables: list[Any] = [doc]
+            for part in key.path[:-1]:
+                inner = tables[-1].get(part)
+                if not isinstance(inner, dict):
+                    return False
+                tables.append(inner)
+            if key.path[-1] not in tables[-1]:
                 return False
-            tables.append(inner)
-        if key.path[-1] not in tables[-1]:
-            return False
-        del tables[-1][key.path[-1]]
-        # Drop tables left with nothing, not even a comment, innermost first.
-        for parent, part, table in reversed(list(zip(tables, key.path, tables[1:], strict=False))):
-            if isinstance(table, tomlkit.items.Table) and not table.as_string().strip():
-                del parent[part]
-            else:
-                break
-        self.write(doc)
+            del tables[-1][key.path[-1]]
+            # Drop tables left with nothing, not even a comment, innermost first.
+            for parent, part, table in reversed(
+                list(zip(tables, key.path, tables[1:], strict=False))
+            ):
+                if isinstance(table, tomlkit.items.Table) and not table.as_string().strip():
+                    del parent[part]
+                else:
+                    break
         return True
 
     def _other(self) -> dict[str, Any]:
@@ -228,14 +255,12 @@ class Editor:
         except (OSError, ValueError) as exc:
             raise ConfigError(f"cannot load the other config file: {exc}") from exc
 
-    def write(self, doc: tomlkit.TOMLDocument) -> None:
-        text = tomlkit.dumps(doc)
+    def _write(self, text: str, trusted: bool) -> None:
         mine = tomllib.loads(text)
         other = self._other()
         merged = deep_merge(other, mine) if self.scope == "project" else deep_merge(mine, other)
         from_dict(merged).validate()  # nothing is written when this raises
 
-        trusted = self.repo is not None and not ProjectTrust.check(self.repo).needs_review
         tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -526,3 +526,37 @@ def test_tui_dispatches_successor_when_no_manual_tasks_remain(
         assert app.queue.get("feature/x").paused
 
     run_app(repo, cfg, scenario)
+
+
+@pytest.mark.parametrize("option", ["--state-file", "--checks-file"])
+def test_helper_rejects_explicit_null(reporting_dir: Path, tmp_path: Path, option: str) -> None:
+    data = tmp_path / "null.json"
+    data.write_text("null")
+    args = ["--context-dir", str(reporting_dir), "finish", "--outcome", "success"]
+    assert feedback.main([*args, "--summary", "done", option, str(data)]) == 1
+    assert not (reporting_dir / "output/feedback.json").exists()
+
+
+def test_preview_preserves_real_predecessor_for_policy_and_state(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.require_reported_success = True
+    cfg.feedback.pass_state_keys = ["chosen"]
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(spec("sleep:0.1"))
+    first = queue.dispatch(jobs, lambda: {}, lambda _: None)[0]
+    feedback.report(Path(first.feedback_path).parent.parent, "done", "success", {"chosen": 7})
+    finish(jobs)
+    preview = spec("preview")
+    preview.extra_args.append("--dry-run")
+    queue.start(preview, jobs, {})
+    finish(jobs)
+    queue = TaskQueue(jobs.state_dir)
+    queued = queue.add(spec())
+    [second] = queue.dispatch(jobs, lambda: {}, lambda _: None)
+    assert second.queue_id == queued.id
+    context = feedback.read_json(Path(second.feedback_path).parent.parent / "context.json")
+    assert context["previous_state"] == {"chosen": 7}
+    finish(jobs)

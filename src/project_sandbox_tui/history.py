@@ -75,9 +75,9 @@ class PromptHistory:
                 entries.append(text)
                 entries = entries[-self.max_entries :]
                 write_state(self.path, {"version": STATE_VERSION, "prompts": entries})
+                self.entries = entries
         except OSError:
             return  # history is a convenience, never fatal
-        self.entries = entries
 
     # ------------------------------------------------------------ queries
 

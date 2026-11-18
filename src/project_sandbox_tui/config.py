@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import difflib
+import fcntl
 import hashlib
 import json
 import math
@@ -23,6 +24,7 @@ import shlex
 import time
 import tomllib
 import uuid
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -691,6 +693,14 @@ def private_dir(path: Path) -> Path:
     return path
 
 
+@contextlib.contextmanager
+def state_lock(path: Path) -> Generator[None]:
+    private_dir(path.parent)
+    with path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 STATE_VERSION = 1  # of the JSON state files read with read_state_for_update
 
 
@@ -741,6 +751,12 @@ def write_state(path: Path, data: Any, *, durable: bool = False) -> None:
                 stream.flush()
                 os.fsync(stream.fileno())
         tmp.replace(path)
+        if durable:
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
@@ -766,6 +782,10 @@ class LastUsed:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return cls()
+        return cls._from_dict(raw)
+
+    @classmethod
+    def _from_dict(cls, raw: Any) -> LastUsed:
         if not isinstance(raw, dict):
             return cls()
         out = cls()
@@ -801,6 +821,15 @@ class LastUsed:
         ):
             out.host_command = host_command
         return out
+
+    @classmethod
+    @contextlib.contextmanager
+    def edit(cls, repo: Path) -> Generator[LastUsed]:
+        directory = repo_state_dir(repo)
+        with state_lock(directory / "last_used.lock"):
+            last = cls._from_dict(read_state_for_update(directory / "last_used.json"))
+            yield last
+            last.save(repo)
 
     def save(self, repo: Path) -> None:
         path = repo_state_dir(repo) / "last_used.json"
@@ -861,18 +890,17 @@ def remember(
     profile: str = "",
     extra_args: list[str] | None = None,
 ) -> None:
-    last = LastUsed.load(repo)
-    last.profile = profile
-    if not profile:
-        last.extra_args = list(extra_args or [])
-    last.agent = agent
-    last.effort = effort
-    if timeout is not None:
-        last.timeout = timeout
-    last.model_by_agent[agent] = model
-    if agent in FAST_AGENTS:
-        last.fast_by_agent[agent] = fast
-    last.save(repo)
+    with contextlib.suppress(OSError), LastUsed.edit(repo) as last:
+        last.profile = profile
+        if not profile:
+            last.extra_args = list(extra_args or [])
+        last.agent = agent
+        last.effort = effort
+        if timeout is not None:
+            last.timeout = timeout
+        last.model_by_agent[agent] = model
+        if agent in FAST_AGENTS:
+            last.fast_by_agent[agent] = fast
 
 
 # ---------------------------------------------------------------- templates

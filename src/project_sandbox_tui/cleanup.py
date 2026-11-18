@@ -116,14 +116,20 @@ def _merged(repo: Path, main: str | None, ws: _Found) -> bool:
         return False
 
 
-def _dirty(repo: Path, path: Path) -> tuple[str, bool]:
-    """(why ``path`` must be kept, whether it has ignored files) — ("", False) when clean."""
-    # Snapshot before inspecting: never discard unsnapshotted changes.
-    owner = _run(["jj", "root"], path).strip()
-    if Path(owner).resolve() != path.resolve():
-        raise VcsError("not a workspace")
-    if _jj_store(path) != _jj_store(repo):
-        raise VcsError("workspace belongs to another repository")
+def _verify_workspace(repo: Path, path: Path, name: str) -> None:
+    if not (path / ".jj").is_dir() or _jj_store(path) != _jj_store(repo):
+        raise VcsError(f"{path} is not a workspace of this repository")
+    # jj may no longer know a missing workspace's root. A guessed path
+    # can now belong to another workspace of the same repository.
+    current = _jj(
+        path, "workspace", "list", "-T", "if(target.current_working_copy(), stringify(name))"
+    )
+    if current != name:
+        raise VcsError(f"{path} is not the registered workspace {name}")
+
+
+def _dirty(path: Path) -> tuple[str, bool]:
+    """Snapshot before inspecting and report dirty and ignored files."""
     diff, warnings = _run_with_stderr(["jj", "diff", "--summary"], path)
     dirty = "uncommitted changes" if diff.strip() else ""
     if "Refused to snapshot" in warnings:
@@ -196,7 +202,11 @@ def _inspect(
             return remove("directory not found", merged=True)
         return keep(ws.problem)
     try:
-        changes, ignored = _dirty(repo, path)  # snapshots before _merged looks
+        _verify_workspace(repo, path, name)
+    except (VcsError, OSError) as exc:
+        return keep(str(exc), forceable=False)
+    try:
+        changes, ignored = _dirty(path)  # snapshots before _merged looks
         merged = _merged(repo, main, ws)
     except (VcsError, OSError) as exc:
         return keep(str(exc))
@@ -256,7 +266,11 @@ class _Survey:
 
 
 def _survey(
-    backend: JjBackend, cfg: Config, jobs: JobManager, sessions_dir: Path | None
+    backend: JjBackend,
+    cfg: Config,
+    jobs: JobManager,
+    sessions_dir: Path | None,
+    task_manager: TaskManager,
 ) -> _Survey:
     repo = backend.root.resolve()
     wd = cfg.resolve_path(cfg.project.worktree_dir, repo) if cfg.project.worktree_dir else None
@@ -274,8 +288,6 @@ def _survey(
         if j.running
     }
     # :* tasks only use a workspace's files, so they keep it but don't make it busy.
-    task_manager = TaskManager(jobs.state_dir)
-    task_manager.refresh()  # records of tasks that ended since a TUI last looked
     tasks = {Path(t.cwd).resolve() for t in task_manager.tasks.values() if t.running}
     merged_rows = _merged_bookmarks(repo, main, busy | tasks, jobs, wd) if main else []
     roots = {ws.path.resolve() for ws in found}
@@ -285,7 +297,9 @@ def _survey(
 def _scan(
     backend: JjBackend, cfg: Config, jobs: JobManager, sessions_dir: Path | None
 ) -> list[Workspace]:
-    survey = _survey(backend, cfg, jobs, sessions_dir)
+    tasks = TaskManager(jobs.state_dir)
+    tasks.refresh()
+    survey = _survey(backend, cfg, jobs, sessions_dir, tasks)
     rows = [survey.inspect(ws) for ws in survey.found] + survey.bookmark_rows()
     return sorted(rows, key=lambda ws: (not ws.removable, ws.path is None, ws.name))
 
@@ -325,23 +339,41 @@ def remove_workspaces(
     jobs = JobManager(repo, cfg, state_dir)
     results: list[str] = []
 
-    def remove(ws: Workspace) -> None:
+    def remove(ws: Workspace, selected: Workspace) -> None:
         if not ws.removable:
             results.append(f"skipped {ws.describe}")
             return
         if ws.path is not None:
             try:
                 if not dry_run:
+                    owned = ws.path.exists()
+                    if owned:
+                        _verify_workspace(repo, ws.path, ws.name)
                     _run(["jj", "workspace", "forget", "--", ws.name], repo)
-                    if ws.path.exists():
+                    if owned:
                         shutil.rmtree(ws.path)
                 verb = "would remove" if dry_run else "removed"
                 results.append(f"{verb} {ws.name}: {ws.path}")
             except (VcsError, OSError) as exc:
                 results.append(f"skipped {ws.name}: {ws.path} ({exc})")
                 return
-        if ws.branch:
+        if ws.branch and ws.branch == selected.branch:
             try:
+                # Snapshotting or work outside the TUI can move a bookmark since
+                # the survey, especially during a batch removal.
+                still_merged = survey.main and _jj(
+                    repo,
+                    "bookmark",
+                    "list",
+                    f"exact:{revset_symbol(ws.branch)}",
+                    "-r",
+                    f"::{revset_symbol(survey.main)}",
+                    "-T",
+                    'if(remote || conflict, "", "1")',
+                )
+                if not still_merged:
+                    results.append(f"kept bookmark {ws.branch} (no longer merged)")
+                    return
                 if not dry_run:
                     _jj(repo, "bookmark", "delete", f"exact:{revset_symbol(ws.branch)}")
                 verb = "would delete" if dry_run else "deleted"
@@ -350,18 +382,20 @@ def remove_workspaces(
                 results.append(f"kept bookmark {ws.branch} ({exc})")
 
     # Share the launch lock so another TUI cannot start a job during removal.
-    with jobs._locked():
+    tasks = TaskManager(jobs.state_dir)
+    with jobs._locked(), tasks._locked():
         jobs.load()
-        survey = _survey(backend, cfg, jobs, sessions_dir)
+        tasks._refresh_locked()
+        survey = _survey(backend, cfg, jobs, sessions_dir, tasks)
         # Each workspace is inspected right before it is removed, not all of
         # them first: editors and shells take no lock, so files may change
         # while the others are being checked.
         for found in sorted(survey.found, key=lambda ws: ws.name):
-            if wanted.pop(key(found.path, found.name), None) is not None:
-                remove(survey.inspect(found))
+            if selected := wanted.pop(key(found.path, found.name), None):
+                remove(survey.inspect(found), selected)
         for ws in survey.bookmark_rows():
-            if wanted.pop(key(None, ws.name), None) is not None:
-                remove(ws)
+            if selected := wanted.pop(key(None, ws.name), None):
+                remove(ws, selected)
     results += [
         f"skipped {path or 'bookmark ' + name}: no longer found"
         for path, name in sorted(wanted, key=str)
@@ -416,9 +450,11 @@ def force_remove_workspace(
     if chosen.path is None:
         return f"skipped bookmark {chosen.name}: not a workspace"
     jobs = JobManager(repo, cfg, state_dir)
-    with jobs._locked():
+    tasks = TaskManager(jobs.state_dir)
+    with jobs._locked(), tasks._locked():
         jobs.load()
-        survey = _survey(backend, cfg, jobs, sessions_dir)
+        tasks._refresh_locked()
+        survey = _survey(backend, cfg, jobs, sessions_dir, tasks)
         found = next(
             (
                 ws
@@ -433,10 +469,9 @@ def force_remove_workspace(
         if not ws.forceable:
             return f"skipped {ws.describe}"
         try:
-            # Only delete a directory that really is a workspace of this repository.
-            owned = ws.path.is_dir() and _jj_store(ws.path) == _jj_store(repo)
-            if ws.path.exists() and not owned:
-                raise VcsError(f"{ws.path} is not a workspace of this repository")
+            owned = ws.path.exists()
+            if owned:
+                _verify_workspace(repo, ws.path, ws.name)
             _run(["jj", "workspace", "forget", "--", ws.name], repo)
             if owned:
                 shutil.rmtree(ws.path)

@@ -142,7 +142,8 @@ Resuming with `p` explicitly overrides that pause for the next task; it does not
 replay the decision for the failed task.
 
 `pass_state_keys` selects top-level state keys to copy into the next task's
-context. The first task has empty previous state. Later tasks require a valid
+context. The first real task has empty previous state. Dry-run previews remain in history
+and are skipped when evaluating feedback policies and selecting predecessor state. Later tasks require a valid
 final predecessor report with all requested keys; otherwise dispatch pauses.
 Generated successor tasks use their recorded parent. Missing/deleted parent
 reports cannot silently supply state from a different task.
@@ -190,7 +191,9 @@ upstream mount format cannot represent them.
 ## Initialization and diagnostics
 
 `sbx-tui --init` installs local reporting skills and appends an idempotent,
-marked block to `AGENTS.md`. Existing prose is preserved. Customized/incomplete
+marked block to `AGENTS.md`. Installation takes the workspace's `guidance.lock`
+and requires regular guidance files and directories. A symlink in a destination
+path stops installation. Appending the block preserves the existing file contents. Customized/incomplete
 blocks and customized/older skill files are preserved and reported; reconcile
 blocks manually or remove an installed skill and rerun `--init` to refresh it.
 Launch-time sandbox skill mounts use the bundled version independently of these

@@ -60,12 +60,12 @@ and container stop commands) get daemon waiters at launch, so their children are
 collected even without another refresh or after their manager is discarded.
 Waiters do not stop live processes or delay quitting the TUI.
 
-Inline sessions use temporary job records to mark workspaces busy across
-instances. Host agents use the same reservations. External host agents report
+Inline sessions reserve their workspace with a running job record and save
+the final status when the terminal returns. Host agents use the same reservations. External host agents report
 their runner PID and exit code in an atomic summary file, so they can be
 tracked without project-sandbox session records. Job records keep only each
 bookmark's latest run and archive replaced or cleared records in bounded history;
-`opgraph.json` keeps every run as a node of the [bookmark history](usage.md#bookmark-history),
+`opgraph.json` keeps bookmark runs as nodes of the [bookmark history](usage.md#bookmark-history),
 finalised with the bookmark's commit on the first refresh that lists bookmarks
 after the run ended. See [sessions](sessions.md) for terminal behavior and
 [state storage](configuration.md#state-directory) for paths and permissions.
@@ -107,12 +107,12 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 
 | Action | Locks | Done under them |
 |---|---|---|
-| Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, graph, queue → jobs, graph | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
+| Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, queue → jobs, then graph and dispatch when needed | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
 | `i` | jobs, graph | Recheck busy, prepare the workspace, reserve the session and add the run node |
 | `r`, `:NAME` actions | queue; queue → jobs, graph | Save the prompt, launch when idle and add the run node. A new bookmark typed into the form is recorded first, under graph |
 | `L` edits / pause / resume | queue | Reload and atomically save pending tasks, history, marks and pause state |
 | `I` | jobs, graph | Recheck busy, create a missing workspace and deploy skills, reserve the target before launching the host agent; add the run node |
-| `r` / `i` with bookmarks selected | history → (jobs, graph); then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark |
+| `r` / `i` with bookmarks selected | history → graph → jobs, then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark |
 | `n` | history → graph | Create with jj, then record the creation and its undo entry |
 | `dd` | history → graph → jobs | Busy check, delete, undo entry |
 | `u` / `ctrl+r` | history → graph → jobs | Busy check, delete or restore, move the undo position |
@@ -120,7 +120,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | `@` | history → jobs | Busy check of the working copy (and of the target's workspace before starting a change there), move it |
 | `e` | history | Describe, only if the target is still the commit that was edited |
 | `:*` | jobs, tasks | Create a missing workspace unless a session is starting; start the task |
-| `:&` | jobs, tasks | Start one task in the repository under `@`; warn if a session is running there |
+| `:&` | tasks, jobs | Start one task in the repository under `@`; warn if a session is running there |
 | `o` | jobs | Create a missing workspace unless a session is starting; deploy skills if idle |
 | `x` | tasks, jobs, graph | Signal tasks; signal or forget the run; record a forgotten run's outcome |
 | `W` | tasks; removal: history → graph → jobs → tasks | List without the launch guard; recheck each chosen workspace right before deleting it |
@@ -139,8 +139,12 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
   such as `JobManager._busy_reason`.
 - Workers that change the repository are not `exclusive`. A second action waits
   for `_history_lock` instead of cancelling the first after jj has already run.
-- `last_used.json` and the trusted project config are replaced atomically
-  without a lock; the last write wins.
+- Launch defaults and host-command updates share the per-checkout `last_used.lock`.
+  CLI settings edits and the TUI profile editor share `config.lock` in the
+  application state directory while reading, validating and saving both scopes.
+  Project edits carry forward the trust status of the exact input they edited.
+- Initialization and host feedback installation share a per-workspace
+  `guidance.lock`. Host installation takes it inside `jobs.lock`.
 
 ## Unsupervised queue dispatch
 

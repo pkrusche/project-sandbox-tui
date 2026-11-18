@@ -132,7 +132,8 @@ the selected CI uv version remains compatible when changing that requirement.
 Run `scripts/make-release.sh` from a checkout with uv, git, jj, and an authenticated
 GitHub CLI (`gh`) on PATH. For Git, start on clean `main` matching `origin/main`.
 For jj (including non-colocated workspaces), start with an empty working copy
-whose parent is immutable `main` and `main@origin`. The script also checks the
+whose only parent is immutable `main` and `main@origin`. One release can run
+per checkout at a time. The script also checks the
 live remote main commit.
 
 Choose a version bump or leave the version unchanged. A bump updates the project

@@ -569,3 +569,60 @@ def test_basename_registered_workspace_belongs_to_its_bookmark(repo: Path) -> No
     JjBackend(repo).add_workspace("feature/x", path)
     [found] = cleanup._jj_workspaces(repo.resolve(), None, {"main", "feature/x"})
     assert (found.name, found.branch) == (path.name, "feature/x")
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_cleanup_holds_task_lock_through_removal(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, force: bool
+) -> None:
+    import fcntl
+
+    from project_sandbox_tui.config import repo_state_dir
+
+    path = _add_workspace(repo, "feature/x")
+    if force:
+        (path / "work.txt").write_text("changed")
+    [ws] = find_workspaces(detect(repo), Config())
+    rmtree = shutil.rmtree
+
+    def check_locked(target: Path) -> None:
+        with (
+            (repo_state_dir(repo) / "tasks.lock").open("a") as lock,
+            pytest.raises(BlockingIOError),
+        ):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        rmtree(target)
+
+    monkeypatch.setattr(shutil, "rmtree", check_locked)
+    if force:
+        assert force_remove_workspace(detect(repo), Config(), ws).startswith("force-removed")
+    else:
+        assert remove_workspaces(detect(repo), Config(), [ws])[0].startswith("removed")
+
+
+def test_cleanup_keeps_bookmark_added_after_selection(repo: Path) -> None:
+    path = repo.parent / "work"
+    run("jj", "workspace", "add", str(path), "--name", "work", "-r", "main", cwd=repo)
+    ws = _scan(repo)["work"]
+    assert ws.removable and not ws.branch
+    run("jj", "bookmark", "create", "work", "-r", "main", cwd=repo)
+    assert remove_workspaces(detect(repo), Config(), [ws]) == [f"removed work: {path}"]
+    assert any(b.name == "work" for b in detect(repo).list_branches())
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_cleanup_keeps_reused_workspace_directory(jj_repo: Path, force: bool) -> None:
+    path = workspace_path(jj_repo, "old", None)
+    path.parent.mkdir()
+    run("jj", "workspace", "add", str(path), "--name", "old", "-r", "main", cwd=jj_repo)
+    selected = _scan(jj_repo)["old"]
+    other = jj_repo.parent / "replacement"
+    run("jj", "workspace", "add", str(other), "--name", "replacement", "-r", "main", cwd=jj_repo)
+    shutil.rmtree(path)
+    other.rename(path)
+    if force:
+        result = force_remove_workspace(detect(jj_repo), Config(), selected)
+    else:
+        [result] = remove_workspaces(detect(jj_repo), Config(), [selected])
+    assert result.startswith("skipped old")
+    assert path.is_dir()

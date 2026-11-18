@@ -30,6 +30,18 @@ confirm() {
 for tool in uv git jj gh; do
     command -v "$tool" >/dev/null || die "Required tool missing: $tool"
 done
+# Protect checkout-local version, progress and artifact changes across invocations.
+# Lock the checkout directory itself so cleanup cannot unlink a live lock file.
+exec 9<"$ROOT"
+lock_python=$(command -v python3 || uv python find)
+"$lock_python" -c 'import fcntl
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit("Another release is running in this checkout.")'
+(
+# Only the waiting outer shell owns the lock. Build tools cannot inherit it.
+exec 9<&-
 JJ=false
 REPO_GIT_DIR=""
 if jj root >/dev/null 2>&1; then
@@ -48,7 +60,8 @@ check_clean() {
     if $JJ; then
         [[ -n "$(jj log -r '@ & empty()' --no-graph -T commit_id)" ]] || die "jj working copy must be empty."
         COMMIT=$(jj log -r '@- & main & main@origin & immutable()' --no-graph -T commit_id)
-        [[ -n "$COMMIT" ]] || die "jj parent must be immutable main, pushed to origin."
+        [[ -n "$COMMIT" && "$(jj log -r '@-' --no-graph -T commit_id)" == "$COMMIT" ]] ||
+            die "jj working copy must have a single parent: immutable main, pushed to origin."
     else
         [[ -z "$(git status --porcelain)" ]] || die "Git working tree must be clean."
         [[ "$(git branch --show-current)" == main ]] || die "Release from main."
@@ -185,3 +198,4 @@ if [[ -z "$(ls -A "$ROOT/.release-status")" ]]; then
     rmdir -- "$ROOT/.release-status"
 fi
 echo "Release $TAG complete. Artifacts are in $ROOT/dist; completed release state removed."
+)

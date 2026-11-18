@@ -690,10 +690,10 @@ class SandboxTUI(App[None]):
                         q.tasks
                         or (
                             self.cfg.feedback.makes_decisions
-                            and q.history
-                            and q.history[-1].job
-                            and not q.history[-1].job.running
-                            and not q.history[-1].decision_done
+                            and (previous := q.predecessor)
+                            and previous.job
+                            and not previous.job.running
+                            and not previous.decision_done
                         )
                     )
                     for q in self.queue.queues.values()
@@ -1686,39 +1686,34 @@ class SandboxTUI(App[None]):
         the session that resolves what is left and reviews the integration."""
         operation: octopus.Operation = "rebase" if spec.operation == "rebase" else "merge"
         plan = octopus.OctopusPlan(operation, list(spec.inputs), spec.branch, spec.base)
-        try:
-            async with self._history_lock:
-                branches = await asyncio.to_thread(self.backend.list_branches)
-                if reason := session_target_error(
-                    spec.branch, [b.name for b in branches], self.cfg.project.main_branch
-                ):
+
+        def prepare() -> tuple[octopus.OctopusState, list[str]]:
+            with self._creating(spec.branch, operation, spec.inputs), self.jobs._locked():
+                branches = self.backend.list_branches()
+                names = [b.name for b in branches]
+                if reason := session_target_error(spec.branch, names, self.cfg.project.main_branch):
                     raise VcsError(reason)
                 octopus.validate(plan, {b.name for b in branches if not b.working_copy})
-                reason = self.jobs.busy_reason(spec.branch, self.sessions)
-                if reason:
+                self.jobs.load()
+                sessions = self._sessions_now([*names, spec.branch])
+                if reason := self.jobs._busy_reason(spec.branch, sessions):
                     raise BusyError(reason)
-                moving = [i for i in spec.inputs if self.jobs.busy_reason(i, self.sessions)]
-                if moving:
-                    self.notify(
-                        f"{', '.join(moving)} still has a session running; the {operation} "
-                        "uses its current state",
-                        severity="warning",
-                        timeout=8,
-                    )
-                self.notify(
-                    f"{spec.branch}: preparing {operation} of {len(spec.inputs)} bookmarks…"
-                )
-                since = time.time()
-                state = await asyncio.to_thread(octopus.prepare, self.repo, plan)
-                warning = await asyncio.to_thread(
-                    self._record_creation, spec.branch, operation, list(spec.inputs), since
-                )
-        except (octopus.OctopusError, BusyError, VcsError) as exc:
+                moving = [i for i in spec.inputs if self.jobs._busy_reason(i, sessions)]
+                return octopus.prepare(self.repo, plan), moving
+
+        try:
+            async with self._history_lock:
+                state, moving = await asyncio.to_thread(prepare)
+        except (OSError, octopus.OctopusError, BusyError, VcsError) as exc:
             self.notify(f"{spec.branch}: {exc}", severity="error", timeout=10)
             await self.refresh_data()
             return
-        if warning:
-            self.notify(warning, severity="warning")
+        if moving:
+            self.notify(
+                f"{', '.join(moving)} had a session running during the {operation}",
+                severity="warning",
+                timeout=8,
+            )
         self.notify(
             f"{spec.branch}: {state.summary()}",
             severity="information" if state.clean else "warning",
@@ -1759,25 +1754,11 @@ class SandboxTUI(App[None]):
                 raise VcsError(reason)
             if new_branch_start is not None:
                 known = {b.name for b in self.branches if not b.working_copy}
-                since = time.time()
-                self.backend.create_branch(spec.branch, new_branch_start)
-                if warning := self._record_creation(
-                    spec.branch,
-                    "create",
-                    [new_branch_start] if new_branch_start in known else None,
-                    since,
-                ):
-                    self.notify(warning, severity="warning")
+                self._create_bookmark(spec.branch, new_branch_start, known)
                 self.branches = sort_branches(self.backend.list_branches())
                 self._pending_select = spec.branch
             if self.branch(spec.branch) is None:
                 raise VcsError(f"{spec.branch} no longer exists")
-            self.sessions = running_by_branch(
-                read_sessions(self.sessions_dir),
-                self.repo,
-                [b.name for b in self.branches],
-                self.worktree_dir,
-            )
             if spec.mode == "background":
                 if self.dry_run:
                     # Preview only this submission; never consume pending real tasks.
@@ -1785,7 +1766,7 @@ class SandboxTUI(App[None]):
                         self.queue.start(
                             spec,
                             self.jobs,
-                            self.sessions,
+                            lambda: self._sessions_now([spec.branch]),
                             lambda: self.backend._description_commit(spec.branch),
                         )
                     ]
@@ -1859,7 +1840,7 @@ class SandboxTUI(App[None]):
             raise error
 
     def _launch_interactive(self, spec: LaunchSpec, banner: str = "") -> None:
-        with self.jobs.interactive(spec, self.sessions) as job:
+        with self.jobs.interactive(spec, lambda: self._sessions_now([spec.branch])) as job:
             self._record_run(job)
             with self._suspended():
                 print(
@@ -1895,7 +1876,7 @@ class SandboxTUI(App[None]):
     def _launch_external(self, spec: LaunchSpec) -> None:
         """Hand the session to tmux / zellij / screen / a custom terminal command."""
         argv = build_argv(self.cfg, self.repo, spec)
-        job = self.jobs.record_external(spec, argv, self.sessions)
+        job = self.jobs.record_external(spec, argv, lambda: self._sessions_now([spec.branch]))
         try:
             launch = launchers.external_launch(
                 self.cfg.ui.terminal_mode(),
@@ -1913,30 +1894,33 @@ class SandboxTUI(App[None]):
 
     # ------------------------------------------------------------ history
 
-    def _record_creation(
-        self, name: str, kind: str, parents: list[str] | None, since: float
-    ) -> str | None:
-        """Start the new bookmark's lineage and make its creation undoable.
+    def _create_bookmark(self, name: str, start: str, known: set[str]) -> None:
+        with self._creating(name, "create", [start] if start in known else None):
+            self.backend.create_branch(name, start)
 
-        ``parents`` defaults to the bookmarks on the nearest ancestors; ``since``
-        is when jj started creating it. Returns a warning instead of raising:
-        the bookmark exists either way.
-        """
+    @contextlib.contextmanager
+    def _creating(self, name: str, kind: str, parents: list[str] | None) -> Generator[None]:
+        """Keep jj creation and the corresponding undo entry under the same graph lock."""
+        created = False
         try:
-            branches = self.backend.list_branches()
-            commit = next((b.commit for b in branches if b.name == name), "")
-            names = {b.name for b in branches if not b.working_copy}
-            main = main_branch(names, self.cfg.project.main_branch) or ""
             with self.graph.transaction() as state:
+                since = time.time()
+                yield
+                created = True
+                branches = self.backend.list_branches()
+                commit = next((b.commit for b in branches if b.name == name), "")
                 if parents is None:
+                    names = {b.name for b in branches if not b.working_copy}
+                    main = main_branch(names, self.cfg.project.main_branch) or ""
                     parents = state.infer_parents(
                         name, commit, branches, self.backend.bookmarked_ancestors, main
                     )
                 node = state.add_creation(name, kind, parents, commit, since)
                 state.push_undo(UndoEntry("create", [UndoItem(name, node.id, commit)]))
         except (OSError, VcsError) as exc:
-            return f"{name}: not recorded in the bookmark history: {exc}"
-        return None
+            if created:
+                raise VcsError(f"created {name}, but could not record its history: {exc}") from exc
+            raise
 
     def _record_run(self, job: JobRecord, prompt: str | None = None) -> None:
         """``prompt``: what was typed, if the run's prompt has generated parts."""
@@ -2219,17 +2203,11 @@ class SandboxTUI(App[None]):
         name, start = result
         known = {b.name for b in self.branches if not b.working_copy}
         async with self._history_lock:
-            since = time.time()
             try:
-                await asyncio.to_thread(self.backend.create_branch, name, start)
-            except VcsError as exc:
-                self.notify(f"could not create {name}: {exc}", severity="error", timeout=8)
+                await asyncio.to_thread(self._create_bookmark, name, start, known)
+            except (OSError, VcsError) as exc:
+                self.notify(str(exc), severity="error", timeout=8)
                 return
-            warning = await asyncio.to_thread(
-                self._record_creation, name, "create", [start] if start in known else None, since
-            )
-        if warning:
-            self.notify(warning, severity="warning")
         self.notify(f"created {name} at {start} (u undoes)")
         self._pending_select = name  # applied by whichever refresh sees it first
         await self.refresh_data()
@@ -2297,9 +2275,8 @@ class SandboxTUI(App[None]):
 
     def _remember_host_command(self, command: tuple[str, ...]) -> None:
         if command:
-            last = LastUsed.load(self.repo)
-            last.host_command = list(command)
-            last.save(self.repo)
+            with contextlib.suppress(OSError), LastUsed.edit(self.repo) as last:
+                last.host_command = list(command)
             self.main.update_help_layout()
 
     def _open_host_agents(self, argv: tuple[str, ...] = ()) -> None:
@@ -2340,7 +2317,9 @@ class SandboxTUI(App[None]):
             spec = LaunchSpec(branch=name, agent=agent)
             mode = launchers.effective_mode(self.cfg.ui.terminal_mode())
             if mode != "inline":
-                job = self.jobs.record_external(spec, argv, self._sessions_now([name]), host=True)
+                job = self.jobs.record_external(
+                    spec, argv, lambda: self._sessions_now([name]), host=True
+                )
                 try:
                     launch = launchers.external_launch(
                         mode,
@@ -2363,7 +2342,7 @@ class SandboxTUI(App[None]):
                 return
             with (
                 self.jobs.interactive(
-                    spec, self._sessions_now([name]), argv=argv, host=True
+                    spec, lambda: self._sessions_now([name]), argv=argv, host=True
                 ) as job,
                 self._suspended(),
             ):

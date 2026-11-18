@@ -408,3 +408,11 @@ def test_trust_reports_an_unwritable_state_directory(tmp_path: Path) -> None:
     write(c.repo_state_dir(tmp_path), "not a directory")
     with pytest.raises(c.ConfigError, match="cannot write"):
         trust.trust(tmp_path)
+
+
+def test_simultaneous_launches_retain_each_agents_model(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(c.AGENTS)) as pool:
+        list(pool.map(lambda agent: c.remember(tmp_path, agent, agent, "", None), c.AGENTS))
+    assert c.LastUsed.load(tmp_path).model_by_agent == {agent: agent for agent in c.AGENTS}

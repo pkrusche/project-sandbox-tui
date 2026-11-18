@@ -283,38 +283,41 @@ class TaskManager:
     def refresh(self) -> list[TaskRecord]:
         """Update running tasks; return finished ones not yet announced."""
         with self._locked():
-            self.load()
-            # Reap children whose records another TUI (or a cleanup scan) finalised.
-            for task_id, proc in list(self._procs.items()):
-                task = self.tasks.get(task_id)
-                if proc.poll() is not None and (
-                    task is None or task.pid != proc.pid or not task.running
-                ):
-                    self._procs.pop(task_id, None)
-            out = []
-            for task in list(self.tasks.values()):
-                if task.running:
-                    done, wrapper = self._finished(task)
-                    if not done:
-                        continue
-                    code = self._read_exit(task)
-                    if code is None and wrapper not in (None, 0):
-                        code = wrapper  # killed before it could write the status
-                    task.exit_code = code
-                    task.status = status_for_exit(code)
-                    if task.id in self._stop_stage and task.status in ("failed", "orphaned"):
-                        task.status = "interrupted"
-                    task.ended_at = _now()
-                    # Saved first: if that fails, the next pass still has the child's status.
-                    self.save(task)
-                    self._procs.pop(task.id, None)
-                    self._stop_stage.pop(task.id, None)
-                    self._stop_last.pop(task.id, None)
-                if not task.notified:
-                    out.append(task)
-            for bookmark in {task.bookmark for task in self.tasks.values()}:
-                self._prune(bookmark)
-            return out
+            return self._refresh_locked()
+
+    def _refresh_locked(self) -> list[TaskRecord]:
+        self.load()
+        # Reap children whose records another TUI (or a cleanup scan) finalised.
+        for task_id, proc in list(self._procs.items()):
+            task = self.tasks.get(task_id)
+            if proc.poll() is not None and (
+                task is None or task.pid != proc.pid or not task.running
+            ):
+                self._procs.pop(task_id, None)
+        out = []
+        for task in list(self.tasks.values()):
+            if task.running:
+                done, wrapper = self._finished(task)
+                if not done:
+                    continue
+                code = self._read_exit(task)
+                if code is None and wrapper not in (None, 0):
+                    code = wrapper  # killed before it could write the status
+                task.exit_code = code
+                task.status = status_for_exit(code)
+                if task.id in self._stop_stage and task.status in ("failed", "orphaned"):
+                    task.status = "interrupted"
+                task.ended_at = _now()
+                # Saved first: if that fails, the next pass still has the child's status.
+                self.save(task)
+                self._procs.pop(task.id, None)
+                self._stop_stage.pop(task.id, None)
+                self._stop_last.pop(task.id, None)
+            if not task.notified:
+                out.append(task)
+        for bookmark in {task.bookmark for task in self.tasks.values()}:
+            self._prune(bookmark)
+        return out
 
     def mark_notified(self, task: TaskRecord) -> bool:
         """Claim a notification once, even when several TUIs see the task end."""

@@ -403,3 +403,66 @@ def test_release_does_not_reuse_checks_for_a_different_commit(
     assert sum(args[0] == "sync" for name, args, _ in calls if name == "uv") == 2
     assert sum(name == "e2e" for name, _, _ in calls) == 2
     assert sum(args[0] == "build" for name, args, _ in calls if name == "uv") == 1
+
+
+def test_release_rejects_concurrent_invocation(release_repo: Path) -> None:
+    import fcntl
+
+    fd = os.open(release_repo, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        result = run_release(release_repo)
+    finally:
+        os.close(fd)
+    assert result.returncode and "Another release" in result.stderr
+    assert not (release_repo / ".release-status").exists()
+
+
+def test_release_rejects_empty_jj_merge_working_copy(release_repo: Path) -> None:
+    def jj(*args: str) -> None:
+        subprocess.run(["jj", *args], cwd=release_repo, check=True, capture_output=True)
+
+    jj("git", "init", "--colocate")
+    jj("new", "root()", "-m", "side")
+    (release_repo / "side.txt").write_text("not in main")
+    jj("new", "@", "main")
+    result = run_release(release_repo)
+    assert result.returncode and "single parent" in result.stderr
+    assert not (release_repo / ".release-status").exists()
+
+
+def test_e2e_preflight_respects_command_quoting_and_exit_status(tmp_path: Path) -> None:
+    import shlex
+
+    for name in (
+        "scripts/e2e-test.sh",
+        ".github/workflows/ci.yml",
+        "src/project_sandbox_tui/doctor.py",
+    ):
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, target)
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    for path, script in (
+        (binaries / "sandbox command", 'echo "project-sandbox 9.9.9"; exit "$PROBE_EXIT"'),
+        (binaries / "uv", 'while [ "$1" != python ]; do shift; done; shift; exec python3 "$@"'),
+        (binaries / "docker", "exit 0"),
+        (tmp_path / "scripts/test.sh", 'echo "started pytest"'),
+    ):
+        path.write_text("#!/bin/sh\n" + script + "\n")
+        path.chmod(0o755)
+    env = {**os.environ, "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}"}
+    command = [
+        str(tmp_path / "scripts/e2e-test.sh"),
+        "--runtime",
+        "docker",
+        "--command",
+        shlex.quote(str(binaries / "sandbox command")),
+    ]
+    for code in (0, 1):
+        result = subprocess.run(
+            command, env={**env, "PROBE_EXIT": str(code)}, capture_output=True, text=True
+        )
+        assert result.returncode == code, result.stderr
+        assert ("started pytest" in result.stdout) == (code == 0)

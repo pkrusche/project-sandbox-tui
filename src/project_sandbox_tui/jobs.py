@@ -61,6 +61,7 @@ class BusyError(RuntimeError):
 # Prepares a launch's workspace (``workspace_skills.WorkspacePreparer``):
 # (config, spec, sandbox start?) -> None, raising to stop the launch.
 Preparer = Callable[[Config, LaunchSpec, bool], None]
+SessionSource = dict[str, SessionRecord] | Callable[[], dict[str, SessionRecord]]
 
 
 def branch_slug(branch: str) -> str:
@@ -395,18 +396,19 @@ class JobManager:
 
     # ------------------------------------------------------------ queries
 
-    def busy_reason(self, branch: str, sessions: dict[str, SessionRecord]) -> str | None:
+    def busy_reason(self, branch: str, sessions: SessionSource) -> str | None:
         with self._locked():
             self.load()
             return self._busy_reason(branch, sessions)
 
-    def _busy_reason(self, branch: str, sessions: dict[str, SessionRecord]) -> str | None:
+    def _busy_reason(self, branch: str, sessions: SessionSource) -> str | None:
         job = self.jobs.get(branch)
         if job is not None and job.running:
             kind = "host agent" if job.host else job.mode
             return f"{branch} already has a {kind} session (pid {job.pid})"
-        if branch in sessions:
-            rec = sessions[branch]
+        records = sessions if isinstance(sessions, dict) else sessions()
+        if branch in records:
+            rec = records[branch]
             return f"{branch} already has a running project-sandbox session {rec.session_id}"
         return None
 
@@ -514,7 +516,7 @@ class JobManager:
     def start_background(
         self,
         spec: LaunchSpec,
-        sessions: dict[str, SessionRecord],
+        sessions: SessionSource,
         *,
         queue_id: str = "",
         base_commit: Callable[[], str] | None = None,
@@ -599,7 +601,7 @@ class JobManager:
     def interactive(
         self,
         spec: LaunchSpec,
-        sessions: dict[str, SessionRecord],
+        sessions: SessionSource,
         *,
         argv: list[str] | None = None,
         host: bool = False,
@@ -628,8 +630,10 @@ class JobManager:
             )
             self._attach_feedback(job, run_id, feedback_dir)
             self._archive(spec.branch)
-            self.jobs[spec.branch] = job
             self.save(job)
+            # The caller owns the exit code until it returns. Polling can reload
+            # the cached record from disk while the terminal is still active.
+            self.jobs[spec.branch] = JobRecord.from_dict(job.to_dict())
         try:
             yield job
         finally:
@@ -646,6 +650,7 @@ class JobManager:
                     job.feedback_snapshot = current.feedback_snapshot
                     self._collect_feedback(job, final=True)
                     self.save(job)
+                    self.load()
 
     def _prepare(self, spec: LaunchSpec, *, sandbox: bool) -> None:
         """Create the workspace and deploy skills; with the lock held, after the busy check."""
@@ -662,7 +667,7 @@ class JobManager:
         self,
         spec: LaunchSpec,
         argv: list[str],
-        sessions: dict[str, SessionRecord] | None = None,
+        sessions: SessionSource | None = None,
         *,
         host: bool = False,
     ) -> JobRecord:
@@ -704,8 +709,8 @@ class JobManager:
             if paths:
                 job.summary_path = str(paths.summary)
             self._archive(spec.branch)
-            self.jobs[spec.branch] = job
             self.save(job)
+            self.jobs[spec.branch] = job
             return job
 
     # ------------------------------------------------------------ polling
