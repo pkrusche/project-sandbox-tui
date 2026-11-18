@@ -47,9 +47,16 @@ class ExternalLaunch:
     detached: bool  # True: run detached (custom); False: wait briefly and check the exit code
 
 
-def host_command(argv: list[str], summary_path: str) -> list[str]:
-    """Wrap an external host command with durable lifetime reporting."""
-    return [sys.executable, str(Path(__file__).with_name("host_session.py")), summary_path, *argv]
+def host_command(argv: list[str], summary_path: str, *, intro: str = "") -> list[str]:
+    """Wrap an external command with durable lifetime reporting."""
+    prelude = [f"--intro={intro}"] if intro else []
+    return [
+        sys.executable,
+        str(Path(__file__).with_name("host_session.py")),
+        summary_path,
+        *prelude,
+        *argv,
+    ]
 
 
 def fill_command(template: str, values: Mapping[str, str]) -> list[str]:

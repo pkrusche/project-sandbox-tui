@@ -13,16 +13,70 @@ import fcntl
 import json
 import uuid
 from collections.abc import Callable, Generator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from project_sandbox_tui import feedback
-from project_sandbox_tui.config import STATE_VERSION, ConfigError, private_dir, write_state
+from project_sandbox_tui.config import (
+    STATE_VERSION,
+    ConfigError,
+    Feedback,
+    private_dir,
+    write_state,
+)
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _now
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord
 from project_sandbox_tui.vcs import VcsError, detect, main_branch
+
+
+@dataclass
+class WorkflowRun:
+    name: str
+    action: str
+    next_steps: list[tuple[str, LaunchSpec]]
+    pass_state_keys: list[str]
+    result_state_keys: list[str]
+    state: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "action": self.action,
+            "next_steps": [(name, spec.to_dict()) for name, spec in self.next_steps],
+            "pass_state_keys": self.pass_state_keys,
+            "result_state_keys": self.result_state_keys,
+            "state": self.state,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any], branch: str) -> WorkflowRun:
+        steps = [(name, LaunchSpec.from_dict(spec)) for name, spec in raw["next_steps"]]
+        if len(steps) > 99 or any(
+            not isinstance(name, str)
+            or spec.branch != branch
+            or spec.mode != "background"
+            or not spec.prompt_text.strip()
+            for name, spec in steps
+        ):
+            raise ValueError("invalid workflow step")
+        if not isinstance(raw["state"], dict) or any(
+            not isinstance(raw[key], list) or not all(isinstance(v, str) for v in raw[key])
+            for key in ("pass_state_keys", "result_state_keys")
+        ):
+            raise ValueError("invalid workflow state")
+        return cls(
+            raw["name"],
+            raw["action"],
+            steps,
+            raw["pass_state_keys"],
+            raw["result_state_keys"],
+            raw["state"],
+        )
+
+
+_WORKFLOW_STOPPED = "workflow stopped"
 
 
 @dataclass
@@ -40,13 +94,14 @@ class QueuedTask:
     decision_done: bool = False
     successor_id: str = ""
     decision: str = ""
+    workflow: WorkflowRun | None = None
 
     @property
     def status(self) -> str:
         return self.job.status if self.job else "pending"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "id": self.id,
             "spec": self.spec.to_dict(),
             "job": self.job.to_dict() if self.job else None,
@@ -60,6 +115,9 @@ class QueuedTask:
             "successor_id": self.successor_id,
             "decision": self.decision,
         }
+        if self.workflow:
+            data["workflow"] = self.workflow.to_dict()
+        return data
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> QueuedTask:
@@ -77,6 +135,8 @@ class QueuedTask:
             str(raw.get("successor_id", "")),
             str(raw.get("decision", "")),
         )
+        if "workflow" in raw:
+            task.workflow = WorkflowRun.from_dict(raw["workflow"], task.spec.branch)
         if (
             type(task.attempt) is not int
             or not 1 <= task.attempt <= 100
@@ -84,7 +144,7 @@ class QueuedTask:
             or not 1 <= task.step <= 100
             or not task.id
             or any(c not in "0123456789abcdef" for c in task.id)
-            or task.spec.mode != "background"
+            or (task.spec.mode != "background" and (not task.workflow or not task.job))
             or not task.spec.prompt_text.strip()
             or (task.job and (task.job.queue_id != task.id or task.job.branch != task.spec.branch))
             or not all(isinstance(c, str) for c in task.commits)
@@ -107,6 +167,17 @@ class BookmarkQueue:
     def entries(self) -> list[QueuedTask]:
         """Pending tasks in FIFO order, followed by runs newest first."""
         return self.tasks + list(reversed(self.history))
+
+    def needs_decision(self, policy: Feedback) -> bool:
+        if not self.history:
+            return False
+        task = self.history[-1]
+        return bool(
+            (task.workflow or policy.makes_decisions)
+            and task.job
+            and not task.job.running
+            and not task.decision_done
+        )
 
     def checkpoint(self) -> None:
         self.undo.append(copy.deepcopy(self.tasks))
@@ -290,8 +361,9 @@ class TaskQueue:
             raise ValueError("only unsupervised tasks with a prompt can be queued")
         return QueuedTask(uuid.uuid4().hex, copy.deepcopy(spec))
 
-    def add(self, spec: LaunchSpec) -> QueuedTask:
+    def add(self, spec: LaunchSpec, *, workflow: WorkflowRun | None = None) -> QueuedTask:
         task = self._new_task(spec)
+        task.workflow = workflow
         with self.transaction() as queues:
             queue = queues.setdefault(spec.branch, BookmarkQueue())
             queue.checkpoint()
@@ -313,6 +385,32 @@ class TaskQueue:
             task.base_commit = job.base_commit
             queues.setdefault(spec.branch, BookmarkQueue()).history.append(task)
         return job
+
+    @contextlib.contextmanager
+    def start_workflow(
+        self, spec: LaunchSpec, workflow: WorkflowRun, jobs: JobManager
+    ) -> Generator[QueuedTask, None, None]:
+        """Register the interactive reservation before handing it a terminal."""
+        if spec.mode != "interactive" or not spec.prompt_text.strip() or not workflow.next_steps:
+            raise ValueError(
+                "a workflow needs an interactive plan and at least one background step"
+            )
+        with self.transaction() as queues:
+            self._refresh(queues, jobs)
+            queue = queues.setdefault(spec.branch, BookmarkQueue())
+            stopped = queue.history and queue.history[-1].decision == _WORKFLOW_STOPPED
+            if (
+                queue.needs_decision(jobs.cfg.feedback)
+                or (queue.paused and stopped)
+                or any(task.workflow for task in queue.tasks)
+            ):
+                raise BusyError(f"{spec.branch}: finish or resume the current queue first")
+            task = QueuedTask(uuid.uuid4().hex, spec, workflow=workflow)
+            yield task
+            assert task.job is not None
+            task.job = copy.deepcopy(task.job)
+            task.base_commit = task.job.base_commit
+            queue.history.append(task)
 
     def edit(
         self, branch: str, task_id: str, spec: LaunchSpec, *, expected: LaunchSpec | None = None
@@ -351,6 +449,8 @@ class TaskQueue:
             for i in indices:
                 other = i + step
                 if after[i].id in ids and 0 <= other < len(after) and after[other].id not in ids:
+                    if any(task.workflow and task.parent_task for task in (after[i], after[other])):
+                        continue
                     after[i], after[other] = after[other], after[i]
             if after != before:
                 queue.checkpoint()
@@ -370,6 +470,19 @@ class TaskQueue:
     def pause(self, branch: str, paused: bool) -> None:
         with self.transaction() as queues:
             queue = queues.setdefault(branch, BookmarkQueue())
+            if not paused and queue.paused and queue.history:
+                task = queue.history[-1]
+                if (
+                    task.workflow
+                    and task.decision == _WORKFLOW_STOPPED
+                    and task.spec.mode == "background"
+                ):
+                    if task.attempt >= 100:
+                        raise ValueError("workflow retry limit reached")
+                    retry = self._new_task(task.spec)
+                    retry.attempt, retry.step = task.attempt + 1, task.step
+                    retry.workflow = task.workflow
+                    self._insert_successor(queue, task, retry, "workflow retry")
             queue.paused = paused
             if not paused:
                 queue.error = ""
@@ -426,23 +539,70 @@ class TaskQueue:
                         if result:
                             task.result_commit, task.commits = result
 
+    @staticmethod
+    def _insert_successor(
+        queue: BookmarkQueue, task: QueuedTask, successor: QueuedTask, decision: str
+    ) -> None:
+        successor.parent_task = task.id
+        task.successor_id = successor.id
+        task.decision = decision
+        queue.tasks.insert(0, successor)
+        if successor.workflow:
+            for snapshot in (*queue.undo, *queue.redo):
+                snapshot.insert(0, copy.deepcopy(successor))
+
+    def _decide_workflow(self, queue: BookmarkQueue, task: QueuedTask, job: JobRecord) -> None:
+        workflow = task.workflow
+        assert workflow is not None
+        report_state = (job.feedback_snapshot or {}).get("state", {})
+        planning = task.step == 1
+        keys = workflow.pass_state_keys if planning else []
+        if not workflow.next_steps:
+            keys = workflow.result_state_keys
+        missing = [key for key in keys if key not in report_state]
+        if not job.reported_success or missing:
+            detail = f"{job.status}; {job.feedback_detail()}"
+            if job.reported_success:
+                detail = "missing report state: " + ", ".join(missing)
+            queue.paused = True
+            queue.error = f"{workflow.name} / {workflow.action}: {detail}"
+            task.decision = _WORKFLOW_STOPPED
+            return
+        if not workflow.next_steps:
+            task.decision = "workflow complete"
+            return
+        (name, spec), *remaining = workflow.next_steps
+        successor = self._new_task(spec)
+        successor.step = task.step + 1
+        successor.workflow = replace(
+            workflow,
+            action=name,
+            next_steps=remaining,
+            state={key: report_state[key] for key in keys} if planning else workflow.state,
+        )
+        self._insert_successor(queue, task, successor, f"workflow step {name}")
+
     def _decide(self, jobs: JobManager) -> None:
         """Commit successors before launching them; never replay a decision."""
         policy = jobs.cfg.feedback
-        if not policy.makes_decisions:
-            return
         with self.transaction() as queues:
+            if not policy.makes_decisions and not any(
+                queue.history and queue.history[-1].workflow and not queue.history[-1].decision_done
+                for queue in queues.values()
+            ):
+                return
             self._refresh(queues, jobs)
             for queue in queues.values():
-                if queue.paused or not queue.history:
+                if queue.paused or not queue.needs_decision(policy):
                     continue
                 task = queue.history[-1]
                 job = task.job
-                if not job or job.running or task.decision_done:
-                    continue
-                policy = jobs.cfg.feedback
-                result = job.reported_outcome
+                assert job is not None
                 task.decision_done = True
+                if task.workflow:
+                    self._decide_workflow(queue, task, job)
+                    continue
+                result = job.reported_outcome
                 successor = None
                 if job.exit_code == 0 and result in policy.retry_outcomes:
                     if task.attempt < policy.max_attempts:
@@ -477,9 +637,7 @@ class TaskQueue:
                             successor.step = task.step + 1
                             task.decision = f"action {action_name}"
                 if successor:
-                    successor.parent_task = task.id
-                    task.successor_id = successor.id
-                    queue.tasks.insert(0, successor)
+                    self._insert_successor(queue, task, successor, task.decision)
                 elif (
                     policy.require_reported_success
                     and not job.reported_success
@@ -492,22 +650,18 @@ class TaskQueue:
                     task.decision = "continue"
 
     @staticmethod
-    def _needs_decision(queue: BookmarkQueue, jobs: JobManager) -> bool:
-        policy = jobs.cfg.feedback
-        return bool(
-            policy.makes_decisions and queue.history and not queue.history[-1].decision_done
-        )
-
-    @staticmethod
     def _input_state(queue: BookmarkQueue, task: QueuedTask, jobs: JobManager) -> dict[str, Any]:
+        if task.workflow:
+            return task.workflow.state
         keys = jobs.cfg.feedback.pass_state_keys
-        if not keys or (not queue.history and not task.parent_task):
+        if not keys:
             return {}
-        source = (
-            next((t for t in queue.history if t.id == task.parent_task), None)
-            if task.parent_task
-            else (queue.history[-1] if queue.history else None)
-        )
+        if task.parent_task:
+            source = next((t for t in queue.history if t.id == task.parent_task), None)
+        else:
+            source = next((t for t in reversed(queue.history) if not t.workflow), None)
+            if not source:
+                return {}
         job = source.job if source else None
         if not job or job.running or job.reported_outcome == "unknown" or not job.feedback_snapshot:
             raise ValueError("state handoff requires a valid final predecessor report")
@@ -544,7 +698,7 @@ class TaskQueue:
                     continue
                 # Another instance can finalize a predecessor after _decide's
                 # transaction. Defer until its policy decision is durable.
-                if self._needs_decision(queue, jobs):
+                if queue.needs_decision(jobs.cfg.feedback):
                     continue
                 try:
                     if error := valid(branch):
@@ -556,6 +710,7 @@ class TaskQueue:
                         queue_id=task.id,
                         base_commit=partial(commit, branch) if commit else None,
                         previous_state=self._input_state(queue, task, jobs),
+                        require_feedback=task.workflow is not None,
                     )
                 except BusyError:
                     continue

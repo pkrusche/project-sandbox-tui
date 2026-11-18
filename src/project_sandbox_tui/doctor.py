@@ -230,7 +230,7 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
 def check_feedback(cfg: Config, repo: Path | None, runner: Runner) -> list[Check]:
     if not cfg.feedback.enabled:
         return [Check("run feedback", "ok", "disabled")]
-    required = cfg.feedback.requires_reporting
+    required = cfg.feedback.requires_reporting or bool(cfg.workflows)
     try:
         code, help_text = runner([*cfg.sandbox_command(), "--help"], 10)
         supported = code == 0 and re.search(r"(?<!\S)--mount(?:\s|=)", help_text) is not None

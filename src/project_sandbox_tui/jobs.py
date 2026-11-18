@@ -133,6 +133,12 @@ class JobRecord:
             and self.reported_outcome == "success"
         )
 
+    @property
+    def blocked_summary(self) -> str:
+        if not self.running and self.reported_outcome == "blocked" and self.feedback_snapshot:
+            return str(self.feedback_snapshot["summary"])
+        return ""
+
     def launch_argv(self) -> list[str]:
         if self.host and self.feedback_path:
             return feedback_transport.host_argv(Path(self.feedback_path).parent.parent, self.argv)
@@ -432,19 +438,25 @@ class JobManager:
         previous_state: dict[str, Any] | None = None,
         *,
         host: bool = False,
+        require_feedback: bool = False,
+        blocked_guidance: str = "",
     ) -> tuple[str, Path | None]:
         run_id = uuid.uuid4().hex
         if not self.cfg.feedback.enabled:
+            if require_feedback:
+                raise ConfigError("workflow requires feedback.enabled")
             return run_id, None
         root = self.state_dir / "runs" / run_id
         if not host and "--dry-run" in (*self.cfg.sandbox.extra_args, *spec.extra_args):
+            if require_feedback:
+                raise ConfigError("a workflow step requires a live project-sandbox launch")
             return run_id, root
         command = tuple(self.cfg.sandbox_command()) if not host else ()
         if not host and (self._feedback_supported is None or command != self._feedback_command):
             self._feedback_supported = feedback_transport.supported(list(command), cwd=self.repo)
             self._feedback_command = command
         if not host and not self._feedback_supported:
-            if self.cfg.feedback.requires_reporting:
+            if require_feedback or self.cfg.feedback.requires_reporting:
                 raise ConfigError("feedback policy requires project-sandbox with --mount support")
             return run_id, None
         if not host:
@@ -468,7 +480,13 @@ class JobManager:
                 initialization.install_feedback(workspace)
         try:
             feedback_transport.prepare(
-                root, run_id, task_id, previous_state, interactive=spec.mode == "interactive"
+                root,
+                run_id,
+                task_id,
+                previous_state,
+                interactive=spec.mode == "interactive",
+                planning_prompt=spec.prompt_text if task_id and spec.mode == "interactive" else "",
+                blocked_guidance=blocked_guidance,
             )
         except (OSError, ValueError):
             shutil.rmtree(root, ignore_errors=True)
@@ -519,6 +537,7 @@ class JobManager:
         queue_id: str = "",
         base_commit: Callable[[], str] | None = None,
         previous_state: dict[str, Any] | None = None,
+        require_feedback: bool = False,
     ) -> JobRecord:
         with self._locked():
             self.load()
@@ -534,7 +553,9 @@ class JobManager:
             paths = self.new_run_paths(spec.branch)
             build_argv(self.cfg, self.repo, spec, paths)  # validate before staging resources
             self._prepare(spec, sandbox=True)
-            run_id, feedback_dir = self._prepare_feedback(spec, queue_id, previous_state)
+            run_id, feedback_dir = self._prepare_feedback(
+                spec, queue_id, previous_state, require_feedback=require_feedback
+            )
             argv = build_argv(self.cfg, self.repo, spec, paths, feedback_dir)
             self._stop_stage.pop(spec.branch, None)
             self._stop_last.pop(spec.branch, None)
@@ -603,6 +624,8 @@ class JobManager:
         *,
         argv: list[str] | None = None,
         host: bool = False,
+        queue_id: str = "",
+        blocked_guidance: str = "",
     ) -> Generator[JobRecord, None, None]:
         """Hold the branch for the duration of an in-terminal session."""
         with self._locked():
@@ -611,7 +634,13 @@ class JobManager:
             if reason:
                 raise BusyError(reason)
             self._prepare(spec, sandbox=not host)
-            run_id, feedback_dir = self._prepare_feedback(spec, host=host)
+            run_id, feedback_dir = self._prepare_feedback(
+                spec,
+                queue_id,
+                host=host,
+                require_feedback=bool(queue_id),
+                blocked_guidance=blocked_guidance,
+            )
             launch_argv = (
                 argv
                 if argv is not None
@@ -625,6 +654,7 @@ class JobManager:
                 argv=launch_argv,
                 notified=True,  # nothing to notify: the user is watching
                 host=host,
+                queue_id=queue_id,
             )
             self._attach_feedback(job, run_id, feedback_dir)
             self._archive(spec.branch)
@@ -665,6 +695,8 @@ class JobManager:
         sessions: dict[str, SessionRecord] | None = None,
         *,
         host: bool = False,
+        queue_id: str = "",
+        blocked_guidance: str = "",
     ) -> JobRecord:
         """Note an interactive session started in another terminal window.
 
@@ -679,26 +711,31 @@ class JobManager:
             if reason:
                 raise BusyError(reason)
             self._prepare(spec, sandbox=not host)
-            run_id, feedback_dir = self._prepare_feedback(spec, host=host)
+            run_id, feedback_dir = self._prepare_feedback(
+                spec,
+                queue_id,
+                host=host,
+                require_feedback=bool(queue_id),
+                blocked_guidance=blocked_guidance,
+            )
             paths = self.new_run_paths(spec.branch) if host or feedback_dir else None
             if paths:
                 private_dir(paths.summary.parent)
             if feedback_dir and not host:
                 assert paths is not None
-                argv = [
-                    *argv,
-                    *feedback_transport.mounts(feedback_dir),
-                    f"--json-summary={paths.summary}",
-                ]
+                argv = [*argv, *feedback_transport.mounts(feedback_dir)]
+                if not queue_id:
+                    argv.append(f"--json-summary={paths.summary}")
             job = JobRecord(
                 branch=spec.branch,
                 spec=spec,
                 pid=0,
                 started_at=_now(),
                 argv=argv,
-                notified=not host,
+                notified=not (host or queue_id),
                 external=True,
                 host=host,
+                queue_id=queue_id,
             )
             self._attach_feedback(job, run_id, feedback_dir)
             if paths:
@@ -774,7 +811,7 @@ class JobManager:
                 if (job.session_id, job.container_name, job.runtime) != ids:
                     self.save(job)
 
-            if job.external and job.host:
+            if job.external and (job.host or job.queue_id):
                 summary = self._read_summary(job) or {}
                 pid = job.pid or summary.get("pid")
                 if type(pid) is int and 0 < pid < 2**31:

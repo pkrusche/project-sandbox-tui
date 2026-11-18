@@ -67,6 +67,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen PromptArea > .text-area--suggestion { color: $text-disabled; text-style: italic; }
     LaunchScreen .inputs { color: $text-muted; padding: 0 1; margin-bottom: 1; }
     LaunchScreen .prompt-hint { color: $text-disabled; height: auto; padding: 0 1; }
+    LaunchScreen #blocked-guidance { height: auto; max-height: 8; margin-bottom: 1; }
     LaunchScreen #command-scroll {
         height: 3; margin-top: 1; scrollbar-gutter: stable; scrollbar-size-vertical: 1;
     }
@@ -102,6 +103,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         submit_label: str = "launch",
         fixed_branch: bool = False,
         save: Callable[[LaunchSpec], str | None] | None = None,
+        blocked_guidance: str = "",
     ) -> None:
         """``draft``: a prompt typed earlier but not launched; shown instead of ``prompt_text``."""
         super().__init__()
@@ -109,6 +111,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.submit_label = submit_label
         self.fixed_branch = fixed_branch
         self.save = save
+        self.blocked_guidance = blocked_guidance
         self.mode = mode
         self.cfg = cfg
         self.last = last
@@ -139,6 +142,15 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(self._title(), classes="title", id="title")
+            if self.blocked_guidance:
+                with VerticalScroll(id="blocked-guidance"):
+                    yield Static(
+                        Text(
+                            f"{self.blocked_guidance}\n\n"
+                            "In the session, ask the agent to read blocked_guidance from "
+                            "/run/sbx-feedback/context.json, or describe the blocker yourself."
+                        )
+                    )
             if self.octopus is not None:
                 yield Static(
                     Text("inputs   " + " → ".join(self.octopus.inputs), overflow="ellipsis"),

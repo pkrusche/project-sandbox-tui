@@ -1,4 +1,4 @@
-"""Run a host agent in an external terminal and persist its lifetime.
+"""Run an agent command in an external terminal and persist its lifetime.
 
 Invoked by absolute filename so the target workspace need not be this package's
 checkout. Uses only the standard library, including when run from a source tree.
@@ -31,7 +31,7 @@ def run(summary: Path, argv: list[str]) -> int:
     try:
         proc = subprocess.Popen(argv)
     except OSError as exc:
-        print(f"Could not start host agent: {exc}", file=sys.stderr)
+        print(f"Could not start agent command: {exc}", file=sys.stderr)
         code = 127
     else:
         while True:
@@ -45,4 +45,7 @@ def run(summary: Path, argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(run(Path(sys.argv[1]), sys.argv[2:]))
+    args = sys.argv[2:]
+    if args[0].startswith("--intro="):
+        print(args.pop(0).removeprefix("--intro="), flush=True)
+    sys.exit(run(Path(sys.argv[1]), args))

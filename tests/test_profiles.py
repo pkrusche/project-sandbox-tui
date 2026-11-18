@@ -17,10 +17,11 @@ from project_sandbox_tui.config import AgentProfile, Config, ConfigError, LastUs
 from project_sandbox_tui.jobs import JobManager
 from project_sandbox_tui.sandbox import LaunchSpec, RunPaths, build_argv
 from project_sandbox_tui.screens.agent import CUSTOM_MODEL, AgentControls
+from project_sandbox_tui.screens.dialogs import ConfirmScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.profiles import ProfilesScreen
 from project_sandbox_tui.widgets import CycleField
-from tests.test_app import run_app, wait_until
+from tests.test_app import run_app, wait_for_screen, wait_until
 
 
 @pytest.mark.parametrize(
@@ -81,6 +82,30 @@ def test_profiles_merge_and_cli_settings(repo: Path) -> None:
     assert ("profiles.review.effort", "high") in settings.flatten(settings.effective(cfg))
     assert editor.unset(settings.parse_key("profiles.review.effort"))
     assert config.load(repo).profiles["review"].effort == "low"
+
+
+def test_delete_profile_preserves_pending_project_review(repo: Path) -> None:
+    global_path = config.global_config_path()
+    global_path.parent.mkdir(parents=True)
+    global_path.write_text('[profiles.shared]\nagent = "codex"\n')
+    project_path = config.project_config_path(repo)
+    original = '[profiles.local]\nagent = "bash"\n'
+    pending = '[profiles.shared]\neffort = "high"\n'
+    project_path.write_text(original)
+    ProjectTrust.check(repo).trust(repo)
+    project_path.write_text(original + "\n" + pending)
+
+    before = config.load(repo)
+    assert before.profile_sources == {"shared": ("global",), "local": ("project",)}
+    editor = settings.Editor("project", repo)
+    assert editor.delete_profile("local")
+    assert not editor.delete_profile("local")
+    assert project_path.read_text().strip() == pending.strip()
+    trust = ProjectTrust.check(repo)
+    assert trust.needs_review and trust.trusted == original
+    assert config.load(repo).profiles == before.profiles
+    trust.trust(repo)
+    assert config.load(repo).profile_sources == {"shared": ("project", "global")}
 
 
 @pytest.mark.parametrize("background", [False, True])
@@ -236,6 +261,68 @@ def test_profile_editor_save_edit_and_cancel(repo: Path, fake_cfg: Callable[...,
         assert config.project_config_path(repo).read_text() == before
 
     run_app(repo, fake_cfg(), scenario)
+
+
+def test_profile_editor_sources_and_delete(repo: Path) -> None:
+    name = "Deep review.v2"
+    global_path = config.global_config_path()
+    global_path.parent.mkdir(parents=True)
+    global_text = '[profiles."Deep review.v2"]\nagent = "codex"\neffort = "low"\n'
+    global_path.write_text(global_text)
+    project_path = config.project_config_path(repo)
+    other_profile = '# keep this comment\n[profiles.shell]\nagent = "bash"\n'
+    project_path.write_text(other_profile + '\n[profiles."Deep review.v2"]\neffort = "high"\n')
+    ProjectTrust.check(repo).trust(repo)
+    LastUsed(profile=name).save(repo)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        async def open_editor() -> ProfilesScreen:
+            await app.run_command("config-profiles")
+            return await wait_for_screen(app, pilot, ProfilesScreen)
+
+        editor = await open_editor()
+        await pilot.press("ctrl+d")
+        assert app.screen is editor  # Nothing selected on the new-profile form.
+        selector = editor.query_one("#edit-profile", CycleField)
+        source = editor.query_one("#profile-source", Static)
+        selector.value = "shell"
+        await pilot.pause()
+        assert str(source.render()) == "project"
+        selector.value = name
+        await pilot.pause()
+        assert str(source.render()) == "project + global"
+        # Deletion tracks the selected profile even if the name field was edited.
+        editor.query_one("#profile-name", Input).value = "shell"
+        await pilot.press("ctrl+d")
+        confirm = await wait_for_screen(app, pilot, ConfirmScreen)
+        assert name in confirm.body and str(project_path) in confirm.body
+        await pilot.press("escape")
+        assert app.screen is editor and config.load(repo).profiles[name].effort == "high"
+        await pilot.press("ctrl+d", "y")
+        assert app.screen is app.main
+        assert other_profile in project_path.read_text()
+        assert name not in tomllib.loads(project_path.read_text())["profiles"]
+        assert not ProjectTrust.check(repo).needs_review
+        assert global_path.read_text() == global_text
+        assert app.cfg.profiles[name].effort == "low"
+
+        editor = await open_editor()
+        editor.query_one("#edit-profile", CycleField).value = name
+        await pilot.pause()
+        assert str(editor.query_one("#profile-source", Static).render()) == "global"
+        await pilot.press("ctrl+d")
+        confirm = await wait_for_screen(app, pilot, ConfirmScreen)
+        assert name in confirm.body and str(global_path) in confirm.body
+        await pilot.press("y")
+        assert app.screen is app.main
+        assert app.cfg.profiles == config.load(repo).profiles
+        assert app.cfg.profiles == {"shell": AgentProfile(agent="bash")}
+        assert name not in tomllib.loads(global_path.read_text()).get("profiles", {})
+        await pilot.press("j", "i")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        assert form.query_one("#profile", CycleField).value == "custom"
+
+    run_app(repo, config.load(repo), scenario)
 
 
 def test_custom_cli_args_validation_and_memory(repo: Path, fake_cfg: Callable[..., Config]) -> None:
