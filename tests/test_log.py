@@ -1,6 +1,7 @@
 """Log polling needs files and a screen, not a repository or a sandbox process."""
 
 import asyncio
+import json
 from pathlib import Path
 
 from textual.app import App
@@ -8,7 +9,8 @@ from textual.widgets import Log
 
 from project_sandbox_tui.jobs import JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec
-from project_sandbox_tui.screens.log import LogScreen
+from project_sandbox_tui.screens.dialogs import MessageScreen
+from project_sandbox_tui.screens.log import INITIAL_TAIL_BYTES, LogScreen
 from tests.test_app import wait_until
 
 
@@ -157,5 +159,91 @@ def test_log_shift_tab_cycles_files_backwards(tmp_path: Path) -> None:
             assert screen.current == stdout
             await pilot.press("shift+tab")
             assert screen.current == path
+
+    asyncio.run(scenario())
+
+
+def test_live_stdout_and_json_record_inspection(tmp_path: Path) -> None:
+    path = tmp_path / "agent.log"
+    stdout = tmp_path / "agent.out"
+    first = {"type": "message", "content": {"text": "[literal]", "items": [1, 2]}}
+    second = {"type": "tool", "name": "read"}
+    path.write_text(f"{json.dumps(first)}\nsandbox diagnostic\n{json.dumps(second)}\n")
+    stdout.write_text("# Assistant\n\nHello\n")
+    job = JobRecord(
+        "main",
+        LaunchSpec("main", "codex", mode="background"),
+        0,
+        "",
+        log_path=str(path),
+        stdout_path=str(stdout),
+    )
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test() as pilot:
+            screen = LogScreen(job)
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one(Log)
+            assert screen.current == stdout
+            assert log.lines[:3] == ["# Assistant", "", "Hello"]
+            with stdout.open("a") as stream:
+                stream.write("\n## Tool\n")
+            screen._poll()
+            assert "## Tool" in log.lines
+
+            await pilot.press("v")
+            assert screen.current == path
+            first_style = next(iter(log.render_line(0))).style
+            selected_style = next(iter(log.render_line(2))).style
+            assert first_style and selected_style and first_style.bgcolor != selected_style.bgcolor
+            await pilot.press("enter")
+            assert isinstance(app.screen, MessageScreen)
+            assert app.screen.body == json.dumps(second, indent=2)
+            await pilot.press("escape", "k", "enter")
+            assert app.screen is screen  # plain diagnostic between JSON records
+            await pilot.press("k")
+            assert not screen._follow
+            with path.open("a") as stream:
+                stream.write('{"type":"new"}\n')
+            screen._poll()
+            await pilot.press("enter")
+            assert isinstance(app.screen, MessageScreen)
+            assert app.screen.body == json.dumps(first, indent=2)
+
+            await pilot.press("q")
+            await pilot.click(Log, offset=(1, 2), times=2)
+            assert isinstance(app.screen, MessageScreen)
+            assert app.screen.body == json.dumps(second, indent=2)
+            await pilot.press("q", "v")
+            assert app.screen is screen and screen.current == stdout
+            assert "## Tool" in log.lines
+
+    asyncio.run(scenario())
+
+
+def test_json_log_tail_preserves_complete_records(tmp_path: Path) -> None:
+    path = tmp_path / "agent.log"
+    path.write_text("x" * INITIAL_TAIL_BYTES + '\n{"type":"ready"}\n{"type":')
+    job = JobRecord("main", LaunchSpec("main", "codex"), 0, "", log_path=str(path))
+    assert job.output_files() == [path.with_suffix(".md"), path]
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test() as pilot:
+            screen = LogScreen(job)
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one(Log)
+            assert log.lines[1:] == ['{"type":"ready"}', '{"type":']
+            await pilot.press("enter")
+            assert app.screen is screen
+            with path.open("a") as stream:
+                stream.write('"done"}')
+            screen._poll()
+            await pilot.press("enter")
+            assert isinstance(app.screen, MessageScreen)
+            assert json.loads(app.screen.body) == {"type": "done"}
 
     asyncio.run(scenario())

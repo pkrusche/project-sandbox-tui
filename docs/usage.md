@@ -408,14 +408,23 @@ bookmark list's reviewed count.
 
 | Key | Action |
 |---|---|
-| `tab` / `shift+tab` | Next / previous file: transcript, agent log, captured output |
-| `j` `k` · `ctrl+d` `ctrl+u` · `ctrl+f` `ctrl+b` | Scroll a line · half page · page |
+| `tab` / `shift+tab` | Cycle through the transcript, agent log, and captured stdout |
+| `v` | Switch between captured stdout and the agent log |
+| `j` / `k` | Select the next or previous line in the agent event log, or scroll in other views |
+| `enter` | Inspect the selected JSON record |
+| `ctrl+d` `ctrl+u` · `ctrl+f` `ctrl+b` | Scroll a half page · page |
 | `gg` `G` | Top · bottom |
 | `f` | Toggle follow |
 | `q` / `esc` / `h` | Back to the list |
 
-Like `less +F`, the view follows new output while it is at the bottom; scrolling
-up (keys or mouse) pauses, scrolling back to the bottom resumes.
+Running coding agents open on captured stdout when available. This shows the
+Markdown translation as project-sandbox emits it. In the agent event log,
+click a line to select it or double-click a JSON record to open the scrollable
+dialog. `q`, `esc`, or `enter` closes the dialog.
+
+The view follows new output at the bottom. Scrolling up or selecting an earlier
+record pauses following. Scroll to the bottom or press `G` to resume. Use `f`
+to toggle following at any time.
 
 ## Pop-ups
 

@@ -124,9 +124,10 @@ class JobRecord:
     def output_files(self) -> list[Path]:
         """Files worth showing in the log view, most useful first."""
         paths = self.run_paths()
-        if paths is None:
-            return []
-        return [paths.transcript(), paths.log, paths.stdout]
+        files = [paths.transcript(), paths.log] if paths else []
+        if self.stdout_path:
+            files.append(Path(self.stdout_path))
+        return files
 
     def to_dict(self) -> dict[str, Any]:
         return {
