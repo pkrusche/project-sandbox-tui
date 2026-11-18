@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from project_sandbox_tui import doctor
+from project_sandbox_tui import doctor, feedback
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec, read_sessions, running_by_branch, runtime_cli
@@ -49,12 +49,14 @@ def _diagnostics(job: JobRecord) -> str:
     )
 
 
-def _wait(manager: JobManager, ready: Callable[[], bool], timeout: float) -> JobRecord:
+def _wait(
+    manager: JobManager, ready: Callable[[], bool], timeout: float, branch: str = BRANCH
+) -> JobRecord:
     deadline = time.monotonic() + timeout
     while True:
-        sessions = running_by_branch(read_sessions(), manager.repo, [BRANCH], None)
+        sessions = running_by_branch(read_sessions(), manager.repo, [branch], None)
         manager.refresh(sessions)
-        job = manager.jobs[BRANCH]
+        job = manager.jobs[branch]
         if ready():
             return job
         if not job.running:
@@ -160,10 +162,15 @@ def test_real_bash_container_lifecycle(
         "set -euo pipefail\n"
         'test "$PWD" = /workspace\n'
         "jj root\n"
+        "test -f /home/agent/.agents/skills/sbx-run-feedback/SKILL.md\n"
+        "test -f /home/agent/.claude/skills/sbx-run-feedback/SKILL.md\n"
+        "if touch /run/sbx-feedback/context.json; then exit 91; fi\n"
+        "python3 /run/sbx-feedback/sbx-report update --summary 'smoke running'\n"
         f"printf '%s\\n' '{marker}' | tee smoke-proof.txt\n"
         "while [ ! -f smoke-release ]; do sleep 0.2; done\n"
         "rm smoke-release\n"
         "jj describe -m 'bash container smoke'\n"
+        "python3 /run/sbx-feedback/sbx-report finish --outcome success --summary 'smoke done'\n"
     )
     print(f"Container smoke: runtime={cfg.sandbox.runtime}, image={image}, repo={jj_repo}")
     try:
@@ -184,6 +191,8 @@ def test_real_bash_container_lifecycle(
         (workspace / "smoke-release").write_text("continue\n")
         success = _check_finished(adopted, cli, 0, "completed")
         assert marker in Path(success.log_path).read_text(), _diagnostics(success)
+        assert success.reported_success, _diagnostics(success)
+        assert feedback.read_json(Path(success.feedback_path))["outcome"] == "success"
         assert (
             run("jj", "file", "show", "-r", BRANCH, "smoke-proof.txt", cwd=jj_repo).strip()
             == marker
@@ -195,7 +204,13 @@ def test_real_bash_container_lifecycle(
         # Reuse the same built image and workspace for failure and timeout propagation.
         cfg.sandbox.extra_args.append("--no-build")
         for prompt, timeout, code, status in (
-            ("printf 'expected failure\\n'; exit 7", 120, 7, "failed"),
+            (
+                "python3 /run/sbx-feedback/sbx-report finish --outcome failure --summary failed; "
+                "printf 'expected failure\\n'; exit 7",
+                120,
+                7,
+                "failed",
+            ),
             ("printf 'waiting for timeout\\n'; sleep 60", 5, 124, "timeout"),
         ):
             manager.start_background(
@@ -205,5 +220,21 @@ def test_real_bash_container_lifecycle(
             done = _check_finished(manager, cli, code, status)
             if code == 7:
                 assert "expected failure" in Path(done.log_path).read_text(), _diagnostics(done)
+                assert done.reported_outcome == "failure" and not done.reported_success
+            else:
+                assert done.reported_outcome == "unknown"
+        # Feedback survives automatic workspace removal.
+        cfg.project.keep_workspace = False
+        report = "python3 /run/sbx-feedback/sbx-report finish --outcome success --summary done"
+        manager.start_background(
+            LaunchSpec(BRANCH, "bash", mode="background", prompt_text=report), {}
+        )
+        removed = _check_finished(manager, cli, 0, "completed")
+        assert not workspace.exists()
+        assert removed.reported_success and Path(removed.feedback_path).exists()
+        # Main checkout uses the identical transport, without a branch workspace.
+        manager.start_background(LaunchSpec("@", "bash", mode="background", prompt_text=report), {})
+        main = _wait(manager, lambda: not manager.jobs["@"].running, 180, branch="@")
+        assert main.reported_success, _diagnostics(main)
     finally:
         _cleanup(manager, cli, image)

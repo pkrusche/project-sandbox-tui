@@ -225,6 +225,7 @@ def test_tui_survives_ctrl_c(repo: Path, launch: str, interrupt_at: str) -> None
     script = repo.parent / "interruptible.py"
     script.write_text(
         "import sys, time\n"
+        "if '--help' in sys.argv: sys.exit(0)\n"
         "print('INTERRUPTIBLE-READY', flush=True)\n"
         + ("time.sleep(60)\n" if interrupt_at == "child" else "")
         + "sys.exit(3)\n"

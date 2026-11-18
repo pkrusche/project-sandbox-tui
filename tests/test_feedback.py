@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -10,6 +12,9 @@ import pytest
 
 from project_sandbox_tui import feedback, feedback_transport, initialization
 from project_sandbox_tui.config import Config, ConfigError
+from project_sandbox_tui.jobs import JobManager, JobRecord
+from project_sandbox_tui.sandbox import LaunchSpec, build_argv
+from tests.conftest import wait_for
 
 
 @pytest.fixture
@@ -17,6 +22,19 @@ def reporting_dir(tmp_path: Path) -> Path:
     root = tmp_path / "runs" / "abc123"
     feedback_transport.prepare(root, "abc123", "task", {"input": 42})
     return root
+
+
+def spec(prompt: str = "report:success", branch: str = "topic") -> LaunchSpec:
+    return LaunchSpec(branch, "claude", mode="background", prompt_text=prompt)
+
+
+def finish(jobs: JobManager, branch: str = "topic") -> JobRecord:
+    def done() -> bool:
+        jobs.refresh({})
+        return not jobs.jobs[branch].running
+
+    wait_for(done)
+    return jobs.jobs[branch]
 
 
 def test_helper_progress_final_and_standalone_execution(
@@ -144,6 +162,90 @@ def test_state_type_changes_require_a_new_sequence(
     assert feedback.accept(reordered, "abc123", previous) == previous
 
 
+@pytest.mark.parametrize(
+    ("prompt", "status", "outcome", "success"),
+    [
+        ("report:success", "completed", "success", True),
+        ("report:failure", "completed", "failure", False),
+        ("report:blocked", "completed", "blocked", False),
+        ("report:success exit:7", "failed", "success", False),
+        ("report:success exit:124", "timeout", "success", False),
+        ("report:success exit:130", "interrupted", "success", False),
+        ("no report", "completed", "unknown", False),
+    ],
+)
+def test_process_status_is_independent(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    prompt: str,
+    status: str,
+    outcome: str,
+    success: bool,
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    original = jobs.start_background(spec(prompt), {})
+    adopted = JobManager(repo, jobs.cfg)
+    job = finish(adopted)
+    assert job.run_id == original.run_id
+    assert (job.status, job.reported_outcome, job.reported_success) == (status, outcome, success)
+    assert job.feedback_frozen
+    # A replacement file after completion cannot change the persisted result.
+    Path(job.feedback_path).write_text('{"broken":')
+    restarted = JobManager(repo, jobs.cfg)
+    restarted.refresh({})
+    assert restarted.jobs["topic"].reported_outcome == outcome
+    assert restarted.jobs["topic"].feedback_status == job.feedback_status
+
+
+def test_early_report_keeps_busy_and_invalid_final_blocks_success(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    job = jobs.start_background(spec("sleep:0.5 report:success"), {})
+    wait_for(lambda: Path(job.feedback_path).exists())
+    jobs.refresh({})
+    assert jobs.jobs["topic"].running and jobs.busy_reason("topic", {})
+    assert jobs.jobs["topic"].reported_outcome == "success"
+    Path(job.feedback_path).write_text('{"partial":')
+    done = finish(jobs)
+    assert done.feedback_snapshot and done.feedback_snapshot["outcome"] == "success"
+    assert done.feedback_status == "invalid" and not done.reported_success
+
+
+def test_unsupported_and_required_capability(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(feedback_transport, "supported", lambda *_, **__: False)
+    cfg = fake_cfg()
+    jobs = JobManager(repo, cfg)
+    job = jobs.start_background(spec(), {})
+    assert job.feedback_status == "unsupported" and not job.feedback_path
+    finish(jobs)
+    cfg.feedback.require_reported_success = True
+    with pytest.raises(ConfigError, match="--mount"):
+        jobs.start_background(spec(), {})
+
+
+def test_mounts_and_prompt_do_not_change_original_spec(reporting_dir: Path, tmp_path: Path) -> None:
+    cfg = Config()
+    cfg.project.base_image = "img"
+    from project_sandbox_tui.sandbox import RunPaths
+
+    paths = RunPaths(tmp_path / "log", tmp_path / "summary", tmp_path / "stdout")
+    launch = spec("original")
+    before = copy.deepcopy(launch)
+    argv = build_argv(cfg, tmp_path, launch, paths, reporting_dir)
+    assert launch == before
+    assert any(a.startswith("--prompt-text=original\n\nRun reporting:") for a in argv)
+    assert feedback_transport.mounts(reporting_dir)[0].endswith(",readonly")
+    assert not feedback_transport.mounts(reporting_dir)[1].endswith(",readonly")
+    bash = LaunchSpec("topic", "bash", mode="background", prompt_text="exit 0")
+    assert "--prompt-text=exit 0" in build_argv(cfg, tmp_path, bash, paths, reporting_dir)
+    with pytest.raises(ValueError, match="commas"):
+        feedback_transport.mounts(tmp_path / "bad,path")
+
+
 def test_init_preserves_user_guidance_and_skill_edits(tmp_path: Path) -> None:
     agents = tmp_path / "AGENTS.md"
     agents.write_text("User guidance with no final newline")
@@ -161,6 +263,44 @@ def test_init_preserves_user_guidance_and_skill_edits(tmp_path: Path) -> None:
     assert len([message for message in messages if "preserved" in message]) == 2
 
 
+@pytest.mark.parametrize("state_name", ["state", "state,feedback", "state\nfeedback"])
+@pytest.mark.parametrize("sandbox_dry_run", [False, True])
+def test_host_helper_and_frozen_inline_result(
+    tmp_path: Path, state_name: str, sandbox_dry_run: bool
+) -> None:
+    cfg = Config()
+    if sandbox_dry_run:
+        cfg.sandbox.extra_args.append("--dry-run")
+    jobs = JobManager(tmp_path, cfg, state_dir=tmp_path / state_name)
+    argv = [
+        sys.executable,
+        "-c",
+        "import os, subprocess; subprocess.run(['python3', os.environ['SBX_FEEDBACK_DIR'] + "
+        "'/sbx-report', 'finish', '--outcome', 'success', '--summary', 'host done'], check=True)",
+    ]
+    with jobs.interactive(LaunchSpec("@", "bash"), {}, argv=argv, host=True) as job:
+        job.exit_code = subprocess.run(job.launch_argv(), cwd=tmp_path).returncode
+    assert job.reported_success and job.feedback_frozen
+    assert job.argv == argv
+    assert (tmp_path / ".agents/skills/sbx-run-feedback/SKILL.md").is_file()
+
+
+def test_old_job_records_have_unknown_outcome() -> None:
+    job = JobRecord.from_dict({"branch": "topic", "spec": {"agent": "claude"}})
+    assert job.reported_outcome == "unknown" and job.feedback_status == "unsupported"
+
+
+def test_dry_run_does_not_create_reporting_files(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.sandbox.extra_args.append("--dry-run")
+    jobs = JobManager(repo, cfg)
+    jobs.start_background(spec(), {})
+    finish(jobs)
+    assert not (jobs.state_dir / "runs").exists()
+
+
 def test_feedback_doctor_is_read_only_and_reports_drift(tmp_path: Path) -> None:
     from project_sandbox_tui.doctor import check_feedback
 
@@ -176,6 +316,19 @@ def test_feedback_doctor_is_read_only_and_reports_drift(tmp_path: Path) -> None:
     assert check_feedback(cfg, tmp_path, lambda *_: (0, "--mount MOUNT"))[-1].status == "warn"
     cfg.feedback.require_reported_success = True
     assert check_feedback(cfg, tmp_path, lambda *_: (0, "old CLI"))[0].status == "fail"
+
+
+def test_reporting_state_is_not_workspace_state(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    import shutil
+
+    jobs = JobManager(repo, fake_cfg())
+    job = jobs.start_background(spec(), {})
+    finish(jobs)
+    shutil.rmtree(repo)
+    assert Path(job.feedback_path).is_file()
+    assert JobManager(repo, jobs.cfg).jobs["topic"].reported_success
 
 
 def test_feedback_config_validation() -> None:

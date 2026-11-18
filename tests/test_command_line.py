@@ -196,7 +196,7 @@ def test_host_command_launches_cli_with_arguments(
             assert cwd == path
             assert launch.argv == [
                 "terminal",
-                shlex.join(launchers.host_command(argv, job.summary_path)),
+                shlex.join(launchers.host_command(job.launch_argv(), job.summary_path)),
             ]
             # The command uses the same busy reservation as the shortcut.
             await app.run_command("host other-agent")

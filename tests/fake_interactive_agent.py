@@ -18,6 +18,8 @@ import tty
 
 
 def main() -> int:
+    if "--help" in sys.argv:
+        return 0  # unsupported feedback transport, without touching the terminal
     if expected_cwd := os.environ.get("FAKE_EXPECT_CWD"):
         assert os.getcwd() == expected_cwd, (os.getcwd(), expected_cwd)
     mode = os.environ.get("FAKE_MODE", "clean")

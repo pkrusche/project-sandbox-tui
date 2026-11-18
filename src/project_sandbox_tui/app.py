@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 import os
 import shlex
 import signal
@@ -753,7 +754,14 @@ class SandboxTUI(App[None]):
         detail = job.spec.label()
         if job.exit_code is not None:
             detail += f" · exit {job.exit_code}"
-        severity: SeverityLevel = "information" if job.status == "completed" else "warning"
+        if job.feedback_path:
+            detail += f" · {job.feedback_detail()}"
+        severity: SeverityLevel = (
+            "information"
+            if job.status == "completed"
+            and (not job.feedback_path or job.reported_outcome == "success")
+            else "warning"
+        )
         self.notify(
             f"{job.branch}: {job.status.replace('_', ' ')} — {detail}",
             severity=severity,
@@ -1092,7 +1100,10 @@ class SandboxTUI(App[None]):
         paths = self.jobs.new_run_paths(spec.branch) if spec.mode == "background" else None
         if spec.mode == "background" and not spec.prompt_text.strip():
             spec = dataclasses.replace(spec, prompt_text="<prompt>")
-        return shlex.join(build_argv(self.cfg, self.repo, spec, paths))
+        feedback_dir = (
+            self.jobs.state_dir / "runs" / "<run-id>" if self.cfg.feedback.enabled else None
+        )
+        return shlex.join(build_argv(self.cfg, self.repo, spec, paths, feedback_dir))
 
     def _form_preview(self, spec: LaunchSpec) -> str:
         """Shorter preview for the launch form: state-dir paths abbreviated."""
@@ -1813,11 +1824,15 @@ class SandboxTUI(App[None]):
     def _launch_external(self, spec: LaunchSpec) -> None:
         """Hand the session to tmux / zellij / screen / a custom terminal command."""
         argv = build_argv(self.cfg, self.repo, spec)
-        launch = launchers.external_launch(
-            self.cfg.ui.terminal_mode(), argv, spec.branch, self.repo, self.cfg.ui.terminal_command
-        )
         job = self.jobs.record_external(spec, argv, self.sessions)
         try:
+            launch = launchers.external_launch(
+                self.cfg.ui.terminal_mode(),
+                job.argv,
+                spec.branch,
+                self.repo,
+                self.cfg.ui.terminal_command,
+            )
             launchers.start(launch, cwd=self.repo)
         except (OSError, launchers.LaunchError):
             self.jobs.discard(job)
@@ -2066,6 +2081,10 @@ class SandboxTUI(App[None]):
         ]
         if any(ids):
             lines.append(f"ids         {' · '.join(i for i in ids if i)}")
+        if job.feedback_path:
+            lines += [f"run id      {job.run_id}", f"feedback    {job.feedback_detail()}"]
+            if job.feedback_snapshot:
+                lines.append(json.dumps(job.feedback_snapshot, indent=2))
         prompt = job.spec.prompt_text.strip().splitlines()
         if prompt:
             lines.append(f"prompt      {prompt[0]}" + (" …" if len(prompt) > 1 else ""))
@@ -2255,7 +2274,7 @@ class SandboxTUI(App[None]):
                 try:
                     launch = launchers.external_launch(
                         mode,
-                        launchers.host_command(argv, job.summary_path),
+                        launchers.host_command(job.launch_argv(), job.summary_path),
                         name,
                         path,
                         self.cfg.ui.terminal_command,
@@ -2281,7 +2300,7 @@ class SandboxTUI(App[None]):
                 print(f"\n── sbx-tui: host agent on {name} ──\n{shlex.join(argv)}\n", flush=True)
                 with terminal.preserved():
                     try:
-                        proc = subprocess.Popen(argv, cwd=path)
+                        proc = subprocess.Popen(job.launch_argv(), cwd=path)
                     except OSError:
                         job.exit_code = 127
                         raise

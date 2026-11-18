@@ -2698,7 +2698,7 @@ def test_host_agent_opens_in_target_workspace(
         if mode == "custom":
             argv = ["wrapper", "codex", "--directory", str(path), "--bookmark", target]
         assert job.host and job.external and job.running and job.argv == argv
-        wrapped = launchers.host_command(argv, job.summary_path)
+        wrapped = launchers.host_command(job.launch_argv(), job.summary_path)
         if mode == "custom":
             assert launch.argv == [
                 "terminal", "--cwd", str(path), "--", "sh", "-c",
@@ -2972,7 +2972,7 @@ def test_inline_host_agent_is_tracked_until_return(
         spawned: list[bool] = []
 
         def checked_spawn(args, *args_, **kwargs):
-            if args == argv:
+            if target in app.jobs.jobs and args == app.jobs.jobs[target].launch_argv():
                 other = JobManager(repo, cfg)
                 assert other.busy_reason(target, {})
                 assert other.jobs[target].host and other.jobs[target].running
@@ -3025,7 +3025,7 @@ def test_host_launch_rechecks_reservation_after_creating_workspace(
         app.marked = ["feature/x"]
         await pilot.press("I")
         assert "already has a interactive session" in notices[-1]
-        assert app.jobs.jobs["feature/x"].argv == ["other"]
+        assert app.jobs.jobs["feature/x"].argv[0] == "other"
 
     run_app(repo, cfg, scenario)
 

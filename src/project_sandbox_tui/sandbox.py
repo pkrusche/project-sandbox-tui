@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from project_sandbox_tui import feedback_transport
 from project_sandbox_tui.config import FAST_AGENTS, Config, ConfigError
 from project_sandbox_tui.vcs import WORKING_COPY, workspace_path
 
@@ -112,6 +113,7 @@ def build_argv(
     repo: Path,
     spec: LaunchSpec,
     run_paths: RunPaths | None = None,
+    feedback_dir: Path | None = None,
 ) -> list[str]:
     """Return the full ``project-sandbox`` argv for ``spec``."""
     if not cfg.has_image_source():
@@ -195,15 +197,21 @@ def build_argv(
     argv += s.extra_args
     argv += spec.extra_args
 
+    if feedback_dir is not None:
+        argv += feedback_transport.mounts(feedback_dir)
+
     if spec.mode == "background":
         assert run_paths is not None
         argv += [
-            f"--prompt-text={spec.prompt_text}",
+            f"--prompt-text={spec.prompt_text}"
+            + (feedback_transport.instruction() if feedback_dir and spec.agent != "bash" else ""),
             f"--log={run_paths.log}",
             f"--json-summary={run_paths.summary}",
         ]
         if spec.timeout:
             argv.append(f"--timeout={spec.timeout}")
+    elif run_paths is not None:
+        argv.append(f"--json-summary={run_paths.summary}")
     return argv
 
 

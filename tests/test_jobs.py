@@ -353,7 +353,8 @@ def test_failed_record_write_stops_detached_child(
     monkeypatch.setattr(jobs, "save", fail_save)
     with pytest.raises(OSError, match="disk full"):
         jobs.start_background(bg("main", "sleep:30"), {})
-    assert len(children) == 1 and children[0].poll() is not None
+    agents = [child for child in children if "--help" not in child.args]
+    assert len(agents) == 1 and all(child.poll() is not None for child in children)
     assert not jobs.jobs and not jobs._procs
     assert not list(jobs.logs_dir.iterdir())
 
