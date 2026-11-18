@@ -6,10 +6,16 @@ Bookmark sessions use separate jj workspaces.
 A workspace is busy while any TUI instance or project-sandbox session uses it,
 including sessions started from a shell.
 
-`o` and `I` create a missing workspace before opening it, named after the bookmark
-at project-sandbox's location, on a new change on top of the bookmark; later
-sessions reuse it with `keep_workspace`. Rows with a starting session wait for
-the session's own workspace.
+`o`, `I`, `i`, `r` and agent actions create a missing workspace at
+project-sandbox's location before starting, on a new change on top of the
+bookmark (`jj workspace add --no-colocate`). It is registered under its directory
+name (`feature-x-1a2b3c` for `feature/x`), as project-sandbox does, so later
+sessions reuse it with `keep_workspace` and teardown can remove it. A sandbox
+start refuses a workspace registered under another name by an older version:
+rename it with `jj workspace rename` inside it, or remove it with `W`. Rows with
+a starting session wait for the session's own workspace. Before starting, the
+bundled `sbx-tui-config` skill and any configured
+[workspace skills](configuration.md#workspace-skills) are copied in.
 
 Select `@ working copy` to run directly in the TUI's checkout with `i`, `r`, or
 a configured agent action. These sessions use the existing files, including
@@ -189,3 +195,11 @@ run survives quitting, and remaining tasks resume when sbx-tui reopens. Inline
 interactive sessions suspend refresh until control returns to the TUI. Dry-run
 mode previews submitted prompts without consuming saved queue entries or changing
 their order or pause state.
+
+## Agent-reported outcomes
+
+Runs can publish structured progress and final success, failure, or blocked
+outcomes. Process exit status remains separate. Task details retain the report
+and state, and opt-in feedback policies can gate or branch the queue.
+See [agent feedback](feedback.md) for reporting, interactive completion rules,
+and bounded retries.

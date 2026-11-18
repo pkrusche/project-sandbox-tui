@@ -114,6 +114,52 @@ def test_refresh_preserves_horizontal_scroll(
     run_app(repo, fake_cfg(), scenario, size=(70, 25))
 
 
+def test_resize_keeps_scrolled_bookmarks_in_place(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    jj(repo, "bookmark", "create", *(f"topic-{i:02}" for i in range(24)), "-r", "main")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        table = app.table
+        await pilot.press("G", "k", "k", "k")
+        offset = table.scroll_y
+        selected = app.selected_branch_name()
+        assert offset > 0
+        for width in (65, 100):
+            await pilot.resize_terminal(width, 10)
+            await pilot.pause()
+            assert app.selected_branch_name() == selected
+            assert table.scroll_y == offset
+            for key in ("j", "k"):
+                await pilot.press(key)
+                for line in range(1, table.scrollable_content_region.height):
+                    index = int(table.scroll_y) + line - 1
+                    if index < table.row_count:
+                        name = table.get_row_at(index)[1].plain.strip()
+                        assert name in table.render_line(line).text
+
+    run_app(repo, fake_cfg(), scenario, size=(100, 10))
+
+
+def test_bookmark_table_releases_space_when_status_shrinks(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        app.queue.pause("feature/x", True)
+        app._render_table()
+        await pilot.pause()
+        line = app.table.get_row_index("feature/x") + 1
+        assert "0 queued (paused)" in app.table.render_line(line).text
+        app.queue.pause("feature/x", False)
+        app._render_table()
+        await pilot.pause()
+        assert app.table.max_scroll_x == 0
+
+    run_app(repo, fake_cfg(), scenario, size=(76, 12))
+
+
 @pytest.mark.parametrize("main", ["main", "release"])
 def test_bookmark_comparison_markers(
     repo: Path, fake_cfg: Callable[..., Config], main: str
@@ -698,7 +744,7 @@ def test_move_working_copy_asks_about_held_workspace(
         await pilot.press("@")
         await wait_for_screen(app, pilot, ConfirmScreen)
         assert isinstance(app.screen, ConfirmScreen)
-        assert "working copy of workspace feature/x" in app.screen.body
+        assert f"working copy of workspace {path.name}" in app.screen.body
         await pilot.press(answer)
         await app.workers.wait_for_complete()
         target = app.backend._bookmark_commit("feature/x")
@@ -840,7 +886,7 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         # empty prompt is refused
         await pilot.press("ctrl+enter")
         assert app.screen is form
-        form.query_one("#prompt", TextArea).text = "sleep:0.6 exit:0"
+        form.query_one("#prompt", TextArea).text = "sleep:2 exit:0"
         form.query_one("#agent", CycleField).focus()
         await pilot.press("l")  # agent → codex
         assert form.current_spec().agent == "codex"
@@ -851,6 +897,7 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         await pilot.press(*"gpt-x")
         preview = str(form.query_one("#preview").render())
         assert "--agent=codex" in preview and "--prompt-text" in preview
+        assert "skills (if missing): " in preview and "sbx-tui-config" in preview
         await pilot.press("ctrl+enter")
         assert not isinstance(app.screen, LaunchScreen)
 
@@ -877,7 +924,7 @@ def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..
         assert isinstance(app.screen, MessageScreen)
         assert "last run    completed (exit 0)" in app.screen.body
         assert "codex/gpt-x · background" in app.screen.body
-        assert "background codex/gpt-x → completed: sleep:0.6 exit:0" in app.screen.body
+        assert "background codex/gpt-x → completed: sleep:2 exit:0" in app.screen.body
         await pilot.press("q")
 
         await pilot.press("l")
@@ -1793,6 +1840,12 @@ def test_open_selected_workspaces(
         assert (missing_path / "missing.txt").read_text() == "missing\n"
         assert "missing" in jj(repo, "workspace", "list", "-T", 'stringify(name) ++ "\\n"').split()
         assert any("missing: created workspace" in str(n.message) for n in app._notifications)
+        # An idle o deploys the bundled skill; a directory that is no workspace gets none.
+        assert (missing_path / ".agents/skills/sbx-tui-config/SKILL.md").is_file()
+        assert not (feature_path / ".agents").exists()
+        assert any(
+            "feature/x: sbx-tui-config not deployed" in str(n.message) for n in app._notifications
+        )
 
         # A registered workspace whose directory is gone is reported, not opened.
         shutil.rmtree(missing_path)
@@ -1804,7 +1857,8 @@ def test_open_selected_workspaces(
         )
 
         # A session that is starting creates its own workspace: never race it.
-        app.jobs.record_external(LaunchSpec(branch="spare", agent="bash"), ["true"])
+        other = JobManager(repo, app.cfg)  # e.g. without skills to deploy
+        other.record_external(LaunchSpec(branch="spare", agent="bash"), ["true"])
         app.marked = ["spare"]
         await pilot.press("o")
         assert len(opened) == 3 and not workspace_path(repo, "spare", None).exists()
@@ -2691,6 +2745,9 @@ def test_host_agent_opens_in_target_workspace(
         await pilot.press("I")
         assert app.screen is app.main
         assert path.is_dir()
+        assert (path / ".agents/skills/sbx-run-feedback/SKILL.md").is_file()
+        if target != "@":
+            assert (path / ".agents/skills/sbx-tui-config/SKILL.md").is_file()
         launch, cwd = opened.pop()
         assert cwd == path
         job = app.jobs.jobs[target]
@@ -2698,7 +2755,7 @@ def test_host_agent_opens_in_target_workspace(
         if mode == "custom":
             argv = ["wrapper", "codex", "--directory", str(path), "--bookmark", target]
         assert job.host and job.external and job.running and job.argv == argv
-        wrapped = launchers.host_command(argv, job.summary_path)
+        wrapped = launchers.host_command(job.launch_argv(), job.summary_path)
         if mode == "custom":
             assert launch.argv == [
                 "terminal", "--cwd", str(path), "--", "sh", "-c",
@@ -2776,12 +2833,13 @@ def test_host_agent_rejects_protected_or_busy_targets_and_reports_launch_failure
         await pilot.press("I")
         assert "main is protected" in notices[-1]
         assert not app._workspace_dir("main").exists()
-        reservation = app.jobs.record_external(LaunchSpec("feature/x", "claude"), ["other"])
+        other = JobManager(repo, cfg)  # another instance's session, starting
+        reservation = other.record_external(LaunchSpec("feature/x", "claude"), ["other"])
         app.marked = ["feature/x"]
         await pilot.press("I")
         assert "feature/x" in notices[-1] and "host agent" not in notices[-1]
         assert not app._workspace_dir("feature/x").exists()
-        app.jobs.discard(reservation)
+        other.discard(reservation)
         await pilot.press("I")
         assert notices[-1] == "feature/x: could not start host agent: terminal not found"
         assert app.jobs.jobs == {}
@@ -2972,7 +3030,7 @@ def test_inline_host_agent_is_tracked_until_return(
         spawned: list[bool] = []
 
         def checked_spawn(args, *args_, **kwargs):
-            if args == argv:
+            if target in app.jobs.jobs and args == app.jobs.jobs[target].launch_argv():
                 other = JobManager(repo, cfg)
                 assert other.busy_reason(target, {})
                 assert other.jobs[target].host and other.jobs[target].running
@@ -2995,7 +3053,7 @@ def test_inline_host_agent_is_tracked_until_return(
 
 
 @pytest.mark.parametrize("mode", ["inline", "custom"])
-def test_host_launch_rechecks_reservation_after_creating_workspace(
+def test_host_launch_rechecks_reservation_before_preparing_workspace(
     repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     from project_sandbox_tui import launchers
@@ -3006,26 +3064,28 @@ def test_host_launch_rechecks_reservation_after_creating_workspace(
     cfg.ui.terminal_command = "terminal {cmd}"
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        ensure = app._ensure_workspace
+        workspace_dir = app._workspace_dir
         other = JobManager(repo, cfg)
         notices: list[str] = []
         monkeypatch.setattr(app, "notify", lambda message, **_kw: notices.append(message))
 
-        def reserve(name: str) -> Path | None:
-            path = ensure(name)
-            other.record_external(LaunchSpec(name, "claude"), ["other"])
-            return path
+        def reserve(name: str) -> Path:
+            # Another instance reserves the bookmark after the first busy check.
+            if name not in other.jobs:
+                other.record_external(LaunchSpec(name, "claude"), ["other"])
+            return workspace_dir(name)
 
         def unexpected(*_args, **_kwargs):
             pytest.fail("busy target must not launch a host agent")
 
-        monkeypatch.setattr(app, "_ensure_workspace", reserve)
+        monkeypatch.setattr(app, "_workspace_dir", reserve)
         monkeypatch.setattr(app, "_suspended", unexpected)
         monkeypatch.setattr(launchers, "start", unexpected)
         app.marked = ["feature/x"]
         await pilot.press("I")
         assert "already has a interactive session" in notices[-1]
-        assert app.jobs.jobs["feature/x"].argv == ["other"]
+        assert app.jobs.jobs["feature/x"].argv[0] == "other"
+        assert not workspace_dir("feature/x").exists()  # nothing prepared for a busy target
 
     run_app(repo, cfg, scenario)
 

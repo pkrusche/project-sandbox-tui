@@ -19,16 +19,18 @@ from pathlib import Path
 
 import pytest
 
-from project_sandbox_tui import doctor
-from project_sandbox_tui.config import Config
+from project_sandbox_tui import doctor, feedback
+from project_sandbox_tui.config import Config, WorkspaceSkill
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec, read_sessions, running_by_branch, runtime_cli
-from project_sandbox_tui.vcs import workspace_path
+from project_sandbox_tui.vcs import JjBackend, workspace_path
+from project_sandbox_tui.workspace_skills import WorkspacePreparer
 from tests.conftest import run
 
 pytestmark = pytest.mark.container_smoke
 
 BRANCH = "smoke/bash"
+SKILL = ".agents/skills/smoke-skill"  # ignored by BRANCH's .gitignore
 BUILD_DEADLINE = 20 * 60  # first run downloads and builds the sandbox image
 
 
@@ -49,12 +51,14 @@ def _diagnostics(job: JobRecord) -> str:
     )
 
 
-def _wait(manager: JobManager, ready: Callable[[], bool], timeout: float) -> JobRecord:
+def _wait(
+    manager: JobManager, ready: Callable[[], bool], timeout: float, branch: str = BRANCH
+) -> JobRecord:
     deadline = time.monotonic() + timeout
     while True:
-        sessions = running_by_branch(read_sessions(), manager.repo, [BRANCH], None)
+        sessions = running_by_branch(read_sessions(), manager.repo, [branch], None)
         manager.refresh(sessions)
-        job = manager.jobs[BRANCH]
+        job = manager.jobs[branch]
         if ready():
             return job
         if not job.running:
@@ -128,7 +132,7 @@ def _cleanup(manager: JobManager, cli: str, image: str) -> None:
 
 
 def test_real_bash_container_lifecycle(
-    jj_repo: Path, pytestconfig: pytest.Config, monkeypatch: pytest.MonkeyPatch
+    jj_repo: Path, pytestconfig: pytest.Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     cfg = Config()
     cfg.sandbox.command = pytestconfig.getoption("--container-command")
@@ -151,19 +155,46 @@ def test_real_bash_container_lifecycle(
     cfg.sandbox.extra_args = [f"--image-tag={image}"]
     monkeypatch.setenv("JJ_USER", "Container Smoke")
     monkeypatch.setenv("JJ_EMAIL", "smoke@example.invalid")
-    run("jj", "bookmark", "create", BRANCH, "-r", "main", cwd=jj_repo)
     main_before = run("jj", "log", "--no-graph", "-r", "main", "-T", "commit_id", cwd=jj_repo)
+    # The bookmark ignores the skill; a deployed copy is read and run from /workspace.
+    run("jj", "new", "main", cwd=jj_repo)
+    (jj_repo / ".gitignore").write_text(f"/{SKILL}/\n")
+    run("jj", "commit", "-m", "ignore the smoke skill", cwd=jj_repo)
+    run("jj", "bookmark", "create", BRANCH, "-r", "@-", cwd=jj_repo)
+    run("jj", "new", "main", cwd=jj_repo)
+    skill_marker = f"skill-smoke-{uuid.uuid4().hex}"
+    source = tmp_path / "smoke-skill"
+    (source / "bin").mkdir(parents=True)
+    (source / "SKILL.md").write_text(f"---\nname: smoke-skill\n---\n{skill_marker}\n")
+    helper = source / "bin" / "helper.sh"
+    helper.write_text("#!/bin/sh\nprintf 'helper ran\\n'\n")
+    helper.chmod(0o755)
+    cfg.workspace_skills = [WorkspaceSkill(str(source), [SKILL])]
+    cfg.validate()
     workspace = workspace_path(jj_repo, BRANCH, None)
     manager = JobManager(jj_repo, cfg)
+    preparer = WorkspacePreparer(jj_repo, JjBackend(jj_repo))
+
+    def prepare(current: Config, spec: LaunchSpec, sandbox: bool) -> None:  # as the TUI does
+        preparer.prepare(current, spec.branch, sandbox=sandbox, extra_args=spec.extra_args)
+
+    manager.prepare = prepare
     marker = f"bash-smoke-{uuid.uuid4().hex}"
     script = (
         "set -euo pipefail\n"
         'test "$PWD" = /workspace\n'
         "jj root\n"
+        "test -f /home/agent/.agents/skills/sbx-run-feedback/SKILL.md\n"
+        "test -f /home/agent/.claude/skills/sbx-run-feedback/SKILL.md\n"
+        "if touch /run/sbx-feedback/context.json; then exit 91; fi\n"
+        "python3 /run/sbx-feedback/sbx-report update --summary 'smoke running'\n"
+        f"grep -q '{skill_marker}' {SKILL}/SKILL.md\n"
+        f"{SKILL}/bin/helper.sh\n"
         f"printf '%s\\n' '{marker}' | tee smoke-proof.txt\n"
         "while [ ! -f smoke-release ]; do sleep 0.2; done\n"
         "rm smoke-release\n"
         "jj describe -m 'bash container smoke'\n"
+        "python3 /run/sbx-feedback/sbx-report finish --outcome success --summary 'smoke done'\n"
     )
     print(f"Container smoke: runtime={cfg.sandbox.runtime}, image={image}, repo={jj_repo}")
     try:
@@ -184,10 +215,17 @@ def test_real_bash_container_lifecycle(
         (workspace / "smoke-release").write_text("continue\n")
         success = _check_finished(adopted, cli, 0, "completed")
         assert marker in Path(success.log_path).read_text(), _diagnostics(success)
+        assert success.reported_success, _diagnostics(success)
+        assert feedback.read_json(Path(success.feedback_path))["outcome"] == "success"
+        assert "helper ran" in Path(success.log_path).read_text(), _diagnostics(success)
         assert (
             run("jj", "file", "show", "-r", BRANCH, "smoke-proof.txt", cwd=jj_repo).strip()
             == marker
         )
+        # The session change is captured; the deployed skills are not.
+        tracked = run("jj", "file", "list", "-r", BRANCH, cwd=jj_repo).splitlines()
+        assert "smoke-proof.txt" in tracked
+        assert not [path for path in tracked if "/skills/" in path], tracked
         assert not (jj_repo / "smoke-proof.txt").exists()
         assert main_before == run(
             "jj", "log", "--no-graph", "-r", "main", "-T", "commit_id", cwd=jj_repo
@@ -195,7 +233,13 @@ def test_real_bash_container_lifecycle(
         # Reuse the same built image and workspace for failure and timeout propagation.
         cfg.sandbox.extra_args.append("--no-build")
         for prompt, timeout, code, status in (
-            ("printf 'expected failure\\n'; exit 7", 120, 7, "failed"),
+            (
+                "python3 /run/sbx-feedback/sbx-report finish --outcome failure --summary failed; "
+                "printf 'expected failure\\n'; exit 7",
+                120,
+                7,
+                "failed",
+            ),
             ("printf 'waiting for timeout\\n'; sleep 60", 5, 124, "timeout"),
         ):
             manager.start_background(
@@ -205,5 +249,21 @@ def test_real_bash_container_lifecycle(
             done = _check_finished(manager, cli, code, status)
             if code == 7:
                 assert "expected failure" in Path(done.log_path).read_text(), _diagnostics(done)
+                assert done.reported_outcome == "failure" and not done.reported_success
+            else:
+                assert done.reported_outcome == "unknown"
+        # Feedback survives automatic workspace removal.
+        cfg.project.keep_workspace = False
+        report = "python3 /run/sbx-feedback/sbx-report finish --outcome success --summary done"
+        manager.start_background(
+            LaunchSpec(BRANCH, "bash", mode="background", prompt_text=report), {}
+        )
+        removed = _check_finished(manager, cli, 0, "completed")
+        assert not workspace.exists()
+        assert removed.reported_success and Path(removed.feedback_path).exists()
+        # Main checkout uses the identical transport, without a branch workspace.
+        manager.start_background(LaunchSpec("@", "bash", mode="background", prompt_text=report), {})
+        main = _wait(manager, lambda: not manager.jobs["@"].running, 180, branch="@")
+        assert main.reported_success, _diagnostics(main)
     finally:
         _cleanup(manager, cli, image)

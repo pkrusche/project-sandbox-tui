@@ -23,6 +23,7 @@ CONFIGURED = {"test": "uv run pytest", "lint": "uv run ruff check ."}
         ("quit", "quit", ""),
         ("help", "help", ""),
         ("doctor", "doctor", ""),
+        ("update-models", "update-models", ""),
         ("reload", "reload", ""),
     ],
 )
@@ -42,6 +43,8 @@ def test_parse(line: str, builtin: str, script: str) -> None:
         ("doctor main", "takes no arguments"),
         ("*doctor", "cannot run per workspace"),
         ("&doctor", "cannot run in the background"),
+        ("update-models one two", "accepts one optional source"),
+        ('update-models ""', "accepts one optional source"),
     ],
 )
 def test_parse_errors(line: str, message: str) -> None:

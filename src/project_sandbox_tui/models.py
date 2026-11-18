@@ -7,10 +7,10 @@ Sources, merged per agent in this order (first match wins in the autocomplete):
 3. Codex's own model list (``$CODEX_HOME/models_cache.json``, written by Codex),
 4. the downloaded catalog in the state directory (``models.json``).
 
-The catalog is only ever downloaded on request (``sbx-tui --update-models`` or
-the first ``sbx-tui --init``); the TUI itself never goes online. Downloads are
-HTTPS-only, size-capped and validated, and only a small filtered subset is
-stored, replacing the previous file atomically.
+The catalog is downloaded on request (``sbx-tui --update-models`` or
+``:update-models``) and by ``sbx-tui --init`` when missing. Downloads are HTTPS-only,
+size-capped and validated, and only a small filtered subset is stored, replacing
+the previous file atomically.
 """
 
 from __future__ import annotations
@@ -388,7 +388,7 @@ def store_hint(agent: str, store: Store | None, now: datetime | None = None) -> 
     if agent not in PROVIDERS:
         return ""
     if store is None:
-        return "more models: sbx-tui --update-models"
+        return "more models: :update-models"
     if store.fetched_at is None:
         return ""
     fetched = store.fetched_at
@@ -397,7 +397,7 @@ def store_hint(agent: str, store: Store | None, now: datetime | None = None) -> 
     age = ((now or datetime.now(UTC)) - fetched).days
     if age <= STALE_AFTER_DAYS:
         return ""
-    return f"model list is {age} days old: sbx-tui --update-models"
+    return f"model list is {age} days old: :update-models"
 
 
 def describe(store: Store) -> str:

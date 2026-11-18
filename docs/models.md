@@ -17,7 +17,12 @@ Suggestion order:
 
 ## Updating the catalog
 
-Only `--update-models` (or `--init` without a catalog) fetches data:
+Use `:update-models` in the TUI to refresh the catalog from models.dev. To use a
+local file or HTTPS URL, pass it as an argument like `:update-models "my catalog.json"`.
+The TUI resolves relative paths from the repository root, and the updated
+suggestions appear the next time you open a launch form.
+
+The same sources work from the CLI.
 
 ```sh
 sbx-tui --update-models                   # https://models.dev/api.json

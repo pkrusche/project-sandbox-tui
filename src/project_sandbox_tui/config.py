@@ -107,6 +107,33 @@ class Sandbox:
 
 
 @dataclass
+class Feedback:
+    enabled: bool = True
+    require_reported_success: bool = False
+    pass_state_keys: list[str] = field(default_factory=list)
+    retry_outcomes: list[str] = field(default_factory=list)
+    max_attempts: int = 1
+    on_success: str = ""  # configured action name
+    on_failure: str = ""
+    on_blocked: str = ""
+    max_steps: int = 1
+
+    @property
+    def makes_decisions(self) -> bool:
+        return bool(
+            self.require_reported_success
+            or self.retry_outcomes
+            or self.on_success
+            or self.on_failure
+            or self.on_blocked
+        )
+
+    @property
+    def requires_reporting(self) -> bool:
+        return self.makes_decisions or bool(self.pass_state_keys)
+
+
+@dataclass
 class Project:
     base_image: str = ""  # positional base image, e.g. python:3.12-slim
     dockerfile: str = ""  # --dockerfile (relative paths resolve against the repo)
@@ -117,6 +144,7 @@ class Project:
     keep_workspace: bool = True  # --keep-workspace
     default_branch_start: str = ""  # start revision for new bookmarks ("" = main/trunk/@-)
     main_branch: str = ""  # cleanup removes work fully merged into it ("" = main/master/trunk)
+    deploy_config_skill: bool = True  # copy sbx-tui-config into bookmark workspaces on first use
 
 
 @dataclass
@@ -181,6 +209,42 @@ class Action:
         return out
 
 
+# Where workspace skills may be deployed: one directory directly below one of these.
+SKILL_ROOTS: tuple[str, ...] = (".agents/skills", ".claude/skills")
+CONFIG_SKILL_NAME = "sbx-tui-config"  # the bundled skill (``skills/`` in this package)
+CONFIG_SKILL_TARGETS: tuple[str, ...] = tuple(f"{root}/{CONFIG_SKILL_NAME}" for root in SKILL_ROOTS)
+
+
+@dataclass
+class WorkspaceSkill:
+    """``[[workspace_skills]]``: a skill directory copied into bookmark workspaces.
+
+    ``source`` is a host path (``~`` and absolute, or relative to the repository);
+    each target is ``<root>/<name>`` for a root in :data:`SKILL_ROOTS`.
+    """
+
+    source: str = ""
+    targets: list[str] = field(default_factory=list)
+
+
+WORKSPACE_SKILL_KEYS: dict[str, Any] = {"source": "", "targets": []}
+
+
+def validate_skill_target(target: str, where: str) -> None:
+    root, _, name = target.rpartition("/")
+    roots = " or ".join(f"{r}/" for r in SKILL_ROOTS)
+    if root not in SKILL_ROOTS:
+        raise ConfigError(f"{where}: {target!r} must be one directory directly in {roots}")
+    if (
+        not name
+        or name in (".", "..")
+        or "\\" in name
+        or not name.isprintable()
+        or name != name.strip()
+    ):
+        raise ConfigError(f"{where}: {target!r} needs a plain directory name in {root}/")
+
+
 ACTION_KEYS: dict[str, Any] = {"prompt": "", "agent": "", "model": "", "effort": "", "timeout": 0}
 
 # [commands] every configuration starts with; config files can redefine them.
@@ -213,6 +277,7 @@ class Config:
     project: Project = field(default_factory=Project)
     ui: UI = field(default_factory=UI)
     prompts: Prompts = field(default_factory=Prompts)
+    feedback: Feedback = field(default_factory=Feedback)
     models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
     commands: dict[str, str] = field(  # :name -> shell command (commands.py)
         default_factory=lambda: dict(DEFAULT_COMMANDS)
@@ -220,6 +285,7 @@ class Config:
     leader: dict[str, str] = field(default_factory=dict)  # keys after ui.leader -> command line
     actions: dict[str, Action] = field(default_factory=dict)  # :name -> sandbox run per target
     profiles: dict[str, AgentProfile] = field(default_factory=dict)
+    workspace_skills: list[WorkspaceSkill] = field(default_factory=list)  # [[workspace_skills]]
     sources: list[Path] = field(default_factory=list)  # files that were loaded
 
     # ---------------------------------------------------------- helpers
@@ -245,6 +311,18 @@ class Config:
             raise ConfigError(f"sandbox.runtime must be one of {', '.join(RUNTIMES)}")
         if s.cpus < 0:
             raise ConfigError("sandbox.cpus must be >= 0")
+        f = self.feedback
+        if not 1 <= f.max_attempts <= 100 or not 1 <= f.max_steps <= 100:
+            raise ConfigError("feedback.max_attempts and max_steps must be between 1 and 100")
+        if any(o not in ("failure", "blocked") for o in f.retry_outcomes):
+            raise ConfigError("feedback.retry_outcomes accepts failure and blocked")
+        if any(not key for key in f.pass_state_keys):
+            raise ConfigError("feedback.pass_state_keys must contain nonempty keys")
+        for name in (f.on_success, f.on_failure, f.on_blocked):
+            if name and name not in self.actions:
+                raise ConfigError(f"feedback successor action does not exist: {name}")
+        if not f.enabled and f.requires_reporting:
+            raise ConfigError("feedback policies require feedback.enabled")
         self.sandbox_command()
         placeholders = {
             "notify_command": ("title", "message"),
@@ -302,10 +380,27 @@ class Config:
                 )
             if action.timeout is not None and action.timeout < 0:
                 raise ConfigError(f"actions.{name}.timeout must be >= 0")
+        self._validate_workspace_skills()
         try:
             commands.validate(self.commands, self.ui.leader, self.leader, self.actions)
         except commands.CommandError as exc:
             raise ConfigError(str(exc)) from exc
+
+    def _validate_workspace_skills(self) -> None:
+        seen: dict[str, str] = {}
+        if self.project.deploy_config_skill:
+            seen = dict.fromkeys(CONFIG_SKILL_TARGETS, "project.deploy_config_skill")
+        for index, skill in enumerate(self.workspace_skills):
+            where = f"workspace_skills[{index}]"
+            if not skill.source.strip() or "\0" in skill.source:
+                raise ConfigError(f"{where}.source must name a skill directory")
+            if not skill.targets:
+                raise ConfigError(f"{where}.targets must list at least one target directory")
+            for target in skill.targets:
+                validate_skill_target(target, f"{where}.targets")
+                if target in seen:
+                    raise ConfigError(f"{where}.targets: {target!r} is also used by {seen[target]}")
+                seen[target] = where
 
     def has_image_source(self) -> bool:
         p = self.project
@@ -323,6 +418,7 @@ TABLES: dict[str, str] = {
     "commands": 'must be a table of name = "shell command"',
     "leader": 'must be a table of keys = "command line"',
     "actions": "must be a table of [actions.NAME] tables with a prompt",
+    "workspace_skills": "must be an array of [[workspace_skills]] tables with source and targets",
 }
 
 _SECTIONS: dict[str, type[Any]] = {
@@ -332,6 +428,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "project": Project,
     "ui": UI,
     "prompts": Prompts,
+    "feedback": Feedback,
 }
 
 
@@ -445,6 +542,18 @@ def from_dict(data: dict[str, Any]) -> Config:
         raise ConfigError(f"[profiles] {TABLES['profiles']}")
     for name, table in profiles.items():
         cfg.profiles[name] = _build_section(f"profiles.{name}", AgentProfile, table)
+    skills = data.get("workspace_skills", [])
+    if not isinstance(skills, list):
+        raise ConfigError(f"workspace_skills {TABLES['workspace_skills']}")
+    for index, table in enumerate(skills):
+        where = f"workspace_skills[{index}]"
+        if not isinstance(table, dict):
+            raise ConfigError(f"{where} must be a table with source and targets")
+        unknown = sorted(set(table) - set(WORKSPACE_SKILL_KEYS))
+        if unknown:
+            raise ConfigError(f"{where} has unknown key(s): {', '.join(unknown)}")
+        values = {k: _coerce(where, k, v, WORKSPACE_SKILL_KEYS[k]) for k, v in table.items()}
+        cfg.workspace_skills.append(WorkspaceSkill(**values))
     return cfg
 
 
@@ -782,6 +891,16 @@ base_image = "python:3.12-slim"
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new bookmarks
 # main_branch = "main"                 # baseline for diff, fast-forward, @ saves and cleanup
+# deploy_config_skill = true           # copy sbx-tui-config into bookmark workspaces
+
+# [feedback]
+# enabled = true                    # collect structured agent reports when supported
+# require_reported_success = false  # pause the queue without a successful final report
+# pass_state_keys = []              # selected predecessor state keys
+# retry_outcomes = []               # failure / blocked; max_attempts includes first run
+# max_attempts = 1
+# on_success = ""                   # configured action name; also on_failure / on_blocked
+# max_steps = 1                     # includes initial task; limit pauses the queue
 
 # [defaults]
 # agent = "claude"                     # claude | codex | opencode | pi | bash
@@ -806,6 +925,10 @@ keep_workspace = true                  # -> --keep-workspace
 # [leader]                             # ui.leader (\\) then these keys run a command line
 # t = "test"                           # "*test" runs it in each selected workspace
 # rv = "review"
+
+# [[workspace_skills]]                 # top level: copied into bookmark workspaces on first use;
+# source = "~/skills/release-review"   # the bookmark's .gitignore must ignore each target
+# targets = [".agents/skills/release-review", ".claude/skills/release-review"]
 """
 
 GLOBAL_TEMPLATE = """\

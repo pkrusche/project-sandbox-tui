@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from textual.app import App
-from textual.widgets import Log
+from textual.widgets import Log, Static
 
 from project_sandbox_tui.jobs import JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec
@@ -166,10 +166,12 @@ def test_log_shift_tab_cycles_files_backwards(tmp_path: Path) -> None:
 def test_live_stdout_and_json_record_inspection(tmp_path: Path) -> None:
     path = tmp_path / "agent.log"
     stdout = tmp_path / "agent.out"
+    feedback = tmp_path / "feedback.json"
     first = {"type": "message", "content": {"text": "[literal]", "items": [1, 2]}}
     second = {"type": "tool", "name": "read"}
     path.write_text(f"{json.dumps(first)}\nsandbox diagnostic\n{json.dumps(second)}\n")
     stdout.write_text("# Assistant\n\nHello\n")
+    feedback.write_text('{"phase":"running"}\n')
     job = JobRecord(
         "main",
         LaunchSpec("main", "codex", mode="background"),
@@ -177,6 +179,8 @@ def test_live_stdout_and_json_record_inspection(tmp_path: Path) -> None:
         "",
         log_path=str(path),
         stdout_path=str(stdout),
+        feedback_path=str(feedback),
+        feedback_status="valid",
     )
 
     async def scenario() -> None:
@@ -219,6 +223,13 @@ def test_live_stdout_and_json_record_inspection(tmp_path: Path) -> None:
             await pilot.press("q", "v")
             assert app.screen is screen and screen.current == stdout
             assert "## Tool" in log.lines
+
+            await pilot.press("shift+tab")
+            assert screen.current == feedback
+            assert log.lines[0] == '{"phase":"running"}'
+            assert job.feedback_detail() in str(screen.query_one("#log-title", Static).render())
+            await pilot.press("v")
+            assert screen.current == stdout
 
     asyncio.run(scenario())
 

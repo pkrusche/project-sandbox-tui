@@ -15,6 +15,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -25,7 +26,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui.config import Config, private_dir, repo_state_dir
+from project_sandbox_tui import feedback, feedback_transport
+from project_sandbox_tui.config import Config, ConfigError, private_dir, repo_state_dir
 from project_sandbox_tui.processes import reap_later
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
@@ -54,6 +56,11 @@ HISTORY_PER_BRANCH = 50
 
 class BusyError(RuntimeError):
     """The branch already has an agent session."""
+
+
+# Prepares a launch's workspace (``workspace_skills.WorkspacePreparer``):
+# (config, spec, sandbox start?) -> None, raising to stop the launch.
+Preparer = Callable[[Config, LaunchSpec, bool], None]
 
 
 def branch_slug(branch: str) -> str:
@@ -104,6 +111,41 @@ class JobRecord:
     queue_id: str = ""  # durable identity of a dispatched unsupervised task
     base_commit: str = ""  # pinned immediately before a queued launch
 
+    run_id: str = ""
+    feedback_path: str = ""
+    feedback_status: str = "unsupported"
+    feedback_error: str = ""
+    feedback_snapshot: dict[str, Any] | None = None
+    feedback_frozen: bool = False
+
+    @property
+    def reported_outcome(self) -> str:
+        report = self.feedback_snapshot
+        if self.feedback_status == "valid" and report and report["phase"] == "finished":
+            return str(report["outcome"])
+        return "unknown"
+
+    @property
+    def reported_success(self) -> bool:
+        return (
+            self.status == "completed"
+            and self.exit_code == 0
+            and self.reported_outcome == "success"
+        )
+
+    def launch_argv(self) -> list[str]:
+        if self.host and self.feedback_path:
+            return feedback_transport.host_argv(Path(self.feedback_path).parent.parent, self.argv)
+        return self.argv
+
+    def feedback_detail(self) -> str:
+        label = f"reported {self.reported_outcome} ({self.feedback_status})"
+        if self.feedback_error:
+            label += f": {self.feedback_error}"
+        elif self.feedback_snapshot:
+            label += f": {self.feedback_snapshot['summary']}"
+        return label
+
     @property
     def mode(self) -> str:
         return self.spec.mode
@@ -125,6 +167,8 @@ class JobRecord:
         """Files worth showing in the log view, most useful first."""
         paths = self.run_paths()
         files = [paths.transcript(), paths.log] if paths else []
+        if self.feedback_path:
+            files.append(Path(self.feedback_path))
         if self.stdout_path:
             files.append(Path(self.stdout_path))
         return files
@@ -151,6 +195,12 @@ class JobRecord:
             "host": self.host,
             "queue_id": self.queue_id,
             "base_commit": self.base_commit,
+            "run_id": self.run_id,
+            "feedback_path": self.feedback_path,
+            "feedback_status": self.feedback_status,
+            "feedback_error": self.feedback_error,
+            "feedback_snapshot": self.feedback_snapshot,
+            "feedback_frozen": self.feedback_frozen,
         }
 
     @classmethod
@@ -184,6 +234,16 @@ class JobRecord:
             host=bool(raw.get("host")),
             queue_id=str(raw.get("queue_id") or ""),
             base_commit=str(raw.get("base_commit") or ""),
+            run_id=str(raw.get("run_id") or ""),
+            feedback_path=str(raw.get("feedback_path") or ""),
+            feedback_status=str(raw.get("feedback_status") or "unsupported"),
+            feedback_error=str(raw.get("feedback_error") or ""),
+            feedback_snapshot=(
+                feedback.validate(raw["feedback_snapshot"], str(raw.get("run_id", "")))
+                if raw.get("feedback_snapshot") is not None
+                else None
+            ),
+            feedback_frozen=raw.get("feedback_frozen") is True,
         )
 
 
@@ -198,7 +258,11 @@ class JobManager:
         self._procs: dict[str, subprocess.Popen[bytes]] = {}
         self._stop_stage: dict[str, int] = {}  # cancel steps taken so far
         self._stop_last: dict[str, float] = {}  # when the last one was sent
+        self._feedback_supported: bool | None = None
+        self._feedback_command: tuple[str, ...] = ()
         self._missed: dict[tuple[str, str], int] = {}  # external runs: refreshes without a session
+        # Called under the lock after the busy check, before a launch starts.
+        self.prepare: Preparer | None = None
         self.load()
 
     # ------------------------------------------------------------ persistence
@@ -324,6 +388,10 @@ class JobManager:
             if current is not None and current.started_at == job.started_at:
                 # The launch never ran: keep it out of the job history.
                 self._forget(job.branch, archive=False)
+                if job.feedback_path:
+                    root = self.state_dir / "runs" / job.run_id
+                    if Path(job.feedback_path) == root / "output" / "feedback.json":
+                        shutil.rmtree(root, ignore_errors=True)
 
     # ------------------------------------------------------------ queries
 
@@ -357,6 +425,92 @@ class JobManager:
             stdout=Path(f"{base}.out"),
         )
 
+    def _prepare_feedback(
+        self,
+        spec: LaunchSpec,
+        task_id: str = "",
+        previous_state: dict[str, Any] | None = None,
+        *,
+        host: bool = False,
+    ) -> tuple[str, Path | None]:
+        run_id = uuid.uuid4().hex
+        if not self.cfg.feedback.enabled:
+            return run_id, None
+        root = self.state_dir / "runs" / run_id
+        if not host and "--dry-run" in (*self.cfg.sandbox.extra_args, *spec.extra_args):
+            return run_id, root
+        command = tuple(self.cfg.sandbox_command()) if not host else ()
+        if not host and (self._feedback_supported is None or command != self._feedback_command):
+            self._feedback_supported = feedback_transport.supported(list(command), cwd=self.repo)
+            self._feedback_command = command
+        if not host and not self._feedback_supported:
+            if self.cfg.feedback.requires_reporting:
+                raise ConfigError("feedback policy requires project-sandbox with --mount support")
+            return run_id, None
+        if not host:
+            feedback_transport.mounts(root)  # validate mount path before creating files
+        if host:
+            from project_sandbox_tui import initialization
+            from project_sandbox_tui.vcs import workspace_path
+
+            workspace = (
+                self.repo
+                if spec.main_checkout
+                else workspace_path(
+                    self.repo,
+                    spec.branch,
+                    self.cfg.resolve_path(self.cfg.project.worktree_dir, self.repo)
+                    if self.cfg.project.worktree_dir
+                    else None,
+                )
+            )
+            if workspace.is_dir():
+                initialization.install_feedback(workspace)
+        try:
+            feedback_transport.prepare(
+                root, run_id, task_id, previous_state, interactive=spec.mode == "interactive"
+            )
+        except (OSError, ValueError):
+            shutil.rmtree(root, ignore_errors=True)
+            raise
+        return run_id, root
+
+    @staticmethod
+    def _attach_feedback(job: JobRecord, run_id: str, root: Path | None) -> None:
+        job.run_id = run_id
+        if root:
+            job.feedback_path = str(root / "output" / "feedback.json")
+            job.feedback_status = "missing"
+
+    def _collect_feedback(self, job: JobRecord, *, final: bool = False) -> None:
+        if job.feedback_frozen or not job.feedback_path:
+            return
+        before = (
+            job.feedback_status,
+            job.feedback_error,
+            job.feedback_snapshot,
+            job.feedback_frozen,
+        )
+        try:
+            report = feedback.read_json(Path(job.feedback_path))
+            job.feedback_snapshot = feedback.accept(report, job.run_id, job.feedback_snapshot)
+            job.feedback_status, job.feedback_error = "valid", ""
+        except FileNotFoundError:
+            job.feedback_status, job.feedback_error = "missing", ""
+        except feedback.UnsupportedFeedback as exc:
+            job.feedback_status, job.feedback_error = "unsupported", str(exc)
+        except (OSError, ValueError) as exc:
+            job.feedback_status, job.feedback_error = "invalid", str(exc)
+        job.feedback_frozen = final
+        after = (
+            job.feedback_status,
+            job.feedback_error,
+            job.feedback_snapshot,
+            job.feedback_frozen,
+        )
+        if before != after:
+            self.save(job)
+
     def start_background(
         self,
         spec: LaunchSpec,
@@ -364,6 +518,7 @@ class JobManager:
         *,
         queue_id: str = "",
         base_commit: Callable[[], str] | None = None,
+        previous_state: dict[str, Any] | None = None,
     ) -> JobRecord:
         with self._locked():
             self.load()
@@ -376,10 +531,13 @@ class JobManager:
             if reason:
                 raise BusyError(reason)
             commit = base_commit() if base_commit else ""
+            paths = self.new_run_paths(spec.branch)
+            build_argv(self.cfg, self.repo, spec, paths)  # validate before staging resources
+            self._prepare(spec, sandbox=True)
+            run_id, feedback_dir = self._prepare_feedback(spec, queue_id, previous_state)
+            argv = build_argv(self.cfg, self.repo, spec, paths, feedback_dir)
             self._stop_stage.pop(spec.branch, None)
             self._stop_last.pop(spec.branch, None)
-            paths = self.new_run_paths(spec.branch)
-            argv = build_argv(self.cfg, self.repo, spec, paths)
             private_dir(paths.log.parent)
             try:
                 with paths.stdout.open("wb") as out:
@@ -393,6 +551,8 @@ class JobManager:
                     )
             except OSError:
                 paths.stdout.unlink(missing_ok=True)
+                if feedback_dir:
+                    shutil.rmtree(feedback_dir, ignore_errors=True)
                 raise
             self._release_process(spec.branch)
             self._procs[spec.branch] = proc
@@ -409,6 +569,7 @@ class JobManager:
                 queue_id=queue_id,
                 base_commit=commit,
             )
+            self._attach_feedback(job, run_id, feedback_dir)
             self.jobs[spec.branch] = job
             try:
                 self.save(job)
@@ -428,6 +589,8 @@ class JobManager:
                 for path in (paths.stdout, paths.log, paths.summary, paths.transcript()):
                     with contextlib.suppress(OSError):
                         path.unlink(missing_ok=True)
+                if feedback_dir:
+                    shutil.rmtree(feedback_dir, ignore_errors=True)
                 raise
             reap_later(proc)
             return job
@@ -447,15 +610,23 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions)
             if reason:
                 raise BusyError(reason)
+            self._prepare(spec, sandbox=not host)
+            run_id, feedback_dir = self._prepare_feedback(spec, host=host)
+            launch_argv = (
+                argv
+                if argv is not None
+                else build_argv(self.cfg, self.repo, spec, feedback_dir=feedback_dir)
+            )
             job = JobRecord(
                 branch=spec.branch,
                 spec=spec,
                 pid=os.getpid(),  # the TUI itself holds the terminal
                 started_at=_now(),
-                argv=argv if argv is not None else build_argv(self.cfg, self.repo, spec),
+                argv=launch_argv,
                 notified=True,  # nothing to notify: the user is watching
                 host=host,
             )
+            self._attach_feedback(job, run_id, feedback_dir)
             self._archive(spec.branch)
             self.jobs[spec.branch] = job
             self.save(job)
@@ -472,7 +643,14 @@ class JobManager:
                     job.session_id = job.session_id or current.session_id
                     job.container_name = job.container_name or current.container_name
                     job.runtime = job.runtime or current.runtime
+                    job.feedback_snapshot = current.feedback_snapshot
+                    self._collect_feedback(job, final=True)
                     self.save(job)
+
+    def _prepare(self, spec: LaunchSpec, *, sandbox: bool) -> None:
+        """Create the workspace and deploy skills; with the lock held, after the busy check."""
+        if self.prepare is not None:
+            self.prepare(self.cfg, spec, sandbox)
 
     def _read_record(self, branch: str) -> JobRecord | None:
         try:
@@ -500,6 +678,18 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions or {})
             if reason:
                 raise BusyError(reason)
+            self._prepare(spec, sandbox=not host)
+            run_id, feedback_dir = self._prepare_feedback(spec, host=host)
+            paths = self.new_run_paths(spec.branch) if host or feedback_dir else None
+            if paths:
+                private_dir(paths.summary.parent)
+            if feedback_dir and not host:
+                assert paths is not None
+                argv = [
+                    *argv,
+                    *feedback_transport.mounts(feedback_dir),
+                    f"--json-summary={paths.summary}",
+                ]
             job = JobRecord(
                 branch=spec.branch,
                 spec=spec,
@@ -510,9 +700,8 @@ class JobManager:
                 external=True,
                 host=host,
             )
-            if host:
-                paths = self.new_run_paths(spec.branch)
-                private_dir(paths.summary.parent)
+            self._attach_feedback(job, run_id, feedback_dir)
+            if paths:
                 job.summary_path = str(paths.summary)
             self._archive(spec.branch)
             self.jobs[spec.branch] = job
@@ -575,6 +764,7 @@ class JobManager:
                 if not job.notified:
                     finished.append(job)  # finished while the TUI was closed
                 continue
+            self._collect_feedback(job)
             rec = sessions.get(job.branch) if not job.host else None
             if rec is not None:
                 ids = (job.session_id, job.container_name, job.runtime)
@@ -601,6 +791,7 @@ class JobManager:
                 job.exit_code = code if type(code) is int else None
                 job.status = status_for_exit(job.exit_code)
                 job.ended_at = _now()
+                self._collect_feedback(job, final=True)
                 self.save(job)
                 if not job.notified:
                     finished.append(job)
@@ -623,8 +814,14 @@ class JobManager:
                 elif now - _parse_ts(job.started_at) <= external_grace_s:
                     continue
                 self._missed.pop(run, None)
-                job.status = "completed"
+                summary = self._read_summary(job) or {}
+                code = summary.get("exit_code")
+                job.exit_code = code if type(code) is int else None
+                job.status = (
+                    status_for_exit(job.exit_code) if job.exit_code is not None else "completed"
+                )
                 job.ended_at = _now()
+                self._collect_feedback(job, final=True)
                 self.save(job)
                 continue
 
@@ -633,6 +830,7 @@ class JobManager:
                     # The TUI that held this branch died mid-session.
                     job.status = "interrupted"
                     job.ended_at = _now()
+                    self._collect_feedback(job, final=True)
                     self.save(job)
                 continue
 
@@ -651,6 +849,7 @@ class JobManager:
             if job.branch in self._stop_stage and job.status in ("failed", "orphaned"):
                 job.status = "interrupted"
             job.ended_at = _now()
+            self._collect_feedback(job, final=True)
             # Saved first: if that fails, the next pass still has the child's
             # return code instead of finding it reaped and calling it orphaned.
             self.save(job)

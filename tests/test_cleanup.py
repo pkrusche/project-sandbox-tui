@@ -558,3 +558,14 @@ def test_each_workspace_is_checked_right_before_removal(
     [kept] = results[2:]
     assert kept.startswith("skipped b:") and "uncommitted changes" in kept
     assert (second / "unsaved.txt").exists()
+
+
+def test_basename_registered_workspace_belongs_to_its_bookmark(repo: Path) -> None:
+    """New workspaces are registered under their directory name, like project-sandbox's."""
+    from project_sandbox_tui import cleanup
+    from project_sandbox_tui.vcs import JjBackend, workspace_path
+
+    path = workspace_path(repo, "feature/x", None)
+    JjBackend(repo).add_workspace("feature/x", path)
+    [found] = cleanup._jj_workspaces(repo.resolve(), None, {"main", "feature/x"})
+    assert (found.name, found.branch) == (path.name, "feature/x")

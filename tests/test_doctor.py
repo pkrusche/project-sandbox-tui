@@ -27,6 +27,7 @@ def runner(responses: Mapping[str, tuple[int, str] | None]) -> doctor.Runner:
 HEALTHY = {
     "jj --version": (0, "jj 0.46.0-7d382314"),
     "project-sandbox --version": (0, "project-sandbox 0.2.2"),
+    "project-sandbox --help": (0, "--mount MOUNT"),
     "docker info": (0, "Server Version: 27"),
 }
 

@@ -48,6 +48,7 @@ def test_detached_child_is_reaped_without_refresh_or_another_spawn(
         launchers.start(launchers.ExternalLaunch(argv, "", detached=True), cwd=tmp_path)
     elif launcher == "job":
         cfg = Config()
+        cfg.feedback.enabled = False  # this stand-in intentionally ignores CLI options
         cfg.project.base_image = "unused"
         cfg.sandbox.command = shlex.join(argv)
         jobs = JobManager(tmp_path, cfg)

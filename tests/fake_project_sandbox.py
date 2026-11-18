@@ -35,6 +35,7 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("project")
     p.add_argument("base_image", nargs="?")
+    p.add_argument("--mount", action="append", default=[])
     p.add_argument("--branch")
     p.add_argument("--worktree-dir")
     p.add_argument("--agent")
@@ -72,6 +73,28 @@ def main() -> int:
     }
     record_path.write_text(json.dumps(record))
     print(f"fake project-sandbox: {' '.join(sys.argv[1:])}", flush=True)
+    feedback_root = None
+    for mount in args.mount:
+        parts = dict(item.split("=", 1) for item in mount.split(",") if "=" in item)
+        if parts.get("target") == "/run/sbx-feedback":
+            feedback_root = Path(parts["source"])
+    if feedback_root and (match := re.search(r"report:(success|failure|blocked)", prompt)):
+        import subprocess
+
+        subprocess.run(
+            [
+                sys.executable,
+                str(feedback_root / "sbx-report"),
+                "--context-dir",
+                str(feedback_root),
+                "finish",
+                "--outcome",
+                match[1],
+                "--summary",
+                "Fake task outcome",
+            ],
+            check=True,
+        )
     try:
         time.sleep(sleep)
     except KeyboardInterrupt:

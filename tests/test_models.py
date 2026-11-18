@@ -412,7 +412,7 @@ def test_store_hint(naive: bool) -> None:
     fetched = now.replace(tzinfo=None) if naive else now
     fresh = m.Store(fetched_at=fetched - timedelta(days=30))
     stale = m.Store(fetched_at=fetched - timedelta(days=31))
-    assert m.store_hint("claude", None, now) == "more models: sbx-tui --update-models"
+    assert m.store_hint("claude", None, now) == "more models: :update-models"
     assert m.store_hint("codex", fresh, now) == ""
     assert "31 days old" in m.store_hint("claude", stale, now)
     assert m.store_hint("bash", None, now) == ""  # agent without a catalog
@@ -479,6 +479,54 @@ def test_cli_init_downloads_models_once_and_tolerates_failure(
     assert calls == [m.DEFAULT_SOURCE]
 
 
+# ---------------------------------------------------------------- TUI
+
+
+@pytest.mark.parametrize("local_file", [False, True], ids=["default", "local-file"])
+def test_tui_update_models(
+    repo: Path, fake_cfg: Any, monkeypatch: pytest.MonkeyPatch, local_file: bool
+) -> None:
+    from project_sandbox_tui.app import SandboxTUI
+    from tests.test_app import run_app, wait_for_screen, wait_until
+    from tests.test_command_line import messages, type_line
+
+    line = "update-models"
+    if local_file:
+        source = repo / "catalog file.json"
+        source.write_bytes(raw(catalog()))
+        line += f' "{source.name}"'
+        expected_source = str(source)
+    else:
+        expected_source = m.DEFAULT_SOURCE
+        fetch = m.fetch
+
+        def fetch_default(source: str) -> bytes:
+            if source == expected_source:
+                return raw(catalog())
+            assert "://" not in source
+            return fetch(source)
+
+        monkeypatch.setattr(m, "fetch", fetch_default)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await type_line(pilot, line)
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: any(msg.startswith("models: ") for msg in messages(app)))
+        assert any(expected_source in message for message in messages(app))
+        saved = m.store_path().read_bytes()
+
+        await type_line(pilot, 'update-models "missing file.json"')
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: any("models: cannot read" in msg for msg in messages(app)))
+        assert m.store_path().read_bytes() == saved
+
+        await pilot.press("j", "i")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        assert "claude-sonnet-5-5" in form.query_one("#model", CycleField).options
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 # ---------------------------------------------------------------- launch form
 
 
@@ -530,7 +578,7 @@ def test_launch_form_suggests_downloaded_models(repo: Path, fake_cfg: Any, tmp_p
 def test_launch_form_hints_at_update_models_without_a_list(repo: Path, fake_cfg: Any) -> None:
     async def check(form: LaunchScreen, pilot: Any) -> None:
         hint = form.query_one("#model-hint", Static)
-        assert hint.display and "--update-models" in str(hint.render())
+        assert hint.display and ":update-models" in str(hint.render())
         form.query_one("#agent", CycleField).value = "bash"
         await pilot.pause()
         assert not hint.display

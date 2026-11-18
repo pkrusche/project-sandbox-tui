@@ -83,7 +83,7 @@ jobs:
         run: scripts/test.sh -q
       - name: Install project-sandbox for container smoke
         if: github.event_name == 'workflow_dispatch' && inputs.container_smoke && matrix.python == '3.12'
-        run: uv tool install project-sandbox==0.3.0
+        run: uv tool install project-sandbox==0.4.1
       - name: Real Docker bash-agent smoke
         if: github.event_name == 'workflow_dispatch' && inputs.container_smoke && matrix.python == '3.12'
         timeout-minutes: 30

@@ -24,8 +24,9 @@ untrusted config and missing image sources, multiplexers or notifiers.
 Automatic runtime selection tries
 Apple `container` on macOS, then Docker and Podman, choosing the first installed
 CLI and checking its health. It also calculates comparisons to main
-and explains unavailable results. Inside the TUI, `:doctor` diagnoses the current
-bookmark list without running dependency or runtime probes.
+and explains unavailable results. Inside the TUI, `:doctor` shows diagnostics
+for the current bookmark list and appends the full CLI report once the checks
+finish.
 
 See [configuration](configuration.md), [models](models.md) and
 [cleanup](cleanup.md) for the corresponding commands.
@@ -83,7 +84,7 @@ to review or the comparison is unavailable. Counts follow the saved marks from
 | `=` | [Review the diff](#diff-review) against main, or between two selected revisions |
 | `f` | Fast-forward main to highlighted bookmark or `@` (`u` undoes) |
 | `@` | Start a working-copy change on highlighted bookmark |
-| `o` | Open workspace in editor, first creating a missing one on the bookmark (`jj workspace add`); asks before opening more than three |
+| `o` | Open workspace in editor, first creating a missing one on the bookmark (`jj workspace add`) and, while idle, deploying [workspace skills](configuration.md#workspace-skills); asks before opening more than three |
 | `W` | [Clean up workspaces](cleanup.md) |
 | `R` · `ctrl+l` | Refresh list · reload configuration |
 | `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs and shell tasks continue; asks first while agent sessions are running) |
@@ -160,7 +161,8 @@ removes the workspace instead.
 | `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
 | `:config-profiles` | Create or edit saved agent profiles in the project config |
-| `:doctor` | Explain unavailable comparisons to main in a scrollable report; `sbx-tui doctor` also checks dependencies, runtime and configuration |
+| `:doctor` | Explain unavailable comparisons to main and append the full `sbx-tui doctor` report |
+| `:update-models [SOURCE]` | Refresh [model suggestions](models.md) from models.dev, an HTTPS URL or a local file |
 
 | Key | Action in the command line |
 |---|---|
@@ -408,7 +410,7 @@ bookmark list's reviewed count.
 
 | Key | Action |
 |---|---|
-| `tab` / `shift+tab` | Cycle through the transcript, agent log, and captured stdout |
+| `tab` / `shift+tab` | Cycle through the transcript, agent log, run feedback, and captured stdout when available |
 | `v` | Switch between captured stdout and the agent log |
 | `j` / `k` | Select the next or previous line in the agent event log, or scroll in other views |
 | `enter` | Inspect the selected JSON record |

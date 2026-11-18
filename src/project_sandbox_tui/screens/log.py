@@ -188,6 +188,8 @@ class LogScreen(Screen[None]):
             state = source.status + (
                 f" · exit {source.exit_code}" if source.exit_code is not None else ""
             )
+        if isinstance(source, JobRecord) and source.feedback_path:
+            state += " · " + source.feedback_detail()
         follow = "follow" if self._follow else "paused"
         title = Text()
         title.append(f"{source.branch if source else ''}  ", style="bold")

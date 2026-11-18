@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import ClassVar
 
@@ -90,7 +91,7 @@ class QueueScreen(Screen[None]):
         return self.query_one(DataTable)
 
     def on_mount(self) -> None:
-        for label in ("", "#", "status", "agent", "commits", "prompt"):
+        for label in ("", "#", "status", "agent", "commits", "prompt", "reported"):
             self.table.add_column(label)
         self.table.focus()
         self.render_queue()
@@ -137,6 +138,7 @@ class QueueScreen(Screen[None]):
                     Text(
                         " ".join(task.spec.prompt_text.split()), no_wrap=True, overflow="ellipsis"
                     ),
+                    Text(task.job.reported_outcome if task.job and task.job.feedback_path else "—"),
                 ),
             )
             for index, task in enumerate(queue.entries, 1)
@@ -301,6 +303,16 @@ class QueueScreen(Screen[None]):
                 f"ended       {task.job.ended_at or '—'}",
                 f"exit code   {task.job.exit_code}",
                 f"log         {task.job.log_path}",
+            ]
+            lines += [f"run         {task.job.run_id}", task.job.feedback_detail()]
+            if task.job.feedback_snapshot:
+                lines += [json.dumps(task.job.feedback_snapshot, indent=2, ensure_ascii=True)]
+        if task.parent_task or task.decision:
+            lines += [
+                f"parent      {task.parent_task or '—'}",
+                f"attempt     {task.attempt} · step {task.step}",
+                f"decision    {task.decision or '—'}",
+                f"successor   {task.successor_id or '—'}",
             ]
         lines += ["", task.spec.prompt_text]
         self.app.push_screen(MessageScreen(f"{self.branch} task", "\n".join(lines)))

@@ -9,6 +9,7 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 > 🤖 Written largely by AI, reviewed by a human. Use at your own risk.
 
 - Run agents interactively or in the background with completion notifications.
+- Collect [structured agent outcomes](docs/feedback.md), pass selected task state, and configure bounded task loops.
 - Save agent, model and sandbox options as named [profiles](docs/configuration.md#agent-profiles), selectable in launch forms.
 - [Review changes commit by commit](docs/usage.md#diff-review), with shared seen marks and your place remembered during the TUI session.
 - Merge or rebase tasks from separate jj workspaces with agent assistance.
@@ -44,7 +45,7 @@ uv tool install project-sandbox-tui
 # From a checkout: uv tool install . (or uv sync && uv run sbx-tui)
 
 cd ~/workspace/myproject
-sbx-tui --init      # detect the project type, write config and install a local setup skill
+sbx-tui --init      # detect the project type, write config and install setup/reporting guidance
 sbx-tui doctor      # check dependencies, runtime and configuration
 sbx-tui --dry-run   # preview project-sandbox calls
 sbx-tui             # launch
@@ -59,7 +60,8 @@ then choose it in either launch form. Select **custom** to adjust settings for a
 
 See [initialization](docs/configuration.md#initialization) for project detection
 and the local `sbx-tui-config` setup skill. Existing config and skill files are
-preserved.
+preserved. Bookmark workspaces get their own ignored copy of the skill, plus any
+[workspace skills](docs/configuration.md#workspace-skills) you configure.
 
 ## Documentation
 

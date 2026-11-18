@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 import os
 import shlex
 import signal
@@ -23,12 +24,15 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
+from textual.driver import Driver
+from textual.drivers.linux_driver import LinuxDriver
 from textual.notifications import SeverityLevel
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 from textual.widgets.data_table import ColumnKey
 
 from project_sandbox_tui import commands, doctor, launchers, notify, octopus, terminal
+from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
@@ -106,6 +110,11 @@ from project_sandbox_tui.widgets import (
     PrefixKeys,
     human_age,
     modifier_key,
+)
+from project_sandbox_tui.workspace_skills import (
+    PreparationError,
+    WorkspacePreparer,
+    planned_destinations,
 )
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
@@ -395,6 +404,19 @@ class Cheatsheet:
             yield grid
 
 
+class TtySizeDriver(LinuxDriver):
+    """Use the live PTY dimensions at startup and on SIGWINCH."""
+
+    def _get_terminal_size(self) -> tuple[int, int]:
+        # Textual's default uses shutil, where exported COLUMNS/LINES take
+        # precedence even after the pane has changed size.
+        with contextlib.suppress(OSError):
+            width, height = os.get_terminal_size(self.fileno)
+            if width and height:
+                return width, height
+        return super()._get_terminal_size()
+
+
 class MainScreen(Screen[None]):
     """Branch list. Bindings live here so they are inactive under modal forms."""
 
@@ -499,6 +521,9 @@ class SandboxTUI(App[None]):
         self.config_path = config_path
         self.dry_run = dry_run
         self.jobs = jobs or JobManager(repo, cfg)
+        # Creates workspaces and deploys skills under the launch lock (jobs.py).
+        self.workspaces = WorkspacePreparer(repo, backend)
+        self.jobs.prepare = self._prepare_workspace
         self.tasks = TaskManager(self.jobs.state_dir)  # background host commands
         self.queue = TaskQueue(self.jobs.state_dir)
         self.sessions_dir = sessions_dir
@@ -548,6 +573,18 @@ class SandboxTUI(App[None]):
         super().notify(message, title=title, severity=severity, timeout=timeout, markup=False)
 
     # ------------------------------------------------------------ layout
+
+    def get_driver_class(self) -> type[Driver]:
+        driver = super().get_driver_class()
+        return TtySizeDriver if driver is LinuxDriver else driver
+
+    @on(events.AppFocus)
+    @on(events.Resize)
+    def _repaint_terminal(self, event: events.AppFocus | events.Resize) -> None:
+        # Textual redraws a changed layout. A client reattaching at the same
+        # size also needs a complete frame, even if only focus changed.
+        if isinstance(event, events.AppFocus) or event.size == self.size:
+            self.refresh()
 
     @property
     def table(self) -> DataTable[Text]:
@@ -646,7 +683,20 @@ class SandboxTUI(App[None]):
             if (
                 listed
                 and not self.dry_run
-                and any(q.tasks and not q.paused for q in self.queue.queues.values())
+                and any(
+                    not q.paused
+                    and (
+                        q.tasks
+                        or (
+                            self.cfg.feedback.makes_decisions
+                            and q.history
+                            and q.history[-1].job
+                            and not q.history[-1].job.running
+                            and not q.history[-1].decision_done
+                        )
+                    )
+                    for q in self.queue.queues.values()
+                )
             ):
                 # Finalise the previous run against a fresh bookmark snapshot
                 # before a queued launch replaces its job record.
@@ -659,6 +709,7 @@ class SandboxTUI(App[None]):
                 for job in await asyncio.to_thread(self._dispatch_queue):
                     self._record_run(job)
                     self.notify(f"{job.branch}: started queued {job.spec.label()} (pid {job.pid})")
+                self._report_preparation()
             self._report_queue_errors()
         except (OSError, ValueError, VcsError) as exc:
             self._state_problem("queue", f"could not update the task queue: {exc}")
@@ -753,7 +804,14 @@ class SandboxTUI(App[None]):
         detail = job.spec.label()
         if job.exit_code is not None:
             detail += f" · exit {job.exit_code}"
-        severity: SeverityLevel = "information" if job.status == "completed" else "warning"
+        if job.feedback_path:
+            detail += f" · {job.feedback_detail()}"
+        severity: SeverityLevel = (
+            "information"
+            if job.status == "completed"
+            and (not job.feedback_path or job.reported_outcome == "success")
+            else "warning"
+        )
         self.notify(
             f"{job.branch}: {job.status.replace('_', ' ')} — {detail}",
             severity=severity,
@@ -820,6 +878,7 @@ class SandboxTUI(App[None]):
     def _render_table(self) -> None:
         table = self.table
         scroll_x = table.scroll_target_x
+        scroll_y = table.scroll_target_y
         selected = self._pending_select or self.selected_branch_name()
         rows = self.visible_rows()
         baseline = self.main_name()
@@ -836,6 +895,10 @@ class SandboxTUI(App[None]):
         review_col.content_width = max(
             [review_col.label.cell_len, *(r.review_cell().cell_len for r in rows)]
         )
+        status_col = table.columns[ColumnKey("status")]
+        status_col.content_width = max(
+            [status_col.label.cell_len, *(cell_len(r.status()[2]) for r in rows)]
+        )
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
         # place (update_cell) never has to widen the column.
@@ -849,13 +912,16 @@ class SandboxTUI(App[None]):
             graph_col.width = max([1, *(row.graph_cell().cell_len for row in rows)])
         subject_col = table.columns.get(ColumnKey("subject"))
         if subject_col is not None:
-            subject_col.width = self._subject_width(rows)
+            subject_col.width = self._subject_width()
         table.clear()
         for row in rows:
             table.add_row(*row.cells(row.branch.name in chosen), key=row.branch.name)
         if selected is not None:
             names = [r.branch.name for r in rows]
             if selected in names:
+                # clear() resets both axes. Restore the viewport before Textual
+                # reveals the cursor, so a visible row keeps its place on screen.
+                table.scroll_to(y=scroll_y, animate=False, force=True)
                 table.move_cursor(row=names.index(selected), animate=False)
                 if selected == self._pending_select:
                     self._pending_select = None
@@ -873,17 +939,15 @@ class SandboxTUI(App[None]):
         if table.scroll_target_x > table.max_scroll_x:
             table.scroll_to(x=table.max_scroll_x, animate=False, force=True)
 
-    def _subject_width(self, rows: list[Row]) -> int:
+    def _subject_width(self) -> int:
         """Up to SUBJECT_WIDTH, but narrow enough to leave room for the status."""
         table = self.table
-        status = max([len("status"), *(cell_len(row.status()[2]) for row in rows)])
         others = sum(
             column.get_render_width(table)
             for key, column in table.columns.items()
-            if key.value not in ("subject", "status")
+            if key.value != "subject"
         )
-        padding = 2 * table.cell_padding
-        room = self.main.size.width - 1 - others - status - 2 * padding  # 1: the scrollbar
+        room = self.main.size.width - 1 - others - 2 * table.cell_padding  # 1: the scrollbar
         return max(MIN_SUBJECT, min(SUBJECT_WIDTH, room))
 
     def _render_header(self, chosen: set[str]) -> None:
@@ -1092,11 +1156,19 @@ class SandboxTUI(App[None]):
         paths = self.jobs.new_run_paths(spec.branch) if spec.mode == "background" else None
         if spec.mode == "background" and not spec.prompt_text.strip():
             spec = dataclasses.replace(spec, prompt_text="<prompt>")
-        return shlex.join(build_argv(self.cfg, self.repo, spec, paths))
+        feedback_dir = (
+            self.jobs.state_dir / "runs" / "<run-id>" if self.cfg.feedback.enabled else None
+        )
+        return shlex.join(build_argv(self.cfg, self.repo, spec, paths, feedback_dir))
 
     def _form_preview(self, spec: LaunchSpec) -> str:
-        """Shorter preview for the launch form: state-dir paths abbreviated."""
-        return self._spec_preview(spec).replace(str(self.jobs.logs_dir), "<logs>")
+        """Shorter preview for the launch form: state-dir paths abbreviated, then the
+        skill directories the launch deploys unless the workspace has them."""
+        preview = self._spec_preview(spec).replace(str(self.jobs.logs_dir), "<logs>")
+        targets = planned_destinations(self.cfg, self.repo, spec.branch, spec.extra_args)
+        if targets:
+            preview += "\nskills (if missing): " + ", ".join(map(str, targets))
+        return preview
 
     def _require_branch(self) -> str | None:
         name = self.selected_branch_name()
@@ -1523,6 +1595,22 @@ class SandboxTUI(App[None]):
         )
         return result, commits
 
+    def _prepare_workspace(self, cfg: Config, spec: LaunchSpec, sandbox: bool) -> None:
+        """``JobManager.prepare``: create the launch's workspace and deploy skills."""
+        self.workspaces.prepare(cfg, spec.branch, sandbox=sandbox, extra_args=spec.extra_args)
+
+    def _report_preparation(self) -> None:
+        """Show what workspace preparation did or skipped (workspace_skills.py)."""
+        for note in self.workspaces.take_notes():
+            self.notify(
+                note.message, severity="warning" if note.warning else "information", timeout=8
+            )
+
+    def _print_preparation(self) -> None:
+        """Print preparation notes before a session that takes over the terminal."""
+        for note in self.workspaces.take_notes():
+            print(f"{'warning: ' if note.warning else ''}{note.message}", flush=True)
+
     def _report_queue_errors(self) -> None:
         for name, queue in self.queue.queues.items():
             self._state_problem(
@@ -1725,10 +1813,13 @@ class SandboxTUI(App[None]):
             else:
                 self._launch_interactive(spec, banner)
         except (BusyError, ConfigError, VcsError, ValueError, launchers.LaunchError) as exc:
+            self._report_preparation()
             self.notify(str(exc), severity="error", timeout=8)
         except OSError as exc:
+            self._report_preparation()
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
         else:
+            self._report_preparation()
             self._drafts.pop(draft_key, None)
             if not remember_defaults:
                 self.call_later(self.refresh_data)
@@ -1785,6 +1876,7 @@ class SandboxTUI(App[None]):
                     f"\n── sbx-tui: {spec.label()} on {spec.branch} ──\n{shlex.join(job.argv)}\n",
                     flush=True,
                 )
+                self._print_preparation()
                 if banner:  # e.g. what an octopus merge left to resolve; read it first
                     print(banner, flush=True)
                     with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
@@ -1813,11 +1905,15 @@ class SandboxTUI(App[None]):
     def _launch_external(self, spec: LaunchSpec) -> None:
         """Hand the session to tmux / zellij / screen / a custom terminal command."""
         argv = build_argv(self.cfg, self.repo, spec)
-        launch = launchers.external_launch(
-            self.cfg.ui.terminal_mode(), argv, spec.branch, self.repo, self.cfg.ui.terminal_command
-        )
         job = self.jobs.record_external(spec, argv, self.sessions)
         try:
+            launch = launchers.external_launch(
+                self.cfg.ui.terminal_mode(),
+                job.argv,
+                spec.branch,
+                self.repo,
+                self.cfg.ui.terminal_command,
+            )
             launchers.start(launch, cwd=self.repo)
         except (OSError, launchers.LaunchError):
             self.jobs.discard(job)
@@ -2066,6 +2162,10 @@ class SandboxTUI(App[None]):
         ]
         if any(ids):
             lines.append(f"ids         {' · '.join(i for i in ids if i)}")
+        if job.feedback_path:
+            lines += [f"run id      {job.run_id}", f"feedback    {job.feedback_detail()}"]
+            if job.feedback_snapshot:
+                lines.append(json.dumps(job.feedback_snapshot, indent=2))
         prompt = job.spec.prompt_text.strip().splitlines()
         if prompt:
             lines.append(f"prompt      {prompt[0]}" + (" …" if len(prompt) > 1 else ""))
@@ -2237,9 +2337,8 @@ class SandboxTUI(App[None]):
         if reason := self.jobs.busy_reason(name, self._sessions_now([name])):
             self.notify(reason, severity="warning")
             return
-        path = self._ensure_workspace(name)
-        if path is None:
-            return
+        # Reserving the session creates the workspace and deploys skills (jobs.prepare).
+        path = self._workspace_dir(name)
         try:
             argv = list(command) if command else self._host_argv(name)
             last = LastUsed.load(self.repo)
@@ -2255,7 +2354,7 @@ class SandboxTUI(App[None]):
                 try:
                     launch = launchers.external_launch(
                         mode,
-                        launchers.host_command(argv, job.summary_path),
+                        launchers.host_command(job.launch_argv(), job.summary_path),
                         name,
                         path,
                         self.cfg.ui.terminal_command,
@@ -2266,6 +2365,7 @@ class SandboxTUI(App[None]):
                     raise
                 self._remember_host_command(command)
                 self._record_run(job)
+                self._report_preparation()
                 self.notify(
                     f"{name}: host agent ({Path(argv[0]).name}) {launch.message}", timeout=8
                 )
@@ -2279,9 +2379,10 @@ class SandboxTUI(App[None]):
             ):
                 self._record_run(job)
                 print(f"\n── sbx-tui: host agent on {name} ──\n{shlex.join(argv)}\n", flush=True)
+                self._print_preparation()
                 with terminal.preserved():
                     try:
-                        proc = subprocess.Popen(argv, cwd=path)
+                        proc = subprocess.Popen(job.launch_argv(), cwd=path)
                     except OSError:
                         job.exit_code = 127
                         raise
@@ -2301,7 +2402,11 @@ class SandboxTUI(App[None]):
             self.call_later(self.refresh_data)
         except BusyError as exc:
             self.notify(str(exc), severity="warning")
+        except PreparationError as exc:
+            self._report_preparation()
+            self.notify(str(exc), severity="error", timeout=10)
         except (OSError, ValueError, launchers.LaunchError) as exc:
+            self._report_preparation()  # what was deployed before the launch failed
             self.notify(f"{name}: could not start host agent: {exc}", severity="error")
 
     def _workspace_dir(self, name: str) -> Path:
@@ -2311,33 +2416,39 @@ class SandboxTUI(App[None]):
             return self.repo
         return workspace_path(self.repo, name, self.worktree_dir)
 
-    def _ensure_workspace(self, name: str) -> Path | None:
+    def _ensure_workspace(self, name: str, *, deploy: bool = False) -> Path | None:
         """The row's workspace directory, created (``jj workspace add``) if missing.
 
+        ``deploy``: also deploy workspace skills, if the workspace is idle.
         None, after a notice, when it cannot be created now."""
         path = self._workspace_dir(name)
-        if path.exists():
+        if path == self.repo or (path.exists() and not deploy):
             return path
         try:
             # Under the launch lock, with sessions read again: no session may
             # start (and create the workspace itself) between the check and jj.
             with self.jobs._locked():
                 self.jobs.load()
-                if path.exists():  # created meanwhile
-                    return path
-                if self.jobs._busy_reason(name, self._sessions_now([name])):
+                busy = self.jobs._busy_reason(name, self._sessions_now([name]))
+                if busy and path.exists():
+                    return path  # in use: leave its files alone
+                if busy:
                     # Its session is about to create the workspace: never race it.
                     self.notify(f"{name}: workspace not created yet; try again", severity="warning")
                     return None
-                self.backend.add_workspace(name, path)
-        except (VcsError, OSError) as exc:
+                self.workspaces.prepare(self.cfg, name, sandbox=False, deploy=deploy)
+        except PreparationError as exc:
+            self.notify(str(exc), severity="error", timeout=10)
+            return path if path.is_dir() else None
+        except OSError as exc:
             self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
             return None
-        self.notify(f"{name}: created workspace {path}")
+        finally:
+            self._report_preparation()
         return path
 
     def _open_editor(self, name: str) -> None:
-        path = self._ensure_workspace(name)
+        path = self._ensure_workspace(name, deploy=True)
         if path is None:
             return
         if self.cfg.ui.editor_command:
@@ -2579,6 +2690,7 @@ class SandboxTUI(App[None]):
 
     async def action_refresh(self) -> None:
         await self.refresh_data()
+        self.refresh()
 
     def _review_project_config(self) -> bool:
         """Show a new or changed project config for review; reload once decided.
@@ -2689,9 +2801,36 @@ class SandboxTUI(App[None]):
             "Comparisons from the current bookmark list (? means unavailable).\n"
             "↑ commits ahead · ↓ commits behind · Δ files differing between tips\n\n"
             + "\n\n".join(check.render() for check in checks)
-            + "\n\nFor dependency, runtime and configuration checks: sbx-tui doctor"
+            + "\n\nsbx-tui doctor\n\n"
         )
-        self.push_screen(MessageScreen("doctor · comparisons to main", body))
+        self._show_doctor_report(body)
+
+    @work(group="doctor")
+    async def _show_doctor_report(self, body: str) -> None:
+        report = MessageScreen("doctor", body + "Running checks…")
+        await self.push_screen(report)
+        try:
+            output, _ = await asyncio.to_thread(doctor.report, self.repo, self.config_path)
+        except (OSError, UnicodeError) as exc:
+            output = f"Doctor checks failed: {exc}"
+        if report in self.screen_stack:
+            report.update_body(body + output)
+
+    @work(group="models")
+    async def _update_models(self, source: str = models_mod.DEFAULT_SOURCE) -> None:
+        if "://" not in source:
+            try:
+                source = str(self.repo / Path(source).expanduser())
+            except RuntimeError as exc:
+                self.notify(f"models: {exc}", severity="error")
+                return
+        self.notify("Updating model catalog…")
+        try:
+            path, store = await asyncio.to_thread(models_mod.update, source)
+        except models_mod.ModelsError as exc:
+            self.notify(f"models: {exc}", severity="error", timeout=8)
+            return
+        self.notify(f"models: {models_mod.describe(store)} -> {path}", timeout=8)
 
     def action_command_line(self) -> None:
         names = [*commands.BUILTINS, *self.cfg.commands, *self.cfg.actions]
@@ -2759,8 +2898,13 @@ class SandboxTUI(App[None]):
             self.action_help()
         elif command.builtin == "doctor":
             self.action_doctor()
+        elif command.builtin == "update-models":
+            if any(worker.group == "models" for worker in self.workers):
+                self.notify("Model catalog update already running")
+            else:
+                self._update_models(*command.argv)
         elif command.builtin == "refresh":
-            await self.refresh_data()
+            await self.action_refresh()
         elif command.builtin == "reload":
             await self.action_reload_config()
         elif command.builtin == "config-profiles":

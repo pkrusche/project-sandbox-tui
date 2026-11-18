@@ -33,9 +33,6 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 class Tui:
     def __init__(self, repo: Path, env: dict[str, str]) -> None:
-        # xdist exports the runner's COLUMNS/LINES. Let the TUI use this PTY's
-        # dimensions instead, or its small-window layout hides the startup marker.
-        env = {key: value for key, value in env.items() if key not in ("COLUMNS", "LINES")}
         self.fd, slave = pty.openpty()
         try:
             self.resize(110, 30)
@@ -133,7 +130,9 @@ def start_tui(repo: Path, command: str, *, host_agent_command: str = "", **env_e
     )
     config.ProjectTrust.check(repo).trust(repo)
     pythonpath = os.pathsep.join(p for p in (str(SRC), os.environ.get("PYTHONPATH", "")) if p)
-    env = {**os.environ, "TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra}
+    # Keep the runner's dimensions out of the PTY unless a test supplies them.
+    env = {k: v for k, v in os.environ.items() if k not in ("COLUMNS", "LINES")}
+    env.update({"TERM": "xterm-256color", "PYTHONPATH": pythonpath, **env_extra})
     tui = Tui(repo, env)
     try:
         assert tui.wait_for(b"run or queue", 20), (
@@ -194,11 +193,20 @@ def test_tui_takes_keys_after_interactive_session(
 
 
 def test_tui_responds_to_pty_resize(repo: Path) -> None:
-    tui = start_tui(repo, "true")
+    # A shell can export its original dimensions and keep them across reattachments.
+    tui = start_tui(repo, "true", COLUMNS="110", LINES="30")
     try:
         tui.buf.clear()
         tui.resize(80, 24)
-        assert tui.wait_for(b"full help"), "small-terminal footer did not appear after resize"
+        assert tui.wait_for(b"j/k move"), "small-terminal footer did not appear after resize"
+        # A client can reattach at the same size. The footer is outside the
+        # table and won't be rewritten by a cursor-only update.
+        tui.buf.clear()
+        tui.proc.send_signal(signal.SIGWINCH)
+        assert tui.wait_for(b"j/k move"), "missing repaint at unchanged size"
+        tui.buf.clear()
+        tui.send(b"\x1b[I")  # terminal focus-in
+        assert tui.wait_for(b"j/k move"), "missing repaint after regaining focus"
         tui.buf.clear()
         tui.resize(110, 30)
         assert tui.wait_for(b"run or queue"), "cheat-sheet did not return after resize"
@@ -225,6 +233,7 @@ def test_tui_survives_ctrl_c(repo: Path, launch: str, interrupt_at: str) -> None
     script = repo.parent / "interruptible.py"
     script.write_text(
         "import sys, time\n"
+        "if '--help' in sys.argv: sys.exit(0)\n"
         "print('INTERRUPTIBLE-READY', flush=True)\n"
         + ("time.sleep(60)\n" if interrupt_at == "child" else "")
         + "sys.exit(3)\n"

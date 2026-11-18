@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Structured per-run agent feedback: atomic JSON progress/outcome reports, a
+  standalone `sbx-report` helper, and a bundled reporting skill deployed through
+  existing sandbox mounts and into host workspaces. Reports survive workspace
+  deletion and remain distinct from process exit status.
+- Retained feedback in task details and notifications, optional success-only
+  queue progression, selected state handoff, and bounded retries/action routing
+  with durable successor decisions.
+- Reporting guidance in `--init` and read-only feedback diagnostics in `doctor`.
+- The bundled `sbx-tui-config` skill is copied into each bookmark workspace
+  before `I`, `i`, `r`, agent actions and an idle `o` use it, and kept out of jj
+  snapshots with in-tree ignore rules or the repository's local Git excludes.
+  `project.deploy_config_skill = false` turns this off. Top-level
+  `[[workspace_skills]]` entries deploy additional skill directories into
+  `.agents/skills/` or `.claude/skills/` once the bookmark ignores them. Existing
+  copies are kept; previews and dry runs list the destinations. See
+  [workspace skills](docs/configuration.md#workspace-skills).
+
+### Changed
+
+- New workspaces are created before sandbox launches with
+  `jj workspace add --no-colocate` and registered under their directory name, as
+  project-sandbox does, including for slash-named bookmarks. A sandbox start
+  reports a workspace registered under another name instead of reusing it.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added

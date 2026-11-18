@@ -8,10 +8,11 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from typing import Literal
 
-from project_sandbox_tui import launchers, notify
+from project_sandbox_tui import initialization, launchers, notify
 from project_sandbox_tui.config import Config, ConfigError, ProjectTrust, _load, load
 from project_sandbox_tui.sandbox import runtime_cli
 from project_sandbox_tui.vcs import Branch, VcsError, detect, main_branch
@@ -226,6 +227,51 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
     return checks
 
 
+def check_feedback(cfg: Config, repo: Path | None, runner: Runner) -> list[Check]:
+    if not cfg.feedback.enabled:
+        return [Check("run feedback", "ok", "disabled")]
+    required = cfg.feedback.requires_reporting
+    try:
+        code, help_text = runner([*cfg.sandbox_command(), "--help"], 10)
+        supported = code == 0 and re.search(r"(?<!\S)--mount(?:\s|=)", help_text) is not None
+    except OSError:
+        supported = False
+    checks = [
+        Check(
+            "run feedback",
+            "ok" if supported else ("fail" if required else "warn"),
+            "bind-mount transport available" if supported else "--mount capability unavailable",
+            "" if supported else "install project-sandbox with --mount support",
+        )
+    ]
+    if repo is not None:
+        try:
+            guidance = (repo / "AGENTS.md").read_text()
+            complete = initialization.GUIDANCE in guidance
+            template = (
+                files("project_sandbox_tui")
+                .joinpath("skills", initialization.FEEDBACK_SKILL, "SKILL.md")
+                .read_text()
+            )
+            skills = all(
+                (repo / path / "SKILL.md").read_text() == template
+                for path in initialization.FEEDBACK_DIRS
+            )
+        except OSError:
+            complete = skills = False
+        checks.append(
+            Check(
+                "feedback guidance",
+                "ok" if complete and skills else "warn",
+                "skill and AGENTS.md guidance installed"
+                if complete and skills
+                else "missing or customized skill / AGENTS.md guidance",
+                "sbx-tui --init",
+            )
+        )
+    return checks
+
+
 def run_checks(
     path: Path,
     global_path: Path | None = None,
@@ -245,6 +291,7 @@ def run_checks(
         cfg = Config()
     checks += [check_project_sandbox(cfg, runner), check_runtime(cfg, runner, which)]
     checks += check_config(cfg, repo)
+    checks += check_feedback(cfg, repo, runner)
     if repo is not None:
         try:
             branches = detect(repo).list_branches(compare_to_main=cfg.project.main_branch)
@@ -255,11 +302,17 @@ def run_checks(
     return checks
 
 
-def main(path: Path, global_path: Path | None = None) -> int:
+def report(path: Path, global_path: Path | None = None) -> tuple[str, int]:
+    """Return the diagnostic text and CLI exit status."""
     checks = run_checks(path, global_path)
-    for check in checks:
-        print(check.render())
     failed = sum(c.status == "fail" for c in checks)
-    print(f"\n{failed} problem{'s' if failed != 1 else ''} found" if failed else "\nall good")
+    summary = f"{failed} problem{'s' if failed != 1 else ''} found" if failed else "all good"
+    body = "\n".join(check.render() for check in checks)
+    return f"{body}\n\n{summary}", int(bool(failed))
+
+
+def main(path: Path, global_path: Path | None = None) -> int:
+    output, status = report(path, global_path)
+    print(output)
     sys.stdout.flush()
-    return 1 if failed else 0
+    return status

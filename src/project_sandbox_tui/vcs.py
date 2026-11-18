@@ -433,10 +433,11 @@ class JjBackend:
         )
 
     def add_workspace(self, name: str, path: Path) -> None:
-        """Create workspace ``name`` at ``path`` on a new change on top of bookmark ``name``.
+        """Create a workspace at ``path`` on a new change on top of bookmark ``name``.
 
-        Named after the bookmark, like project-sandbox's own workspaces, so its
-        sessions reuse it and cleanup finds it.
+        Like project-sandbox's own workspaces, it is registered under the
+        directory's basename (``feature-x-1a2b3c`` for ``feature/x``), which
+        project-sandbox uses to reuse and remove it, and has no Git worktree.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         _run(
@@ -446,13 +447,36 @@ class JjBackend:
                 "--color=never",
                 "workspace",
                 "add",
-                f"--name={name}",
+                "--no-colocate",
+                f"--name={path.name}",
                 f"--revision={revset_symbol(name)}",
                 "--",
                 str(path),
             ],
             self.root,
         )
+
+    def workspace_names(self) -> dict[Path, str] | None:
+        """Registered workspace roots (resolved) → names; None if jj cannot list roots."""
+        template = 'stringify(name) ++ "\\x00" ++ root ++ "\\n"'
+        try:
+            out = self._jj("workspace", "list", "-T", template)
+        except VcsError:  # jj without the ``root`` template keyword
+            return None
+        names: dict[Path, str] = {}
+        for line in out.splitlines():
+            name, _, root = line.partition("\0")
+            if root:
+                names[Path(root).resolve()] = name
+        return names
+
+    def git_dir(self) -> Path | None:
+        """The Git directory backing the repository (shared by its workspaces), if any."""
+        try:
+            out = self._jj("git", "root").strip()
+        except VcsError:
+            return None
+        return Path(out) if out else None
 
     def delete_bookmark(self, name: str) -> str:
         """Delete a local bookmark; return the commit it pointed to, for restoring it."""
@@ -866,6 +890,32 @@ class JjBackend:
         names = {b.name for b in self.list_branches() if not b.working_copy}
         # With no bookmarks, use the working copy as the first bookmark's base.
         return main_branch(names) or ("@-" if names else "@")
+
+
+def tracked_files(workspace: Path, paths: Collection[str]) -> list[str]:
+    """Files tracked in ``workspace``'s working-copy commit at or below ``paths``.
+
+    Reads the last snapshot without taking a new one, so untracked files in
+    the workspace are never added as a side effect.
+    """
+    if not paths:
+        return []
+    filesets = [f"root:{json.dumps(path)}" for path in paths]
+    out = _run(
+        [
+            "jj",
+            "--no-pager",
+            "--color=never",
+            "--ignore-working-copy",
+            "file",
+            "list",
+            "--revision=@",
+            "--",
+            *filesets,
+        ],
+        workspace,
+    )
+    return out.splitlines()
 
 
 def main_branch(names: Collection[str], configured: str = "") -> str | None:
