@@ -255,11 +255,17 @@ def run_checks(
     return checks
 
 
-def main(path: Path, global_path: Path | None = None) -> int:
+def report(path: Path, global_path: Path | None = None) -> tuple[str, int]:
+    """Return the diagnostic text and CLI exit status."""
     checks = run_checks(path, global_path)
-    for check in checks:
-        print(check.render())
     failed = sum(c.status == "fail" for c in checks)
-    print(f"\n{failed} problem{'s' if failed != 1 else ''} found" if failed else "\nall good")
+    summary = f"{failed} problem{'s' if failed != 1 else ''} found" if failed else "all good"
+    body = "\n".join(check.render() for check in checks)
+    return f"{body}\n\n{summary}", int(bool(failed))
+
+
+def main(path: Path, global_path: Path | None = None) -> int:
+    output, status = report(path, global_path)
+    print(output)
     sys.stdout.flush()
-    return 1 if failed else 0
+    return status

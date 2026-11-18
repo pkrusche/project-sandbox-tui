@@ -29,6 +29,7 @@ from textual.widgets import DataTable, Input, Static
 from textual.widgets.data_table import ColumnKey
 
 from project_sandbox_tui import commands, doctor, launchers, notify, octopus, terminal
+from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
@@ -2689,9 +2690,36 @@ class SandboxTUI(App[None]):
             "Comparisons from the current bookmark list (? means unavailable).\n"
             "↑ commits ahead · ↓ commits behind · Δ files differing between tips\n\n"
             + "\n\n".join(check.render() for check in checks)
-            + "\n\nFor dependency, runtime and configuration checks: sbx-tui doctor"
+            + "\n\nsbx-tui doctor\n\n"
         )
-        self.push_screen(MessageScreen("doctor · comparisons to main", body))
+        self._show_doctor_report(body)
+
+    @work(group="doctor")
+    async def _show_doctor_report(self, body: str) -> None:
+        report = MessageScreen("doctor", body + "Running checks…")
+        await self.push_screen(report)
+        try:
+            output, _ = await asyncio.to_thread(doctor.report, self.repo, self.config_path)
+        except (OSError, UnicodeError) as exc:
+            output = f"Doctor checks failed: {exc}"
+        if report in self.screen_stack:
+            report.update_body(body + output)
+
+    @work(group="models")
+    async def _update_models(self, source: str = models_mod.DEFAULT_SOURCE) -> None:
+        if "://" not in source:
+            try:
+                source = str(self.repo / Path(source).expanduser())
+            except RuntimeError as exc:
+                self.notify(f"models: {exc}", severity="error")
+                return
+        self.notify("Updating model catalog…")
+        try:
+            path, store = await asyncio.to_thread(models_mod.update, source)
+        except models_mod.ModelsError as exc:
+            self.notify(f"models: {exc}", severity="error", timeout=8)
+            return
+        self.notify(f"models: {models_mod.describe(store)} -> {path}", timeout=8)
 
     def action_command_line(self) -> None:
         names = [*commands.BUILTINS, *self.cfg.commands, *self.cfg.actions]
@@ -2759,6 +2787,11 @@ class SandboxTUI(App[None]):
             self.action_help()
         elif command.builtin == "doctor":
             self.action_doctor()
+        elif command.builtin == "update-models":
+            if any(worker.group == "models" for worker in self.workers):
+                self.notify("Model catalog update already running")
+            else:
+                self._update_models(*command.argv)
         elif command.builtin == "refresh":
             await self.refresh_data()
         elif command.builtin == "reload":

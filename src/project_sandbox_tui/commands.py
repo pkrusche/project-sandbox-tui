@@ -31,7 +31,8 @@ from pathlib import Path
 
 BUILTINS: dict[str, str] = {
     "help": "full key reference",
-    "doctor": "diagnose unavailable comparisons to main",
+    "doctor": "diagnose comparisons, dependencies, runtime and config",
+    "update-models": "refresh model suggestions: :update-models [SOURCE]",
     "host": "run a host agent: :host AGENT [ARGS...]",
     "quit": "quit (asks while runs continue)",
     "refresh": "refresh the bookmark list",
@@ -56,7 +57,7 @@ class Command:
     action: str = ""  # an [actions] name: a sandbox run on each target
     args: str = ""  # an action's extra words, appended to its prompt
     name: str = ""  # the [commands] entry that supplied ``script``, if any
-    argv: tuple[str, ...] = ()  # :host agent executable and CLI arguments
+    argv: tuple[str, ...] = ()  # parsed arguments for built-in commands
 
 
 def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ()) -> Command:
@@ -83,13 +84,15 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
             raise CommandError(f":{name} cannot run per workspace")
         if background:
             raise CommandError(f":{name} cannot run in the background")
-        if builtin == "host":
+        if builtin in ("host", "update-models"):
             try:
                 argv = tuple(shlex.split(args))
             except ValueError as exc:
-                raise CommandError(f":host: {exc}") from exc
-            if not argv or not argv[0]:
+                raise CommandError(f":{name}: {exc}") from exc
+            if builtin == "host" and (not argv or not argv[0]):
                 raise CommandError(":host needs an agent, e.g. :host codex --model my-model")
+            if builtin == "update-models" and (len(argv) > 1 or argv == ("",)):
+                raise CommandError(":update-models accepts one optional source (HTTPS URL or file)")
             return Command(line, builtin=builtin, argv=argv)
         if args:
             raise CommandError(f":{name} takes no arguments")

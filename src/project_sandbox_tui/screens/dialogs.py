@@ -206,8 +206,12 @@ class MessageScreen(ScrollModal[None]):
         with Vertical():
             yield Static(self.title_text, classes="title")
             with VerticalScroll(classes="message-body"):
-                yield Static(Text(self.body))
+                yield Static(Text(self.body), id="message-text")
             yield Static(KeyHints(f"{SCROLL_HINT} · q/esc close"), classes="hint")
+
+    def update_body(self, body: str) -> None:
+        self.body = body
+        self.query_one("#message-text", Static).update(Text(body))
 
     def other_key(self, key: str) -> None:
         if key in self.CLOSE_KEYS:
@@ -442,7 +446,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 (":", "commands: :! :& :*"),
                 ("\\ keys", "[leader] key mappings"),
                 ("R / ctrl+l", "refresh / reload config"),
-                (":doctor", "diagnose ? comparisons"),
+                (":doctor", "diagnose ? and setup"),
                 ("H / ?", "cheat-sheet / this help"),
                 ("q", "quit (runs continue)"),
             ),

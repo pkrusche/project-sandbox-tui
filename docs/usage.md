@@ -24,8 +24,9 @@ untrusted config and missing image sources, multiplexers or notifiers.
 Automatic runtime selection tries
 Apple `container` on macOS, then Docker and Podman, choosing the first installed
 CLI and checking its health. It also calculates comparisons to main
-and explains unavailable results. Inside the TUI, `:doctor` diagnoses the current
-bookmark list without running dependency or runtime probes.
+and explains unavailable results. Inside the TUI, `:doctor` shows diagnostics
+for the current bookmark list and appends the full CLI report once the checks
+finish.
 
 See [configuration](configuration.md), [models](models.md) and
 [cleanup](cleanup.md) for the corresponding commands.
@@ -160,7 +161,8 @@ removes the workspace instead.
 | `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
 | `:config-profiles` | Create or edit saved agent profiles in the project config |
-| `:doctor` | Explain unavailable comparisons to main in a scrollable report; `sbx-tui doctor` also checks dependencies, runtime and configuration |
+| `:doctor` | Explain unavailable comparisons to main and append the full `sbx-tui doctor` report |
+| `:update-models [SOURCE]` | Refresh [model suggestions](models.md) from models.dev, an HTTPS URL or a local file |
 
 | Key | Action in the command line |
 |---|---|

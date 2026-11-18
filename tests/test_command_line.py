@@ -13,12 +13,13 @@ from typing import Any
 import pytest
 from textual.widgets import Input, Static
 
+from project_sandbox_tui import doctor
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.screens.command import CommandScreen
 from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen, MessageScreen
 from project_sandbox_tui.vcs import VcsError
-from tests.test_app import run_app
+from tests.test_app import run_app, wait_for_screen, wait_until
 
 
 def messages(app: SandboxTUI) -> list[str]:
@@ -41,9 +42,23 @@ async def type_line(pilot: Any, line: str) -> None:
 
 
 def test_doctor_explains_displayed_comparison_failures(
-    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    config_path = repo.parent / "doctor.toml"
+
+    def run_checks(path: Path, global_path: Path | None) -> list[doctor.Check]:
+        assert (path, global_path) == (repo, config_path)
+        return [doctor.Check("container runtime", "fail", "cannot connect", "start Docker")]
+
+    monkeypatch.setattr(doctor, "run_checks", run_checks)
+    assert doctor.main(repo, config_path) == 1
+    cli_output = capsys.readouterr().out.rstrip("\n")
+
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.config_path = config_path
         app._refresh_timer.pause()
         original = app.backend._jj
 
@@ -59,8 +74,7 @@ def test_doctor_explains_displayed_comparison_failures(
         await type_line(pilot, "doctor")
         assert isinstance(app.screen, CommandScreen) and "doctor" in app.screen.names
         await pilot.press("enter")
-        assert isinstance(app.screen, MessageScreen)
-        report = app.screen
+        report = await wait_for_screen(app, pilot, MessageScreen)
         assert "? feature/x" in report.body
         assert "jj diff: transient [error]\nfull diagnostic" in report.body
         assert "main (" in report.body and str(repo) in report.body
@@ -70,13 +84,16 @@ def test_doctor_explains_displayed_comparison_failures(
         monkeypatch.setattr(app.backend, "_jj", original)
         await app.refresh_data()
         assert str(app.table.get_cell("feature/x", "vs main")) != "?"
+        await wait_until(pilot, lambda: report.body.endswith(cli_output))
+        assert cli_output in str(report.query_one("#message-text", Static).render())
         assert "transient [error]" in report.body
         await pilot.press("q")
         await type_line(pilot, "doctor")
         await pilot.press("enter")
-        assert isinstance(app.screen, MessageScreen)
-        assert "3/3 revisions available; 0 show ?" in app.screen.body
-        assert "transient" not in app.screen.body
+        report = await wait_for_screen(app, pilot, MessageScreen)
+        await wait_until(pilot, lambda: report.body.endswith(cli_output))
+        assert "3/3 revisions available; 0 show ?" in report.body
+        assert "transient" not in report.body
         await pilot.press("escape")
         assert app.screen is app.main
 
