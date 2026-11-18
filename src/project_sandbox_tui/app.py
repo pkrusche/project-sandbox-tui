@@ -23,6 +23,8 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
+from textual.driver import Driver
+from textual.drivers.linux_driver import LinuxDriver
 from textual.notifications import SeverityLevel
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
@@ -395,6 +397,19 @@ class Cheatsheet:
             yield grid
 
 
+class TtySizeDriver(LinuxDriver):
+    """Use the live PTY dimensions at startup and on SIGWINCH."""
+
+    def _get_terminal_size(self) -> tuple[int, int]:
+        # Textual's default uses shutil, where exported COLUMNS/LINES take
+        # precedence even after the pane has changed size.
+        with contextlib.suppress(OSError):
+            width, height = os.get_terminal_size(self.fileno)
+            if width and height:
+                return width, height
+        return super()._get_terminal_size()
+
+
 class MainScreen(Screen[None]):
     """Branch list. Bindings live here so they are inactive under modal forms."""
 
@@ -548,6 +563,18 @@ class SandboxTUI(App[None]):
         super().notify(message, title=title, severity=severity, timeout=timeout, markup=False)
 
     # ------------------------------------------------------------ layout
+
+    def get_driver_class(self) -> type[Driver]:
+        driver = super().get_driver_class()
+        return TtySizeDriver if driver is LinuxDriver else driver
+
+    @on(events.AppFocus)
+    @on(events.Resize)
+    def _repaint_terminal(self, event: events.AppFocus | events.Resize) -> None:
+        # Textual redraws a changed layout. A client reattaching at the same
+        # size also needs a complete frame, even if only focus changed.
+        if isinstance(event, events.AppFocus) or event.size == self.size:
+            self.refresh()
 
     @property
     def table(self) -> DataTable[Text]:
@@ -820,6 +847,7 @@ class SandboxTUI(App[None]):
     def _render_table(self) -> None:
         table = self.table
         scroll_x = table.scroll_target_x
+        scroll_y = table.scroll_target_y
         selected = self._pending_select or self.selected_branch_name()
         rows = self.visible_rows()
         baseline = self.main_name()
@@ -836,6 +864,10 @@ class SandboxTUI(App[None]):
         review_col.content_width = max(
             [review_col.label.cell_len, *(r.review_cell().cell_len for r in rows)]
         )
+        status_col = table.columns[ColumnKey("status")]
+        status_col.content_width = max(
+            [status_col.label.cell_len, *(cell_len(r.status()[2]) for r in rows)]
+        )
         chosen = set(self.selection())  # before clear(): the visual range follows the cursor
         # Fixed width with room for the "+ " / " ●" markers, so marking a row in
         # place (update_cell) never has to widen the column.
@@ -849,13 +881,16 @@ class SandboxTUI(App[None]):
             graph_col.width = max([1, *(row.graph_cell().cell_len for row in rows)])
         subject_col = table.columns.get(ColumnKey("subject"))
         if subject_col is not None:
-            subject_col.width = self._subject_width(rows)
+            subject_col.width = self._subject_width()
         table.clear()
         for row in rows:
             table.add_row(*row.cells(row.branch.name in chosen), key=row.branch.name)
         if selected is not None:
             names = [r.branch.name for r in rows]
             if selected in names:
+                # clear() resets both axes. Restore the viewport before Textual
+                # reveals the cursor, so a visible row keeps its place on screen.
+                table.scroll_to(y=scroll_y, animate=False, force=True)
                 table.move_cursor(row=names.index(selected), animate=False)
                 if selected == self._pending_select:
                     self._pending_select = None
@@ -873,17 +908,15 @@ class SandboxTUI(App[None]):
         if table.scroll_target_x > table.max_scroll_x:
             table.scroll_to(x=table.max_scroll_x, animate=False, force=True)
 
-    def _subject_width(self, rows: list[Row]) -> int:
+    def _subject_width(self) -> int:
         """Up to SUBJECT_WIDTH, but narrow enough to leave room for the status."""
         table = self.table
-        status = max([len("status"), *(cell_len(row.status()[2]) for row in rows)])
         others = sum(
             column.get_render_width(table)
             for key, column in table.columns.items()
-            if key.value not in ("subject", "status")
+            if key.value != "subject"
         )
-        padding = 2 * table.cell_padding
-        room = self.main.size.width - 1 - others - status - 2 * padding  # 1: the scrollbar
+        room = self.main.size.width - 1 - others - 2 * table.cell_padding  # 1: the scrollbar
         return max(MIN_SUBJECT, min(SUBJECT_WIDTH, room))
 
     def _render_header(self, chosen: set[str]) -> None:
@@ -2579,6 +2612,7 @@ class SandboxTUI(App[None]):
 
     async def action_refresh(self) -> None:
         await self.refresh_data()
+        self.refresh()
 
     def _review_project_config(self) -> bool:
         """Show a new or changed project config for review; reload once decided.

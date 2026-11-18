@@ -114,6 +114,52 @@ def test_refresh_preserves_horizontal_scroll(
     run_app(repo, fake_cfg(), scenario, size=(70, 25))
 
 
+def test_resize_keeps_scrolled_bookmarks_in_place(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    jj(repo, "bookmark", "create", *(f"topic-{i:02}" for i in range(24)), "-r", "main")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        table = app.table
+        await pilot.press("G", "k", "k", "k")
+        offset = table.scroll_y
+        selected = app.selected_branch_name()
+        assert offset > 0
+        for width in (65, 100):
+            await pilot.resize_terminal(width, 10)
+            await pilot.pause()
+            assert app.selected_branch_name() == selected
+            assert table.scroll_y == offset
+            for key in ("j", "k"):
+                await pilot.press(key)
+                for line in range(1, table.scrollable_content_region.height):
+                    index = int(table.scroll_y) + line - 1
+                    if index < table.row_count:
+                        name = table.get_row_at(index)[1].plain.strip()
+                        assert name in table.render_line(line).text
+
+    run_app(repo, fake_cfg(), scenario, size=(100, 10))
+
+
+def test_bookmark_table_releases_space_when_status_shrinks(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        app.queue.pause("feature/x", True)
+        app._render_table()
+        await pilot.pause()
+        line = app.table.get_row_index("feature/x") + 1
+        assert "0 queued (paused)" in app.table.render_line(line).text
+        app.queue.pause("feature/x", False)
+        app._render_table()
+        await pilot.pause()
+        assert app.table.max_scroll_x == 0
+
+    run_app(repo, fake_cfg(), scenario, size=(76, 12))
+
+
 @pytest.mark.parametrize("main", ["main", "release"])
 def test_bookmark_comparison_markers(
     repo: Path, fake_cfg: Callable[..., Config], main: str
