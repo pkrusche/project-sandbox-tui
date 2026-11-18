@@ -18,10 +18,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from project_sandbox_tui import feedback
 from project_sandbox_tui.config import STATE_VERSION, ConfigError, private_dir, write_state
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _now
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord
-from project_sandbox_tui.vcs import VcsError
+from project_sandbox_tui.vcs import VcsError, detect, main_branch
 
 
 @dataclass
@@ -32,6 +33,13 @@ class QueuedTask:
     base_commit: str = ""
     result_commit: str = ""
     commits: list[str] = field(default_factory=list)
+
+    parent_task: str = ""
+    attempt: int = 1
+    step: int = 1
+    decision_done: bool = False
+    successor_id: str = ""
+    decision: str = ""
 
     @property
     def status(self) -> str:
@@ -45,6 +53,12 @@ class QueuedTask:
             "base_commit": self.base_commit,
             "result_commit": self.result_commit,
             "commits": self.commits,
+            "parent_task": self.parent_task,
+            "attempt": self.attempt,
+            "step": self.step,
+            "decision_done": self.decision_done,
+            "successor_id": self.successor_id,
+            "decision": self.decision,
         }
 
     @classmethod
@@ -56,9 +70,19 @@ class QueuedTask:
             str(raw.get("base_commit", "")),
             str(raw.get("result_commit", "")),
             list(raw.get("commits", [])),
+            str(raw.get("parent_task", "")),
+            raw.get("attempt", 1),
+            raw.get("step", 1),
+            raw.get("decision_done") is True,
+            str(raw.get("successor_id", "")),
+            str(raw.get("decision", "")),
         )
         if (
-            not task.id
+            type(task.attempt) is not int
+            or not 1 <= task.attempt <= 100
+            or type(task.step) is not int
+            or not 1 <= task.step <= 100
+            or not task.id
             or any(c not in "0123456789abcdef" for c in task.id)
             or task.spec.mode != "background"
             or not task.spec.prompt_text.strip()
@@ -402,6 +426,99 @@ class TaskQueue:
                         if result:
                             task.result_commit, task.commits = result
 
+    def _decide(self, jobs: JobManager) -> None:
+        """Commit successors before launching them; never replay a decision."""
+        policy = jobs.cfg.feedback
+        if not policy.makes_decisions:
+            return
+        with self.transaction() as queues:
+            self._refresh(queues, jobs)
+            for queue in queues.values():
+                if queue.paused or not queue.history:
+                    continue
+                task = queue.history[-1]
+                job = task.job
+                if not job or job.running or task.decision_done:
+                    continue
+                policy = jobs.cfg.feedback
+                result = job.reported_outcome
+                task.decision_done = True
+                successor = None
+                if job.exit_code == 0 and result in policy.retry_outcomes:
+                    if task.attempt < policy.max_attempts:
+                        successor = self._new_task(task.spec)
+                        successor.attempt, successor.step = task.attempt + 1, task.step
+                        task.decision = "retry"
+                    else:
+                        queue.paused, queue.error = True, "feedback retry limit reached"
+                        task.decision = queue.error
+                elif job.exit_code == 0 and result in feedback.OUTCOMES:
+                    action_name = getattr(policy, f"on_{result}")
+                    if action_name:
+                        if task.step >= policy.max_steps:
+                            queue.paused, queue.error = True, "feedback workflow step limit reached"
+                            task.decision = queue.error
+                        else:
+                            action = jobs.cfg.actions[action_name]
+                            spec = copy.deepcopy(task.spec)
+                            main = jobs.cfg.project.main_branch
+                            if "{main}" in action.prompt and not main:
+                                main = (
+                                    main_branch([b.name for b in detect(jobs.repo).list_branches()])
+                                    or ""
+                                )
+                            spec.prompt_text = action.render(spec.branch, main)
+                            for key in ("agent", "model", "effort"):
+                                if value := getattr(action, key):
+                                    setattr(spec, key, value)
+                            if action.timeout is not None:
+                                spec.timeout = action.timeout
+                            successor = self._new_task(spec)
+                            successor.step = task.step + 1
+                            task.decision = f"action {action_name}"
+                if successor:
+                    successor.parent_task = task.id
+                    task.successor_id = successor.id
+                    queue.tasks.insert(0, successor)
+                elif (
+                    policy.require_reported_success
+                    and not job.reported_success
+                    and not queue.paused
+                ):
+                    queue.paused = True
+                    queue.error = f"feedback policy paused: {job.status}; {job.feedback_detail()}"
+                    task.decision = queue.error
+                elif not task.decision:
+                    task.decision = "continue"
+
+    @staticmethod
+    def _needs_decision(queue: BookmarkQueue, jobs: JobManager) -> bool:
+        policy = jobs.cfg.feedback
+        return bool(
+            policy.makes_decisions and queue.history and not queue.history[-1].decision_done
+        )
+
+    @staticmethod
+    def _input_state(queue: BookmarkQueue, task: QueuedTask, jobs: JobManager) -> dict[str, Any]:
+        keys = jobs.cfg.feedback.pass_state_keys
+        if not keys or (not queue.history and not task.parent_task):
+            return {}
+        source = (
+            next((t for t in queue.history if t.id == task.parent_task), None)
+            if task.parent_task
+            else (queue.history[-1] if queue.history else None)
+        )
+        job = source.job if source else None
+        if not job or job.running or job.reported_outcome == "unknown" or not job.feedback_snapshot:
+            raise ValueError("state handoff requires a valid final predecessor report")
+        state = job.feedback_snapshot.get("state", {})
+        missing = [key for key in keys if key not in state]
+        if missing:
+            raise ValueError("predecessor state is missing keys: " + ", ".join(missing))
+        selected = {key: state[key] for key in keys}
+        feedback.encode(selected)
+        return selected
+
     def dispatch(
         self,
         jobs: JobManager,
@@ -415,6 +532,7 @@ class TaskQueue:
         The job's queue_id makes retrying after a crash between job persistence
         and queue persistence idempotent, including after that job has finished.
         """
+        self._decide(jobs)
         started: list[JobRecord] = []
         with self.transaction() as queues:
             self._refresh(queues, jobs, outcome)
@@ -422,6 +540,12 @@ class TaskQueue:
                 if queue.paused or not queue.tasks:
                     continue
                 task = queue.tasks[0]
+                if queue.history and queue.history[-1].job and queue.history[-1].job.running:
+                    continue
+                # Another instance can finalize a predecessor after _decide's
+                # transaction. Defer until its policy decision is durable.
+                if self._needs_decision(queue, jobs):
+                    continue
                 try:
                     if error := valid(branch):
                         queue.paused, queue.error = True, error
@@ -431,6 +555,7 @@ class TaskQueue:
                         sessions(),
                         queue_id=task.id,
                         base_commit=partial(commit, branch) if commit else None,
+                        previous_state=self._input_state(queue, task, jobs),
                     )
                 except BusyError:
                     continue

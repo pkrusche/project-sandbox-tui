@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 
 from project_sandbox_tui import feedback, feedback_transport, initialization
-from project_sandbox_tui.config import Config, ConfigError
+from project_sandbox_tui.config import Action, Config, ConfigError
 from project_sandbox_tui.jobs import JobManager, JobRecord
+from project_sandbox_tui.queue import TaskQueue
 from project_sandbox_tui.sandbox import LaunchSpec, build_argv
 from tests.conftest import wait_for
 
@@ -246,6 +247,99 @@ def test_mounts_and_prompt_do_not_change_original_spec(reporting_dir: Path, tmp_
         feedback_transport.mounts(tmp_path / "bad,path")
 
 
+def test_required_success_pauses_once_and_resume_is_explicit_override(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.require_reported_success = True
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    first = queue.add(spec("report:failure"))
+    second = queue.add(spec())
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None)[0].queue_id == first.id
+    finish(jobs)
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None) == []
+    assert queue.get("topic").paused and "failure" in queue.get("topic").error
+    queue.pause("topic", False)
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None)[0].queue_id == second.id
+    finish(jobs)
+
+
+def test_state_handoff_is_selected_and_missing_keys_pause(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.pass_state_keys = ["chosen"]
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(spec("sleep:0.3"))
+    queue.add(spec("sleep:0.1"))
+    first = queue.dispatch(jobs, lambda: {}, lambda _: None)[0]
+    feedback.report(
+        Path(first.feedback_path).parent.parent, "done", "success", {"chosen": 7, "private": 8}
+    )
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None) == []
+    assert not queue.get("topic").paused  # defer while predecessor remains alive
+    finish(jobs)
+    second = queue.dispatch(jobs, lambda: {}, lambda _: None)[0]
+    context = feedback.read_json(Path(second.feedback_path).parent.parent / "context.json")
+    assert context["previous_state"] == {"chosen": 7}
+    finish(jobs)
+    queue.add(spec())
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None) == []
+    assert queue.get("topic").paused and "state handoff" in queue.get("topic").error
+
+
+def test_retry_decision_survives_restart_and_is_bounded(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.retry_outcomes = ["failure"]
+    cfg.feedback.max_attempts = 2
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    task = queue.add(spec("report:failure"))
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    first = finish(jobs)
+    # Persist the decision, then restart before launching its successor.
+    queue._decide(jobs)
+    successor = queue.get("topic").tasks[0]
+    assert successor.parent_task == task.id and successor.attempt == 2
+    queue = TaskQueue(jobs.state_dir)
+    second = queue.dispatch(jobs, lambda: {}, lambda _: None)[0]
+    assert second.queue_id == successor.id and second.run_id != first.run_id
+    finish(jobs)
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None) == []
+    assert queue.get("topic").paused and "limit" in queue.get("topic").error
+    queue.load()
+    assert len(queue.get("topic").history) == 2
+
+
+def test_branch_action_and_concurrent_dispatch(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    cfg = fake_cfg()
+    cfg.actions["review"] = Action(prompt="report:success review {bookmark}")
+    cfg.feedback.on_success = "review"
+    cfg.feedback.max_steps = 2
+    cfg.validate()
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(spec())
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    finish(jobs)
+
+    def dispatch() -> list[JobRecord]:
+        manager = JobManager(repo, cfg)
+        return TaskQueue(manager.state_dir).dispatch(manager, lambda: {}, lambda _: None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: dispatch(), range(2)))
+    assert sum(map(len, results)) == 1
+    finish(jobs)
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    assert queue.get("topic").paused and "step limit" in queue.get("topic").error
+    assert queue.get("topic").history[-1].spec.prompt_text.strip() == "report:success review topic"
+
+
 def test_init_preserves_user_guidance_and_skill_edits(tmp_path: Path) -> None:
     agents = tmp_path / "AGENTS.md"
     agents.write_text("User guidance with no final newline")
@@ -301,6 +395,65 @@ def test_dry_run_does_not_create_reporting_files(
     assert not (jobs.state_dir / "runs").exists()
 
 
+def test_policy_cannot_be_bypassed_by_completion_between_transactions(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.require_reported_success = True
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(spec("sleep:0.3 report:failure"))
+    queue.add(spec())
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    decide = queue._decide
+
+    def race(manager: JobManager) -> None:
+        decide(manager)  # predecessor still running
+        finish(JobManager(repo, cfg))  # another TUI finalizes it before dispatch
+
+    monkeypatch.setattr(queue, "_decide", race)
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None) == []
+    monkeypatch.setattr(queue, "_decide", decide)
+    assert queue.dispatch(jobs, lambda: {}, lambda _: None) == []
+    assert queue.get("topic").paused
+
+
+def test_failed_successor_queue_save_recovers_same_run(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.retry_outcomes = ["failure"]
+    cfg.feedback.max_attempts = 2
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(spec("report:failure"))
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    finish(jobs)
+    queue._decide(jobs)
+    successor_id = queue.get("topic").tasks[0].id
+    persist = queue._persist
+
+    def fail(_data: dict) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(queue, "_persist", fail)
+    with pytest.raises(OSError, match="disk full"):
+        queue.dispatch(jobs, lambda: {}, lambda _: None)
+    run_id = jobs.jobs["topic"].run_id
+    monkeypatch.setattr(queue, "_persist", persist)
+    recovered = TaskQueue(jobs.state_dir)
+    recovered.load()
+    assert recovered.get("topic").history[-1].id == successor_id
+    retained = recovered.get("topic").history[-1].job
+    assert retained and retained.run_id == run_id
+    assert recovered.dispatch(jobs, lambda: {}, lambda _: None) == []
+    finish(jobs)
+
+
 def test_feedback_doctor_is_read_only_and_reports_drift(tmp_path: Path) -> None:
     from project_sandbox_tui.doctor import check_feedback
 
@@ -344,3 +497,32 @@ def test_feedback_config_validation() -> None:
     ):
         with pytest.raises(ConfigError):
             from_dict({"feedback": data}).validate()
+
+
+def test_tui_dispatches_successor_when_no_manual_tasks_remain(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+) -> None:
+    from project_sandbox_tui.app import SandboxTUI
+    from tests.test_app import run_app
+
+    cfg = fake_cfg()
+    cfg.feedback.retry_outcomes = ["failure"]
+    cfg.feedback.max_attempts = 2
+
+    async def scenario(app: SandboxTUI, _pilot: object) -> None:
+        app._refresh_timer.pause()
+        await app.refresh_data()
+        app.queue.add(spec("report:failure", "feature/x"))
+        first = app._dispatch_queue()[0]
+        finish(app.jobs, "feature/x")
+        assert not app.queue.get("feature/x").tasks
+        await app.refresh_data()
+        history = app.queue.get("feature/x").history
+        assert len(history) == 2
+        assert history[-1].job and history[-1].job.run_id != first.run_id
+        finish(app.jobs, "feature/x")
+        await app.refresh_data()
+        assert app.queue.get("feature/x").paused
+
+    run_app(repo, cfg, scenario)

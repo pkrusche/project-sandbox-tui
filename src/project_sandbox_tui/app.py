@@ -647,7 +647,20 @@ class SandboxTUI(App[None]):
             if (
                 listed
                 and not self.dry_run
-                and any(q.tasks and not q.paused for q in self.queue.queues.values())
+                and any(
+                    not q.paused
+                    and (
+                        q.tasks
+                        or (
+                            self.cfg.feedback.makes_decisions
+                            and q.history
+                            and q.history[-1].job
+                            and not q.history[-1].job.running
+                            and not q.history[-1].decision_done
+                        )
+                    )
+                    for q in self.queue.queues.values()
+                )
             ):
                 # Finalise the previous run against a fresh bookmark snapshot
                 # before a queued launch replaces its job record.
