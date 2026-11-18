@@ -1,6 +1,7 @@
 # project-sandbox-tui — per-project settings (merged over ~/.config/project-sandbox-tui/config.toml)
 [project]
 build = "python-uv"                  # python-uv | rust-cargo | node-npm
+build_version = "3.12"
 keep_workspace = true                  # -> --keep-workspace
 default_branch_start = "main"        # start revision for new branches
 
@@ -33,7 +34,13 @@ without claiming the test passed. Do not modify source files.
 '''
 timeout = 3600
 
+[commands]
+test = "scripts/test.sh"
+smoke = "scripts/e2e-test.sh"
+
 [leader]
+t = "test"
+T = "*test"
 rv = "review"
 rc = "check"
 re = "e2e"
@@ -58,3 +65,27 @@ model = "gpt-6-luna"
 effort = "high"
 fast = true
 extra_args = []
+
+[profiles.chores]
+agent = "codex"
+model = "gpt-6-luna"
+effort = "high"
+fast = true
+
+[profiles.planning]
+agent = "codex"
+model = "gpt-6.2-sol"
+effort = "medium"
+fast = false
+
+[profiles.debugging]
+agent = "codex"
+model = "gpt-6.2-astra"
+effort = "xhigh"
+fast = false
+
+[profiles.quick-feature]
+agent = "codex"
+model = "gpt-6.2-sol"
+effort = "medium"
+fast = true
