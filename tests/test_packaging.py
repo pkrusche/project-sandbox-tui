@@ -63,6 +63,9 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         }
         assert Path("src/project_sandbox_tui/cli.py") in names
         assert Path("src/project_sandbox_tui/skills/sbx-tui-config/SKILL.md") in names
+        assert Path("src/project_sandbox_tui/skills/sbx-run-feedback/SKILL.md") in names
+        assert Path("src/project_sandbox_tui/feedback.py") in names
+        assert Path("src/project_sandbox_tui/feedback_host.py") in names
         assert Path("scripts/test.sh") in names
         assert Path("scripts/make-release.sh") in names
         assert Path("scripts/update-pins.py") in names
@@ -75,6 +78,9 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         assert "project_sandbox_tui/cli.py" in names
         assert "project_sandbox_tui/app.py" in names
         assert "project_sandbox_tui/skills/sbx-tui-config/SKILL.md" in names
+        assert "project_sandbox_tui/skills/sbx-run-feedback/SKILL.md" in names
+        assert "project_sandbox_tui/feedback.py" in names
+        assert "project_sandbox_tui/feedback_host.py" in names
         assert f"{metadata}/licenses/LICENSE" in names
         assert (
             "sbx-tui = project_sandbox_tui.cli:main"

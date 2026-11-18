@@ -107,6 +107,33 @@ class Sandbox:
 
 
 @dataclass
+class Feedback:
+    enabled: bool = True
+    require_reported_success: bool = False
+    pass_state_keys: list[str] = field(default_factory=list)
+    retry_outcomes: list[str] = field(default_factory=list)
+    max_attempts: int = 1
+    on_success: str = ""  # configured action name
+    on_failure: str = ""
+    on_blocked: str = ""
+    max_steps: int = 1
+
+    @property
+    def makes_decisions(self) -> bool:
+        return bool(
+            self.require_reported_success
+            or self.retry_outcomes
+            or self.on_success
+            or self.on_failure
+            or self.on_blocked
+        )
+
+    @property
+    def requires_reporting(self) -> bool:
+        return self.makes_decisions or bool(self.pass_state_keys)
+
+
+@dataclass
 class Project:
     base_image: str = ""  # positional base image, e.g. python:3.12-slim
     dockerfile: str = ""  # --dockerfile (relative paths resolve against the repo)
@@ -213,6 +240,7 @@ class Config:
     project: Project = field(default_factory=Project)
     ui: UI = field(default_factory=UI)
     prompts: Prompts = field(default_factory=Prompts)
+    feedback: Feedback = field(default_factory=Feedback)
     models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
     commands: dict[str, str] = field(  # :name -> shell command (commands.py)
         default_factory=lambda: dict(DEFAULT_COMMANDS)
@@ -245,6 +273,18 @@ class Config:
             raise ConfigError(f"sandbox.runtime must be one of {', '.join(RUNTIMES)}")
         if s.cpus < 0:
             raise ConfigError("sandbox.cpus must be >= 0")
+        f = self.feedback
+        if not 1 <= f.max_attempts <= 100 or not 1 <= f.max_steps <= 100:
+            raise ConfigError("feedback.max_attempts and max_steps must be between 1 and 100")
+        if any(o not in ("failure", "blocked") for o in f.retry_outcomes):
+            raise ConfigError("feedback.retry_outcomes accepts failure and blocked")
+        if any(not key for key in f.pass_state_keys):
+            raise ConfigError("feedback.pass_state_keys must contain nonempty keys")
+        for name in (f.on_success, f.on_failure, f.on_blocked):
+            if name and name not in self.actions:
+                raise ConfigError(f"feedback successor action does not exist: {name}")
+        if not f.enabled and f.requires_reporting:
+            raise ConfigError("feedback policies require feedback.enabled")
         self.sandbox_command()
         placeholders = {
             "notify_command": ("title", "message"),
@@ -332,6 +372,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "project": Project,
     "ui": UI,
     "prompts": Prompts,
+    "feedback": Feedback,
 }
 
 
@@ -782,6 +823,15 @@ base_image = "python:3.12-slim"
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new bookmarks
 # main_branch = "main"                 # baseline for diff, fast-forward, @ saves and cleanup
+
+# [feedback]
+# enabled = true                    # collect structured agent reports when supported
+# require_reported_success = false  # pause the queue without a successful final report
+# pass_state_keys = []              # selected predecessor state keys
+# retry_outcomes = []               # failure / blocked; max_attempts includes first run
+# max_attempts = 1
+# on_success = ""                   # configured action name; also on_failure / on_blocked
+# max_steps = 1                     # includes initial task; limit pauses the queue
 
 # [defaults]
 # agent = "claude"                     # claude | codex | opencode | pi | bash
