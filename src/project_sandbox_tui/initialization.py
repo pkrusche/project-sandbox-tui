@@ -3,10 +3,10 @@
 from importlib.resources import files
 from pathlib import Path
 
-from project_sandbox_tui.config import PROJECT_TEMPLATE
+from project_sandbox_tui.config import CONFIG_SKILL_NAME, CONFIG_SKILL_TARGETS, PROJECT_TEMPLATE
 
-SKILL_NAME = "sbx-tui-config"
-SKILL_DIRS = tuple(Path(root) / "skills" / SKILL_NAME for root in (".agents", ".claude"))
+SKILL_NAME = CONFIG_SKILL_NAME
+SKILL_DIRS = tuple(Path(target) for target in CONFIG_SKILL_TARGETS)
 
 
 def project_template(repo: Path) -> str:

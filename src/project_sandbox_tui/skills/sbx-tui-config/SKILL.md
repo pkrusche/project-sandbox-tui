@@ -12,8 +12,8 @@ settings. Preserve the project's existing choices unless the task changes them.
 ## Inspect and edit settings
 
 `sbx-tui --init` creates missing global and project config files and installs
-this skill. It preserves existing files. Image detection only runs when creating
-the project config; it is not applied each time the TUI starts.
+this skill in the checkout. It preserves existing files. Image detection only
+runs when creating the project config; it is not applied each time the TUI starts.
 
 ```sh
 sbx-tui config path --global
@@ -126,5 +126,16 @@ reload prompt; do not bypass review by modifying trust state. `ctrl+l` reloads
 the TUI; running sessions retain their original settings.
 
 Report the chosen image source, settings changed, validation performed, and any
-remaining review or runtime issue. This skill is local and gitignored; separate
-checkouts/workspaces need their own `sbx-tui --init` to install it.
+remaining review or runtime issue.
+
+## Where this skill comes from
+
+This skill is a local, ignored copy at `.agents/skills/sbx-tui-config/` and
+`.claude/skills/sbx-tui-config/`. `sbx-tui --init` installs it in the checkout
+and adds both directories to the root `.gitignore`. sbx-tui also copies it into
+each bookmark workspace when it opens the workspace or launches an agent there
+(`I`, `i`, `r`, actions, and `o` while idle), and keeps it out of jj snapshots
+through in-tree ignore rules or the repository's local `info/exclude`. Existing
+copies, including local edits, are kept: to refresh one, remove its directory
+while the workspace is idle and reopen it. `project.deploy_config_skill = false`
+stops automatic copies; `[[workspace_skills]]` deploys additional skills.

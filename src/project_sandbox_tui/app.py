@@ -107,6 +107,11 @@ from project_sandbox_tui.widgets import (
     human_age,
     modifier_key,
 )
+from project_sandbox_tui.workspace_skills import (
+    PreparationError,
+    WorkspacePreparer,
+    planned_destinations,
+)
 
 STATE_HEADING = "## Current state"  # octopus state report appended to prompts
 
@@ -499,6 +504,9 @@ class SandboxTUI(App[None]):
         self.config_path = config_path
         self.dry_run = dry_run
         self.jobs = jobs or JobManager(repo, cfg)
+        # Creates workspaces and deploys skills under the launch lock (jobs.py).
+        self.workspaces = WorkspacePreparer(repo, backend)
+        self.jobs.prepare = self._prepare_workspace
         self.tasks = TaskManager(self.jobs.state_dir)  # background host commands
         self.queue = TaskQueue(self.jobs.state_dir)
         self.sessions_dir = sessions_dir
@@ -659,6 +667,7 @@ class SandboxTUI(App[None]):
                 for job in await asyncio.to_thread(self._dispatch_queue):
                     self._record_run(job)
                     self.notify(f"{job.branch}: started queued {job.spec.label()} (pid {job.pid})")
+                self._report_preparation()
             self._report_queue_errors()
         except (OSError, ValueError, VcsError) as exc:
             self._state_problem("queue", f"could not update the task queue: {exc}")
@@ -1095,8 +1104,13 @@ class SandboxTUI(App[None]):
         return shlex.join(build_argv(self.cfg, self.repo, spec, paths))
 
     def _form_preview(self, spec: LaunchSpec) -> str:
-        """Shorter preview for the launch form: state-dir paths abbreviated."""
-        return self._spec_preview(spec).replace(str(self.jobs.logs_dir), "<logs>")
+        """Shorter preview for the launch form: state-dir paths abbreviated, then the
+        skill directories the launch deploys unless the workspace has them."""
+        preview = self._spec_preview(spec).replace(str(self.jobs.logs_dir), "<logs>")
+        targets = planned_destinations(self.cfg, self.repo, spec.branch, spec.extra_args)
+        if targets:
+            preview += "\nskills (if missing): " + ", ".join(map(str, targets))
+        return preview
 
     def _require_branch(self) -> str | None:
         name = self.selected_branch_name()
@@ -1523,6 +1537,22 @@ class SandboxTUI(App[None]):
         )
         return result, commits
 
+    def _prepare_workspace(self, cfg: Config, spec: LaunchSpec, sandbox: bool) -> None:
+        """``JobManager.prepare``: create the launch's workspace and deploy skills."""
+        self.workspaces.prepare(cfg, spec.branch, sandbox=sandbox, extra_args=spec.extra_args)
+
+    def _report_preparation(self) -> None:
+        """Show what workspace preparation did or skipped (workspace_skills.py)."""
+        for note in self.workspaces.take_notes():
+            self.notify(
+                note.message, severity="warning" if note.warning else "information", timeout=8
+            )
+
+    def _print_preparation(self) -> None:
+        """Print preparation notes before a session that takes over the terminal."""
+        for note in self.workspaces.take_notes():
+            print(f"{'warning: ' if note.warning else ''}{note.message}", flush=True)
+
     def _report_queue_errors(self) -> None:
         for name, queue in self.queue.queues.items():
             self._state_problem(
@@ -1725,10 +1755,13 @@ class SandboxTUI(App[None]):
             else:
                 self._launch_interactive(spec, banner)
         except (BusyError, ConfigError, VcsError, ValueError, launchers.LaunchError) as exc:
+            self._report_preparation()
             self.notify(str(exc), severity="error", timeout=8)
         except OSError as exc:
+            self._report_preparation()
             self.notify(f"could not start project-sandbox: {exc}", severity="error", timeout=8)
         else:
+            self._report_preparation()
             self._drafts.pop(draft_key, None)
             if not remember_defaults:
                 self.call_later(self.refresh_data)
@@ -1785,6 +1818,7 @@ class SandboxTUI(App[None]):
                     f"\n── sbx-tui: {spec.label()} on {spec.branch} ──\n{shlex.join(job.argv)}\n",
                     flush=True,
                 )
+                self._print_preparation()
                 if banner:  # e.g. what an octopus merge left to resolve; read it first
                     print(banner, flush=True)
                     with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
@@ -2237,9 +2271,8 @@ class SandboxTUI(App[None]):
         if reason := self.jobs.busy_reason(name, self._sessions_now([name])):
             self.notify(reason, severity="warning")
             return
-        path = self._ensure_workspace(name)
-        if path is None:
-            return
+        # Reserving the session creates the workspace and deploys skills (jobs.prepare).
+        path = self._workspace_dir(name)
         try:
             argv = list(command) if command else self._host_argv(name)
             last = LastUsed.load(self.repo)
@@ -2266,6 +2299,7 @@ class SandboxTUI(App[None]):
                     raise
                 self._remember_host_command(command)
                 self._record_run(job)
+                self._report_preparation()
                 self.notify(
                     f"{name}: host agent ({Path(argv[0]).name}) {launch.message}", timeout=8
                 )
@@ -2279,6 +2313,7 @@ class SandboxTUI(App[None]):
             ):
                 self._record_run(job)
                 print(f"\n── sbx-tui: host agent on {name} ──\n{shlex.join(argv)}\n", flush=True)
+                self._print_preparation()
                 with terminal.preserved():
                     try:
                         proc = subprocess.Popen(argv, cwd=path)
@@ -2301,7 +2336,11 @@ class SandboxTUI(App[None]):
             self.call_later(self.refresh_data)
         except BusyError as exc:
             self.notify(str(exc), severity="warning")
+        except PreparationError as exc:
+            self._report_preparation()
+            self.notify(str(exc), severity="error", timeout=10)
         except (OSError, ValueError, launchers.LaunchError) as exc:
+            self._report_preparation()  # what was deployed before the launch failed
             self.notify(f"{name}: could not start host agent: {exc}", severity="error")
 
     def _workspace_dir(self, name: str) -> Path:
@@ -2311,33 +2350,39 @@ class SandboxTUI(App[None]):
             return self.repo
         return workspace_path(self.repo, name, self.worktree_dir)
 
-    def _ensure_workspace(self, name: str) -> Path | None:
+    def _ensure_workspace(self, name: str, *, deploy: bool = False) -> Path | None:
         """The row's workspace directory, created (``jj workspace add``) if missing.
 
+        ``deploy``: also deploy workspace skills, if the workspace is idle.
         None, after a notice, when it cannot be created now."""
         path = self._workspace_dir(name)
-        if path.exists():
+        if path == self.repo or (path.exists() and not deploy):
             return path
         try:
             # Under the launch lock, with sessions read again: no session may
             # start (and create the workspace itself) between the check and jj.
             with self.jobs._locked():
                 self.jobs.load()
-                if path.exists():  # created meanwhile
-                    return path
-                if self.jobs._busy_reason(name, self._sessions_now([name])):
+                busy = self.jobs._busy_reason(name, self._sessions_now([name]))
+                if busy and path.exists():
+                    return path  # in use: leave its files alone
+                if busy:
                     # Its session is about to create the workspace: never race it.
                     self.notify(f"{name}: workspace not created yet; try again", severity="warning")
                     return None
-                self.backend.add_workspace(name, path)
-        except (VcsError, OSError) as exc:
+                self.workspaces.prepare(self.cfg, name, sandbox=False, deploy=deploy)
+        except PreparationError as exc:
+            self.notify(str(exc), severity="error", timeout=10)
+            return path if path.is_dir() else None
+        except OSError as exc:
             self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
             return None
-        self.notify(f"{name}: created workspace {path}")
+        finally:
+            self._report_preparation()
         return path
 
     def _open_editor(self, name: str) -> None:
-        path = self._ensure_workspace(name)
+        path = self._ensure_workspace(name, deploy=True)
         if path is None:
             return
         if self.cfg.ui.editor_command:

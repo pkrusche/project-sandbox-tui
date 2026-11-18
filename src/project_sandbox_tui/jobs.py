@@ -56,6 +56,11 @@ class BusyError(RuntimeError):
     """The branch already has an agent session."""
 
 
+# Prepares a launch's workspace (``workspace_skills.WorkspacePreparer``):
+# (config, spec, sandbox start?) -> None, raising to stop the launch.
+Preparer = Callable[[Config, LaunchSpec, bool], None]
+
+
 def branch_slug(branch: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in branch)
     return f"{safe}-{hashlib.sha256(branch.encode()).hexdigest()[:6]}"
@@ -198,6 +203,8 @@ class JobManager:
         self._stop_stage: dict[str, int] = {}  # cancel steps taken so far
         self._stop_last: dict[str, float] = {}  # when the last one was sent
         self._missed: dict[tuple[str, str], int] = {}  # external runs: refreshes without a session
+        # Called under the lock after the busy check, before a launch starts.
+        self.prepare: Preparer | None = None
         self.load()
 
     # ------------------------------------------------------------ persistence
@@ -375,10 +382,11 @@ class JobManager:
             if reason:
                 raise BusyError(reason)
             commit = base_commit() if base_commit else ""
-            self._stop_stage.pop(spec.branch, None)
-            self._stop_last.pop(spec.branch, None)
             paths = self.new_run_paths(spec.branch)
             argv = build_argv(self.cfg, self.repo, spec, paths)
+            self._prepare(spec, sandbox=True)
+            self._stop_stage.pop(spec.branch, None)
+            self._stop_last.pop(spec.branch, None)
             private_dir(paths.log.parent)
             try:
                 with paths.stdout.open("wb") as out:
@@ -455,6 +463,7 @@ class JobManager:
                 notified=True,  # nothing to notify: the user is watching
                 host=host,
             )
+            self._prepare(spec, sandbox=not host)
             self._archive(spec.branch)
             self.jobs[spec.branch] = job
             self.save(job)
@@ -472,6 +481,11 @@ class JobManager:
                     job.container_name = job.container_name or current.container_name
                     job.runtime = job.runtime or current.runtime
                     self.save(job)
+
+    def _prepare(self, spec: LaunchSpec, *, sandbox: bool) -> None:
+        """Create the workspace and deploy skills; with the lock held, after the busy check."""
+        if self.prepare is not None:
+            self.prepare(self.cfg, spec, sandbox)
 
     def _read_record(self, branch: str) -> JobRecord | None:
         try:
@@ -499,6 +513,7 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions or {})
             if reason:
                 raise BusyError(reason)
+            self._prepare(spec, sandbox=not host)
             job = JobRecord(
                 branch=spec.branch,
                 spec=spec,

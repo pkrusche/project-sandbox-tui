@@ -73,6 +73,9 @@ def _jj_workspaces(repo: Path, wd: Path | None, bookmarks: set[str]) -> list[_Fo
     except VcsError:  # jj without the ``root`` template keyword
         out = _run([*base, "-T", f'{name} ++ "\\x00\\x00" ++ {current} ++ "\\n"'], repo)
     store = _jj_store(repo)
+    # Workspaces are registered under their directory's name (``feature-x-1a2b3c``
+    # for ``feature/x``); older ones under the bookmark name.
+    by_path = {workspace_path(repo, b, wd).resolve(): b for b in bookmarks}
     found: list[_Found] = []
     for line in out.splitlines():
         name, root, is_current = (line.split("\0") + ["", ""])[:3]
@@ -87,7 +90,7 @@ def _jj_workspaces(repo: Path, wd: Path | None, bookmarks: set[str]) -> list[_Fo
         elif path.resolve() == repo or store.is_relative_to(path.resolve()):
             problem = "holds the repository itself"
         protected = problem == "holds the repository itself"
-        branch = name if name in bookmarks else ""
+        branch = name if name in bookmarks else by_path.get(path.resolve(), "")
         found.append(_Found(name, path, problem, missing, branch, protected=protected))
     return found
 

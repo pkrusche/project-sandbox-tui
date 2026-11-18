@@ -83,7 +83,7 @@ to review or the comparison is unavailable. Counts follow the saved marks from
 | `=` | [Review the diff](#diff-review) against main, or between two selected revisions |
 | `f` | Fast-forward main to highlighted bookmark or `@` (`u` undoes) |
 | `@` | Start a working-copy change on highlighted bookmark |
-| `o` | Open workspace in editor, first creating a missing one on the bookmark (`jj workspace add`); asks before opening more than three |
+| `o` | Open workspace in editor, first creating a missing one on the bookmark (`jj workspace add`) and, while idle, deploying [workspace skills](configuration.md#workspace-skills); asks before opening more than three |
 | `W` | [Clean up workspaces](cleanup.md) |
 | `R` · `ctrl+l` | Refresh list · reload configuration |
 | `H` · `?` · `q` | Toggle cheat-sheet · full help · quit (background runs and shell tasks continue; asks first while agent sessions are running) |

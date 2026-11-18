@@ -46,14 +46,17 @@ The opt-in smoke test launches the real `project-sandbox` **bash** agent through
 `JobManager`. It checks a successful run, exit code 7, and a timeout (124), plus
 live session matching, duplicate-launch prevention, adoption by a new manager,
 logs and JSON summaries, bookmark capture, notification persistence, and stopped
-containers. It uses no model API or credentials and keeps the firewall enabled.
+containers. It also deploys an ignored skill fixture, reads it and runs its helper from
+`/workspace`, and checks with `jj file list` that the bookmark captures the
+session's change but no skill files.
+It uses no model API or credentials and keeps the firewall enabled.
 Bash produces plain-text logs, so a Markdown transcript is not required.
 
 Install `project-sandbox` ≥ 0.2.2 and jj ≥ 0.46, start Docker, Podman, or Apple
 Containers, then run:
 
 ```sh
-uv tool install project-sandbox==0.3.0  # version used by the manual CI smoke job
+uv tool install project-sandbox==0.4.1  # version used by the manual CI smoke job
 scripts/test.sh -n 0 -v -s tests/test_container_smoke.py \
   --container-smoke --container-runtime docker
 ```
@@ -95,7 +98,7 @@ Downloaded base images and shared build-cache layers are retained.
 In GitHub Actions, manually run **CI** with **container_smoke** enabled to run
 the Docker smoke on Python 3.12. This does not add container builds to normal
 pushes or pull requests. See the upstream
-[bash-agent workflow](https://github.com/pkrusche/project-sandbox/blob/v0.3.0/scripts/e2e-jj-workflow.sh)
+[bash-agent workflow](https://github.com/pkrusche/project-sandbox/blob/v0.4.1/scripts/e2e-jj-workflow.sh)
 for the underlying sandbox behavior.
 
 ## Dependency updates

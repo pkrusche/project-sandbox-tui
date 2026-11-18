@@ -59,7 +59,8 @@ then choose it in either launch form. Select **custom** to adjust settings for a
 
 See [initialization](docs/configuration.md#initialization) for project detection
 and the local `sbx-tui-config` setup skill. Existing config and skill files are
-preserved.
+preserved. Bookmark workspaces get their own ignored copy of the skill, plus any
+[workspace skills](docs/configuration.md#workspace-skills) you configure.
 
 ## Documentation
 
