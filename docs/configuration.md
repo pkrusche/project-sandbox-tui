@@ -35,12 +35,15 @@ Initialization also installs the `sbx-tui-config` agent skill at:
 
 Both copies teach image selection, configuration scopes, commands/actions, and
 validation and trust handling. Ask the agent to use `sbx-tui-config` to configure
-the project; other agents can read either file directly. Only these two skill
-directories are added to the root `.gitignore`; other skills and the project
+the project; other agents can read either file directly. Initialization also
+installs `sbx-run-feedback` alongside it and adds conditional reporting guidance
+to `AGENTS.md`. The configuration and reporting skill directories are added to
+the root `.gitignore`; other skills and the project
 config remain eligible for version control. Existing skill files are preserved.
 To refresh a bundled skill, remove its installed `SKILL.md` and rerun `--init`.
-Ignored skills are local to each checkout/workspace, so run `--init` there too
-when needed.
+Ignored configuration skills are local to each checkout/workspace, so run
+`--init` there too when needed. Reporting skills are additionally deployed at
+launch; see [agent feedback](feedback.md).
 
 ## Editing
 
@@ -352,3 +355,12 @@ atomically. A history, review or prompt file
 that cannot be read is left as it is rather than overwritten; one that does not
 parse is renamed to `<name>.corrupt-<time>` and started afresh. Files written
 by a newer sbx-tui version are not changed.
+
+## Feedback settings
+
+The `[feedback]` section controls reporting, success-only queue progression,
+selected state handoff, and bounded retries/successor actions. Reporting defaults
+to enabled with capability detection; queue behavior is unchanged until a policy
+is configured. See [agent feedback](feedback.md#queue-policies) for all defaults
+and examples. `runs/<run_id>/` in repository state stores each run's reporting
+context, helper, skill, and raw feedback independently of workspace lifetime.

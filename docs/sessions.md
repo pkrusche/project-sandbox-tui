@@ -189,3 +189,11 @@ run survives quitting, and remaining tasks resume when sbx-tui reopens. Inline
 interactive sessions suspend refresh until control returns to the TUI. Dry-run
 mode previews submitted prompts without consuming saved queue entries or changing
 their order or pause state.
+
+## Agent-reported outcomes
+
+Runs can publish structured progress and final success, failure, or blocked
+outcomes. Process exit status remains separate. Task details retain the report
+and state, and opt-in feedback policies can gate or branch the queue.
+See [agent feedback](feedback.md) for reporting, interactive completion rules,
+and bounded retries.

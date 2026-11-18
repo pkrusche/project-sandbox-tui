@@ -178,3 +178,12 @@ dispatch persistently, including across TUI instances, until explicitly resumed.
   [manual recovery](sessions.md#interactive-sessions).
 - Working-copy dirty markers, prompt files, remote bookmarks and switching
   repositories are not implemented.
+
+## Agent feedback
+
+`feedback.py` defines the strict run-report protocol and standalone helper;
+`feedback_transport.py` stages per-run resources and uses existing sandbox bind
+mounts. `jobs.py` collects and freezes reports separately from exit status.
+Queue decisions commit successor IDs before dispatch using the existing queue
+transaction journal. No queue/graph lock is acquired while collecting reports
+under the jobs lock. See [agent feedback](feedback.md) for protocol and policies.

@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Structured per-run agent feedback: atomic JSON progress/outcome reports, a
+  standalone `sbx-report` helper, and a bundled reporting skill deployed through
+  existing sandbox mounts and into host workspaces. Reports survive workspace
+  deletion and remain distinct from process exit status.
+- Retained feedback in task details and notifications, optional success-only
+  queue progression, selected state handoff, and bounded retries/action routing
+  with durable successor decisions.
+- Reporting guidance in `--init` and read-only feedback diagnostics in `doctor`.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
