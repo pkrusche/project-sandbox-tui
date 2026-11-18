@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import TextArea
+from textual.widgets import DataTable, TextArea
 
 from project_sandbox_tui.history import PromptHistory
 
@@ -39,6 +39,21 @@ def human_age(seconds: float) -> str:
     if seconds < 86400:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
+
+
+def restore_table_view(
+    table: DataTable[Text], scroll_x: float, scroll_y: float, row: int | None
+) -> None:
+    """Restore scrolling after rebuilding a row table with ``clear()``."""
+    if row is not None:
+        # Restore the viewport before Textual reveals the cursor.
+        table.scroll_to(y=scroll_y, animate=False, force=True)
+        table.move_cursor(row=row, animate=False)
+    table.scroll_to(x=scroll_x, animate=False)
+    # The rebuilt table may have a different width once layout settles.
+    table.call_after_refresh(
+        lambda: table.scroll_to(x=min(scroll_x, table.max_scroll_x), animate=False, force=True)
+    )
 
 
 class CycleField(Widget, can_focus=True):

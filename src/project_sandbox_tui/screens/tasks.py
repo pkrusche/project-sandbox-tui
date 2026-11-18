@@ -16,7 +16,7 @@ from project_sandbox_tui.jobs import _parse_ts
 from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.tasks import TaskManager, TaskRecord
-from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys, human_age
+from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys, human_age, restore_table_view
 
 HINT = "q back · j/k ^d/^u gg/G move · l/enter output · P details · x cancel (finished: forget)"
 
@@ -94,6 +94,15 @@ class TasksScreen(Screen[None]):
     def on_key(self, event: events.Key) -> None:
         self._prefix.other_key(event.key)
 
+    def on_resize(self, event: events.Resize) -> None:
+        self.call_after_refresh(self._reveal_selection)
+
+    def _reveal_selection(self) -> None:
+        table = self.table
+        if table.row_count:
+            table.scroll_to(x=table.scroll_x, animate=False, force=True)
+            table.move_cursor(row=table.cursor_row, animate=False)
+
     # ------------------------------------------------------------ rendering
 
     def _cells(self, task: TaskRecord) -> tuple[Text, ...]:
@@ -118,15 +127,20 @@ class TasksScreen(Screen[None]):
         if rows == self._shown:
             return
         table = self.table
+        scroll_x, scroll_y = table.scroll_target_x, table.scroll_target_y
         selected = self._select or self.selected_id()
         self._select = None
+        # DataTable retains column widths across clear(). Let it measure the new rows.
+        for column in table.columns.values():
+            column.content_width = column.label.cell_len
         table.clear()
         for key, cells in rows:
             table.add_row(*cells, key=key)
         self._shown = rows
         keys = [key for key, _cells in rows]
-        if selected in keys:
-            table.move_cursor(row=keys.index(selected), animate=False)
+        restore_table_view(
+            table, scroll_x, scroll_y, keys.index(selected) if selected in keys else None
+        )
 
     def _title(self) -> None:
         tasks = list(self.tasks.tasks.values())

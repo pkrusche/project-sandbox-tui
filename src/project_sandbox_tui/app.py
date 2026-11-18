@@ -110,6 +110,7 @@ from project_sandbox_tui.widgets import (
     PrefixKeys,
     human_age,
     modifier_key,
+    restore_table_view,
 )
 from project_sandbox_tui.workspace_skills import (
     PreparationError,
@@ -916,22 +917,11 @@ class SandboxTUI(App[None]):
         table.clear()
         for row in rows:
             table.add_row(*row.cells(row.branch.name in chosen), key=row.branch.name)
-        if selected is not None:
-            names = [r.branch.name for r in rows]
-            if selected in names:
-                # clear() resets both axes. Restore the viewport before Textual
-                # reveals the cursor, so a visible row keeps its place on screen.
-                table.scroll_to(y=scroll_y, animate=False, force=True)
-                table.move_cursor(row=names.index(selected), animate=False)
-                if selected == self._pending_select:
-                    self._pending_select = None
-        # clear() resets scrolling. Restore now so consecutive redraws retain the
-        # offset, then clamp it after layout/cursor scrolling settles.
-        table.scroll_to(x=scroll_x, animate=False)
-        table.call_after_refresh(
-            # Clamped: a table that now fits keeps no stale target to jump back to.
-            lambda: table.scroll_to(x=min(scroll_x, table.max_scroll_x), animate=False, force=True)
-        )
+        names = [r.branch.name for r in rows]
+        selected_row = names.index(selected) if selected in names else None
+        restore_table_view(table, scroll_x, scroll_y, selected_row)
+        if selected_row is not None and selected == self._pending_select:
+            self._pending_select = None
         self._render_header(chosen)
 
     def _clamp_table_scroll(self) -> None:

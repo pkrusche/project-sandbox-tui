@@ -23,7 +23,8 @@ from pathlib import Path
 import pytest
 
 from project_sandbox_tui import config
-from tests.conftest import jj
+from project_sandbox_tui.tasks import TaskManager
+from tests.conftest import jj, wait_for
 
 pty = pytest.importorskip("pty")
 
@@ -211,6 +212,28 @@ def test_tui_responds_to_pty_resize(repo: Path) -> None:
         tui.resize(110, 30)
         assert tui.wait_for(b"run or queue"), "cheat-sheet did not return after resize"
         assert_responsive(tui)
+    finally:
+        tui.close()
+
+
+def test_tasks_and_log_repaint_after_pty_reattach(repo: Path) -> None:
+    tasks = TaskManager(config.repo_state_dir(repo))
+    script = "printf 'resize-%s\\n' output"
+    task = tasks.start("@", f"&!{script}", script, repo, os.environ)
+    wait_for(lambda: task in tasks.refresh())
+    assert task.status == "completed" and tasks.mark_notified(task)
+    tui = start_tui(repo, "true")
+    try:
+        for key, marker in ((b"T", b"l/enter output"), (b"l", b"resize-output")):
+            tui.buf.clear()
+            tui.send(key)
+            assert tui.wait_for(marker), f"view did not display {marker!r}"
+            tui.buf.clear()
+            tui.proc.send_signal(signal.SIGWINCH)
+            assert tui.wait_for(marker), f"missing repaint for {marker!r} at unchanged size"
+            tui.buf.clear()
+            tui.send(b"\x1b[I")
+            assert tui.wait_for(marker), f"missing repaint for {marker!r} on focus-in"
     finally:
         tui.close()
 

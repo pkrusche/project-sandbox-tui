@@ -736,3 +736,69 @@ def test_tasks_view(repo: Path, fake_cfg: Callable[..., Config]) -> None:
         assert app.screen is app.main
 
     run_app(repo, fake_cfg(), scenario)
+
+
+def test_task_table_keeps_viewport_on_refresh_and_resize(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.screens.tasks import TasksScreen
+    from project_sandbox_tui.tasks import TaskRecord
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        await app._refreshed.wait()
+        tasks = app.tasks.tasks
+        for i in range(24):
+            name = f"task-{i:02}"
+            command = "echo " + "x" * (140 if i == 0 else 75)
+            tasks[name] = TaskRecord(
+                name,
+                name,
+                f"&!{command}",
+                command,
+                str(repo),
+                1,
+                f"2026-01-01T00:00:{23 - i:02}+00:00",
+                "",
+                "",
+                status="completed",
+            )
+
+        await pilot.press("T")
+        screen = await wait_for_screen(app, pilot, TasksScreen)
+        table = screen.table
+        await pilot.press("G", "k", "k")
+        selected = screen.selected_id()
+        assert selected is not None
+        offset = table.scroll_y
+        assert offset > 0
+        table.scroll_to(x=8, animate=False)
+        tasks[selected].status = "failed"
+        screen._render_rows()
+        await pilot.pause()
+        assert screen.selected_id() == selected
+        assert table.scroll_y == offset
+        assert table.scroll_x == table.scroll_target_x == 8
+
+        for size in ((65, 12), (80, 12), (80, 7)):
+            await pilot.resize_terminal(*size)
+            await pilot.pause()
+            assert screen.selected_id() == selected
+            assert table.scroll_x == table.scroll_target_x == 8
+            if size[1] == 12:
+                assert table.scroll_y == offset
+            line = table.cursor_row - table.scroll_offset.y + 1
+            assert 1 <= line < table.scrollable_content_region.height
+            assert selected in table.render_line(line).text
+            await pilot.press("k", "j")
+
+        offset = table.max_scroll_x
+        table.scroll_to(x=offset, animate=False)
+        del tasks["task-00"]
+        screen._render_rows()
+        await pilot.pause()
+        assert screen.selected_id() == selected
+        assert 0 < table.max_scroll_x < offset
+        assert table.scroll_x == table.scroll_target_x == table.max_scroll_x
+
+    run_app(repo, fake_cfg(), scenario, size=(80, 12))

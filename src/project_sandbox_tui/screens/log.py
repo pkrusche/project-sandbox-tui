@@ -102,6 +102,7 @@ class LogScreen(Screen[None]):
             )
         self._pos = 0
         self._follow = True
+        self._restoring_view = False
         self._prefix = PrefixKeys()
         self._missing = False
         self._file_id: tuple[int, int] | None = None
@@ -121,6 +122,26 @@ class LogScreen(Screen[None]):
     def on_key(self, event: events.Key) -> None:
         self._prefix.other_key(event.key)
 
+    def on_resize(self, event: events.Resize) -> None:
+        self.call_after_refresh(self._restore_view)
+
+    def _restore_view(self) -> None:
+        log = self.query_one(LiveLog)
+        self._restoring_view = True
+        try:
+            if self._follow:
+                log.scroll_end(animate=False, immediate=True, x_axis=False)
+            elif log.cursor_row is not None:
+                log.scroll_to_region(
+                    Region(log.scroll_offset.x, log.cursor_row, 1, 1),
+                    x_axis=False,
+                    animate=False,
+                    immediate=True,
+                )
+        finally:
+            self._restoring_view = False
+        self._sync_cursor(log)
+
     def on_click(self, event: events.Click) -> None:
         log = self.query_one(LiveLog)
         if log.cursor_row is None or event.widget is not log:
@@ -135,10 +156,13 @@ class LogScreen(Screen[None]):
             if event.chain == 2:
                 self.action_inspect_record()
 
-    def _scrolled(self, _old: float, new: float) -> None:
+    def _scrolled(self, old: float, new: float) -> None:
         """Like ``less +F``: scrolling away from the end pauses following, any
         scrolling (keys, mouse) back to the end resumes it."""
         log = self.query_one(LiveLog)
+        # A resize can clamp the viewport or move it to keep the cursor visible.
+        if self._restoring_view or old > log.max_scroll_y:
+            return
         follow = new >= log.max_scroll_y
         if follow != self._follow:
             self._follow = follow

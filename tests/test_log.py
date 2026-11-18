@@ -10,7 +10,7 @@ from textual.widgets import Log, Static
 from project_sandbox_tui.jobs import JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.dialogs import MessageScreen
-from project_sandbox_tui.screens.log import INITIAL_TAIL_BYTES, LogScreen
+from project_sandbox_tui.screens.log import INITIAL_TAIL_BYTES, LiveLog, LogScreen
 from tests.test_app import wait_until
 
 
@@ -137,6 +137,55 @@ def test_log_follow_tracks_scroll_position(tmp_path: Path) -> None:
             await pilot.press("j", "j", "ctrl+f")
             await pilot.pause()
             assert log.scroll_y > 2 and not screen._follow
+
+    asyncio.run(scenario())
+
+
+def test_log_resize_keeps_follow_and_paused_view(tmp_path: Path) -> None:
+    path = tmp_path / "agent.log"
+    path.write_text("\n".join(json.dumps({"row": i, "body": "x" * 100}) for i in range(50)))
+    job = JobRecord("main", LaunchSpec("main", "claude"), 0, "", log_path=str(path))
+
+    async def scenario() -> None:
+        app: App[None] = App()
+        async with app.run_test(size=(100, 20)) as pilot:
+            screen = LogScreen(job)
+            await app.push_screen(screen)
+            log = screen.query_one(LiveLog)
+            await wait_until(pilot, lambda: log.max_scroll_y > 0 and log.is_vertical_scroll_end)
+            log.scroll_to(x=8, animate=False)
+
+            await pilot.resize_terminal(80, 12)
+            await pilot.pause()
+            assert screen._follow and log.is_vertical_scroll_end
+            assert log.scroll_x == 8
+            assert log.cursor_row == log.line_count - 1
+
+            await pilot.press("f")
+            await pilot.resize_terminal(100, 20)
+            await pilot.pause()
+            assert not screen._follow and log.is_vertical_scroll_end
+
+            await pilot.press("ctrl+b")
+            await pilot.pause()
+            top = log.scroll_offset.y
+            row = log.cursor_row
+            assert row is not None and top < row < log.line_count - 1
+            await pilot.resize_terminal(80, 20)
+            await pilot.pause()
+            assert log.scroll_offset.y == top
+            assert log.cursor_row == row
+
+            await pilot.resize_terminal(80, 12)
+            await pilot.pause()
+            assert not screen._follow
+            assert log.cursor_row == row
+            line = row - log.scroll_offset.y
+            assert 0 <= line < log.scrollable_content_region.height
+            assert log.render_line(line).text.startswith(f"{row},")
+            await pilot.press("enter")
+            assert isinstance(app.screen, MessageScreen)
+            assert json.loads(app.screen.body)["row"] == row
 
     asyncio.run(scenario())
 
