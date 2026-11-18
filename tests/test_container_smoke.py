@@ -20,15 +20,17 @@ from pathlib import Path
 import pytest
 
 from project_sandbox_tui import doctor, feedback
-from project_sandbox_tui.config import Config
+from project_sandbox_tui.config import Config, WorkspaceSkill
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec, read_sessions, running_by_branch, runtime_cli
-from project_sandbox_tui.vcs import workspace_path
+from project_sandbox_tui.vcs import JjBackend, workspace_path
+from project_sandbox_tui.workspace_skills import WorkspacePreparer
 from tests.conftest import run
 
 pytestmark = pytest.mark.container_smoke
 
 BRANCH = "smoke/bash"
+SKILL = ".agents/skills/smoke-skill"  # ignored by BRANCH's .gitignore
 BUILD_DEADLINE = 20 * 60  # first run downloads and builds the sandbox image
 
 
@@ -130,7 +132,7 @@ def _cleanup(manager: JobManager, cli: str, image: str) -> None:
 
 
 def test_real_bash_container_lifecycle(
-    jj_repo: Path, pytestconfig: pytest.Config, monkeypatch: pytest.MonkeyPatch
+    jj_repo: Path, pytestconfig: pytest.Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     cfg = Config()
     cfg.sandbox.command = pytestconfig.getoption("--container-command")
@@ -153,10 +155,30 @@ def test_real_bash_container_lifecycle(
     cfg.sandbox.extra_args = [f"--image-tag={image}"]
     monkeypatch.setenv("JJ_USER", "Container Smoke")
     monkeypatch.setenv("JJ_EMAIL", "smoke@example.invalid")
-    run("jj", "bookmark", "create", BRANCH, "-r", "main", cwd=jj_repo)
     main_before = run("jj", "log", "--no-graph", "-r", "main", "-T", "commit_id", cwd=jj_repo)
+    # The bookmark ignores the skill; a deployed copy is read and run from /workspace.
+    run("jj", "new", "main", cwd=jj_repo)
+    (jj_repo / ".gitignore").write_text(f"/{SKILL}/\n")
+    run("jj", "commit", "-m", "ignore the smoke skill", cwd=jj_repo)
+    run("jj", "bookmark", "create", BRANCH, "-r", "@-", cwd=jj_repo)
+    run("jj", "new", "main", cwd=jj_repo)
+    skill_marker = f"skill-smoke-{uuid.uuid4().hex}"
+    source = tmp_path / "smoke-skill"
+    (source / "bin").mkdir(parents=True)
+    (source / "SKILL.md").write_text(f"---\nname: smoke-skill\n---\n{skill_marker}\n")
+    helper = source / "bin" / "helper.sh"
+    helper.write_text("#!/bin/sh\nprintf 'helper ran\\n'\n")
+    helper.chmod(0o755)
+    cfg.workspace_skills = [WorkspaceSkill(str(source), [SKILL])]
+    cfg.validate()
     workspace = workspace_path(jj_repo, BRANCH, None)
     manager = JobManager(jj_repo, cfg)
+    preparer = WorkspacePreparer(jj_repo, JjBackend(jj_repo))
+
+    def prepare(current: Config, spec: LaunchSpec, sandbox: bool) -> None:  # as the TUI does
+        preparer.prepare(current, spec.branch, sandbox=sandbox, extra_args=spec.extra_args)
+
+    manager.prepare = prepare
     marker = f"bash-smoke-{uuid.uuid4().hex}"
     script = (
         "set -euo pipefail\n"
@@ -166,6 +188,8 @@ def test_real_bash_container_lifecycle(
         "test -f /home/agent/.claude/skills/sbx-run-feedback/SKILL.md\n"
         "if touch /run/sbx-feedback/context.json; then exit 91; fi\n"
         "python3 /run/sbx-feedback/sbx-report update --summary 'smoke running'\n"
+        f"grep -q '{skill_marker}' {SKILL}/SKILL.md\n"
+        f"{SKILL}/bin/helper.sh\n"
         f"printf '%s\\n' '{marker}' | tee smoke-proof.txt\n"
         "while [ ! -f smoke-release ]; do sleep 0.2; done\n"
         "rm smoke-release\n"
@@ -193,10 +217,15 @@ def test_real_bash_container_lifecycle(
         assert marker in Path(success.log_path).read_text(), _diagnostics(success)
         assert success.reported_success, _diagnostics(success)
         assert feedback.read_json(Path(success.feedback_path))["outcome"] == "success"
+        assert "helper ran" in Path(success.log_path).read_text(), _diagnostics(success)
         assert (
             run("jj", "file", "show", "-r", BRANCH, "smoke-proof.txt", cwd=jj_repo).strip()
             == marker
         )
+        # The session change is captured; the deployed skills are not.
+        tracked = run("jj", "file", "list", "-r", BRANCH, cwd=jj_repo).splitlines()
+        assert "smoke-proof.txt" in tracked
+        assert not [path for path in tracked if "/skills/" in path], tracked
         assert not (jj_repo / "smoke-proof.txt").exists()
         assert main_before == run(
             "jj", "log", "--no-graph", "-r", "main", "-T", "commit_id", cwd=jj_repo

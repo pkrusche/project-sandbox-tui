@@ -144,6 +144,7 @@ class Project:
     keep_workspace: bool = True  # --keep-workspace
     default_branch_start: str = ""  # start revision for new bookmarks ("" = main/trunk/@-)
     main_branch: str = ""  # cleanup removes work fully merged into it ("" = main/master/trunk)
+    deploy_config_skill: bool = True  # copy sbx-tui-config into bookmark workspaces on first use
 
 
 @dataclass
@@ -208,6 +209,42 @@ class Action:
         return out
 
 
+# Where workspace skills may be deployed: one directory directly below one of these.
+SKILL_ROOTS: tuple[str, ...] = (".agents/skills", ".claude/skills")
+CONFIG_SKILL_NAME = "sbx-tui-config"  # the bundled skill (``skills/`` in this package)
+CONFIG_SKILL_TARGETS: tuple[str, ...] = tuple(f"{root}/{CONFIG_SKILL_NAME}" for root in SKILL_ROOTS)
+
+
+@dataclass
+class WorkspaceSkill:
+    """``[[workspace_skills]]``: a skill directory copied into bookmark workspaces.
+
+    ``source`` is a host path (``~`` and absolute, or relative to the repository);
+    each target is ``<root>/<name>`` for a root in :data:`SKILL_ROOTS`.
+    """
+
+    source: str = ""
+    targets: list[str] = field(default_factory=list)
+
+
+WORKSPACE_SKILL_KEYS: dict[str, Any] = {"source": "", "targets": []}
+
+
+def validate_skill_target(target: str, where: str) -> None:
+    root, _, name = target.rpartition("/")
+    roots = " or ".join(f"{r}/" for r in SKILL_ROOTS)
+    if root not in SKILL_ROOTS:
+        raise ConfigError(f"{where}: {target!r} must be one directory directly in {roots}")
+    if (
+        not name
+        or name in (".", "..")
+        or "\\" in name
+        or not name.isprintable()
+        or name != name.strip()
+    ):
+        raise ConfigError(f"{where}: {target!r} needs a plain directory name in {root}/")
+
+
 ACTION_KEYS: dict[str, Any] = {"prompt": "", "agent": "", "model": "", "effort": "", "timeout": 0}
 
 # [commands] every configuration starts with; config files can redefine them.
@@ -248,6 +285,7 @@ class Config:
     leader: dict[str, str] = field(default_factory=dict)  # keys after ui.leader -> command line
     actions: dict[str, Action] = field(default_factory=dict)  # :name -> sandbox run per target
     profiles: dict[str, AgentProfile] = field(default_factory=dict)
+    workspace_skills: list[WorkspaceSkill] = field(default_factory=list)  # [[workspace_skills]]
     sources: list[Path] = field(default_factory=list)  # files that were loaded
 
     # ---------------------------------------------------------- helpers
@@ -342,10 +380,27 @@ class Config:
                 )
             if action.timeout is not None and action.timeout < 0:
                 raise ConfigError(f"actions.{name}.timeout must be >= 0")
+        self._validate_workspace_skills()
         try:
             commands.validate(self.commands, self.ui.leader, self.leader, self.actions)
         except commands.CommandError as exc:
             raise ConfigError(str(exc)) from exc
+
+    def _validate_workspace_skills(self) -> None:
+        seen: dict[str, str] = {}
+        if self.project.deploy_config_skill:
+            seen = dict.fromkeys(CONFIG_SKILL_TARGETS, "project.deploy_config_skill")
+        for index, skill in enumerate(self.workspace_skills):
+            where = f"workspace_skills[{index}]"
+            if not skill.source.strip() or "\0" in skill.source:
+                raise ConfigError(f"{where}.source must name a skill directory")
+            if not skill.targets:
+                raise ConfigError(f"{where}.targets must list at least one target directory")
+            for target in skill.targets:
+                validate_skill_target(target, f"{where}.targets")
+                if target in seen:
+                    raise ConfigError(f"{where}.targets: {target!r} is also used by {seen[target]}")
+                seen[target] = where
 
     def has_image_source(self) -> bool:
         p = self.project
@@ -363,6 +418,7 @@ TABLES: dict[str, str] = {
     "commands": 'must be a table of name = "shell command"',
     "leader": 'must be a table of keys = "command line"',
     "actions": "must be a table of [actions.NAME] tables with a prompt",
+    "workspace_skills": "must be an array of [[workspace_skills]] tables with source and targets",
 }
 
 _SECTIONS: dict[str, type[Any]] = {
@@ -486,6 +542,18 @@ def from_dict(data: dict[str, Any]) -> Config:
         raise ConfigError(f"[profiles] {TABLES['profiles']}")
     for name, table in profiles.items():
         cfg.profiles[name] = _build_section(f"profiles.{name}", AgentProfile, table)
+    skills = data.get("workspace_skills", [])
+    if not isinstance(skills, list):
+        raise ConfigError(f"workspace_skills {TABLES['workspace_skills']}")
+    for index, table in enumerate(skills):
+        where = f"workspace_skills[{index}]"
+        if not isinstance(table, dict):
+            raise ConfigError(f"{where} must be a table with source and targets")
+        unknown = sorted(set(table) - set(WORKSPACE_SKILL_KEYS))
+        if unknown:
+            raise ConfigError(f"{where} has unknown key(s): {', '.join(unknown)}")
+        values = {k: _coerce(where, k, v, WORKSPACE_SKILL_KEYS[k]) for k, v in table.items()}
+        cfg.workspace_skills.append(WorkspaceSkill(**values))
     return cfg
 
 
@@ -823,6 +891,7 @@ base_image = "python:3.12-slim"
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new bookmarks
 # main_branch = "main"                 # baseline for diff, fast-forward, @ saves and cleanup
+# deploy_config_skill = true           # copy sbx-tui-config into bookmark workspaces
 
 # [feedback]
 # enabled = true                    # collect structured agent reports when supported
@@ -856,6 +925,10 @@ keep_workspace = true                  # -> --keep-workspace
 # [leader]                             # ui.leader (\\) then these keys run a command line
 # t = "test"                           # "*test" runs it in each selected workspace
 # rv = "review"
+
+# [[workspace_skills]]                 # top level: copied into bookmark workspaces on first use;
+# source = "~/skills/release-review"   # the bookmark's .gitignore must ignore each target
+# targets = [".agents/skills/release-review", ".claude/skills/release-review"]
 """
 
 GLOBAL_TEMPLATE = """\

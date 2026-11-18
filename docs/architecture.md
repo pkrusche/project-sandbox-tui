@@ -18,6 +18,7 @@ require a `.jj/` directory.
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `host_session.py` | External host agent runner: persistent PID and exit status |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
+| `workspace_skills.py` | Workspace creation and skill deployment before launches |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
 | `commands.py` | `:` command parsing (`:!`, `:&`, `:*`, `[actions]`), completion and leader-key mappings |
 | `review.py` | Diff review: repository-wide per-commit and direct-comparison file marks |
@@ -39,7 +40,10 @@ uses that snapshot, without looking up the profile again; per-run extra argument
 follow `sandbox.extra_args`.
 
 1. **Guard:** defer queued background prompts while busy; reject interactive
-   launches into busy workspaces. Project-sandbox records in
+   launches into busy workspaces. Then, still under `jobs.lock`,
+   `JobManager.prepare` creates a missing workspace and deploys
+   [workspace skills](configuration.md#workspace-skills); a configured skill that
+   cannot be deployed stops the launch. Project-sandbox records in
    `$XDG_STATE_HOME/project-sandbox/sessions/` lack branch names; match
    `workspace_path` using its slug rule
    (`/` → `-`, plus sha256[:6]).
@@ -104,10 +108,10 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | Action | Locks | Done under them |
 |---|---|---|
 | Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, graph, queue → jobs, graph | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
-| `i` | jobs, graph | Recheck busy, reserve the session and add the run node |
+| `i` | jobs, graph | Recheck busy, prepare the workspace, reserve the session and add the run node |
 | `r`, `:NAME` actions | queue; queue → jobs, graph | Save the prompt, launch when idle and add the run node. A new bookmark typed into the form is recorded first, under graph |
 | `L` edits / pause / resume | queue | Reload and atomically save pending tasks, history, marks and pause state |
-| `I` | jobs, graph | Create a missing workspace; recheck busy and reserve the target before launching the host agent; add the run node |
+| `I` | jobs, graph | Recheck busy, create a missing workspace and deploy skills, reserve the target before launching the host agent; add the run node |
 | `r` / `i` with bookmarks selected | history → (jobs, graph); then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark |
 | `n` | history → graph | Create with jj, then record the creation and its undo entry |
 | `dd` | history → graph → jobs | Busy check, delete, undo entry |
@@ -117,7 +121,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | `e` | history | Describe, only if the target is still the commit that was edited |
 | `:*` | jobs, tasks | Create a missing workspace unless a session is starting; start the task |
 | `:&` | jobs, tasks | Start one task in the repository under `@`; warn if a session is running there |
-| `o` | jobs | Create a missing workspace unless a session is starting |
+| `o` | jobs | Create a missing workspace unless a session is starting; deploy skills if idle |
 | `x` | tasks, jobs, graph | Signal tasks; signal or forget the run; record a forgotten run's outcome |
 | `W` | tasks; removal: history → graph → jobs → tasks | List without the launch guard; recheck each chosen workspace right before deleting it |
 | `D` in the cleanup list | jobs → tasks | Recheck, then force-delete |

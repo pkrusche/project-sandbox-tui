@@ -41,9 +41,84 @@ to `AGENTS.md`. The configuration and reporting skill directories are added to
 the root `.gitignore`; other skills and the project
 config remain eligible for version control. Existing skill files are preserved.
 To refresh a bundled skill, remove its installed `SKILL.md` and rerun `--init`.
-Ignored configuration skills are local to each checkout/workspace, so run
-`--init` there too when needed. Reporting skills are additionally deployed at
-launch; see [agent feedback](feedback.md).
+Reporting guidance is delivered at launch as described in [agent feedback](feedback.md).
+Bookmark workspaces get their own configuration skill automatically; see
+[workspace skills](#workspace-skills).
+
+## Workspace skills
+
+Bookmark workspaces are separate checkouts, so ignored files such as local
+skills are not in them. sbx-tui copies skill directories into a bookmark's
+workspace on first use: before `I` / `:host`, `i`, `r` and agent actions start
+(queued prompts when dispatched), and before `o` opens an idle workspace. Each
+workspace gets its own complete copy, so an agent can read supporting files and
+run scripts with the same relative paths as in the source; a sandbox sees them
+under `/workspace`. `@` uses the checkout's own files. `:*` tasks do not deploy.
+
+**Bundled skill.** `sbx-tui-config` (see [initialization](#initialization)) is
+copied to `.agents/skills/sbx-tui-config/` and `.claude/skills/sbx-tui-config/`,
+including in projects that never ran `--init`. Where the bookmark's in-tree
+`.gitignore` files do not already ignore these directories, sbx-tui appends
+`/.agents/skills/sbx-tui-config/` and `/.claude/skills/sbx-tui-config/` once to
+the repository's local Git excludes (`info/exclude` in the directory printed by
+`jj git root`). These apply to every workspace of the repository and keep the
+copies out of jj snapshots without changing a tracked file. A target that is
+tracked, re-included by an in-tree `!` rule, or otherwise unsafe is left alone
+and reported; the launch continues. Set `project.deploy_config_skill = false`
+to stop future copies; existing copies and exclude rules stay, so they cannot
+become eligible for tracking.
+
+**Additional skills.** Add top-level `[[workspace_skills]]` tables to the global
+config or the trusted project config (review with `sbx-tui --trust-config`):
+
+```toml
+[[workspace_skills]]
+source = "~/private-skills/release-review"
+targets = [".agents/skills/release-review", ".claude/skills/release-review"]
+```
+
+`source` is one skill directory with a regular `SKILL.md` and optional
+supporting files; `~` and absolute paths are host paths, relative paths start
+at the checkout that opened the TUI. Each target is one directory directly in
+`.agents/skills/` or `.claude/skills/`, and may appear only once, including the
+bundled targets while `deploy_config_skill` is enabled. A project
+`workspace_skills` list replaces the global one, like other arrays.
+
+The bookmark itself must ignore each full target directory. For the example,
+add these rules to the repository's `.gitignore` and include that change in the
+revisions that need the skill:
+
+```gitignore
+/.agents/skills/release-review/
+/.claude/skills/release-review/
+```
+
+Ignore rules are evaluated in the destination workspace with Git's
+`check-ignore --no-index` against disposable metadata, so only in-tree
+`.gitignore` files count: global excludes and `info/exclude` exist only on the
+host. When the sandbox sends the workspace as an image build context, its
+`.dockerignore` also needs matching exclusions to keep the copies out of the
+image.
+
+**Rules.** Before copying, sbx-tui rechecks under the launch lock that the
+workspace is idle, then validates every source and target. Symlinks and special
+files in a skill, symlinked destination directories, tracked entries at or below
+a target, and an existing target without a regular `SKILL.md` are errors that
+name the bookmark and path. Each skill is staged in the workspace's `.jj`
+directory and moved into place with one rename, keeping executable bits. A
+failure in a configured skill stops the launch (a queued prompt pauses its
+queue); fix it and retry. Directories that were published stay complete and are
+reused. Extra arguments that choose the workspace (`--branch`, `--worktree-dir`)
+are refused for configured skills; set `project.worktree_dir` instead. Dry runs
+and the launch form preview list the planned destinations without creating a
+workspace or copying.
+
+Copies are made once. An existing valid copy, including local edits, is kept; to
+refresh it, remove that skill directory while the workspace is idle and reopen
+or relaunch. Removing a `[[workspace_skills]]` entry stops future copies.
+[Workspace cleanup](cleanup.md) treats copies like other ignored files, and a
+recreated workspace gets fresh copies. A failed preparation can leave a newly
+created workspace in place for inspection and retry.
 
 ## Editing
 
@@ -215,6 +290,7 @@ worktree_dir = ""                 # default: sibling <repo>-workspaces
 keep_workspace = true             # reuse the workspace across runs
 default_branch_start = ""         # new bookmarks: auto main/master/trunk, else @- (or @ with no bookmarks)
 main_branch = ""                  # main for diff, fast-forward, @ saves and cleanup; auto main/master/trunk
+deploy_config_skill = true        # copy sbx-tui-config into bookmark workspaces
 
 [ui]
 notify_command = ""     # "" = platform default; {title} {message}
@@ -245,7 +321,14 @@ codex = ["gpt-5.5"]
 [prompts]               # templates and placeholders: see merging.md
 # octopus_merge = "…"
 # octopus_rebase = "…"
+
+[[workspace_skills]]    # top level; see "Workspace skills"
+source = "~/private-skills/release-review"
+targets = [".agents/skills/release-review", ".claude/skills/release-review"]
 ```
+
+`[[workspace_skills]]` is edited in the TOML files; `config list` shows the
+effective entries as `workspace_skills[N].source` and `.targets`.
 
 Command placeholders must occupy a whole argument, e.g. `code {path}` or
 `notifier --title {title}`. Embedding placeholders inside arguments or shell

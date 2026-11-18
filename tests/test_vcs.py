@@ -318,7 +318,11 @@ def test_add_workspace_on_bookmark(repo: Path, name: str) -> None:
     path = vcs.workspace_path(repo, name, None)
     backend.add_workspace(name, path)
     assert (path / "b.txt").exists()  # feature/x's file
-    assert name in jj(repo, "workspace", "list", "-T", 'stringify(name) ++ "\\n"').splitlines()
+    assert not (path / ".git").exists()  # no Git worktree, even in a colocated repository
+    # Registered under the directory name, as project-sandbox reuses and removes it.
+    names = jj(repo, "workspace", "list", "-T", 'stringify(name) ++ "\\n"').splitlines()
+    assert path.name in names
+    assert backend.workspace_names() == {path.resolve(): path.name, repo.resolve(): "default"}
     parent = jj(path, "log", "--no-graph", "-r", "@-", "-T", "commit_id")
     assert parent == jj(repo, "log", "--no-graph", "-r", vcs.revset_symbol(name), "-T", "commit_id")
     with pytest.raises(vcs.VcsError):
@@ -660,7 +664,7 @@ def test_move_working_copy_refuses_commit_held_by_workspace(repo: Path) -> None:
     old = jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id")
     with pytest.raises(vcs.HeldByWorkspaceError) as caught:
         backend.move_working_copy_to("feature/x")
-    assert caught.value.workspaces == [("feature/x", path)]
+    assert caught.value.workspaces == [(path.name, path)]
     assert jj(repo, "log", "--no-graph", "-r", "@", "-T", "commit_id") == old
     assert not any(b.name.startswith("saved/") for b in backend.list_branches())
 

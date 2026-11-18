@@ -58,6 +58,11 @@ class BusyError(RuntimeError):
     """The branch already has an agent session."""
 
 
+# Prepares a launch's workspace (``workspace_skills.WorkspacePreparer``):
+# (config, spec, sandbox start?) -> None, raising to stop the launch.
+Preparer = Callable[[Config, LaunchSpec, bool], None]
+
+
 def branch_slug(branch: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in branch)
     return f"{safe}-{hashlib.sha256(branch.encode()).hexdigest()[:6]}"
@@ -257,6 +262,8 @@ class JobManager:
         self._feedback_supported: bool | None = None
         self._feedback_command: tuple[str, ...] = ()
         self._missed: dict[tuple[str, str], int] = {}  # external runs: refreshes without a session
+        # Called under the lock after the busy check, before a launch starts.
+        self.prepare: Preparer | None = None
         self.load()
 
     # ------------------------------------------------------------ persistence
@@ -525,12 +532,13 @@ class JobManager:
             if reason:
                 raise BusyError(reason)
             commit = base_commit() if base_commit else ""
-            self._stop_stage.pop(spec.branch, None)
-            self._stop_last.pop(spec.branch, None)
             paths = self.new_run_paths(spec.branch)
             build_argv(self.cfg, self.repo, spec, paths)  # validate before staging resources
+            self._prepare(spec, sandbox=True)
             run_id, feedback_dir = self._prepare_feedback(spec, queue_id, previous_state)
             argv = build_argv(self.cfg, self.repo, spec, paths, feedback_dir)
+            self._stop_stage.pop(spec.branch, None)
+            self._stop_last.pop(spec.branch, None)
             private_dir(paths.log.parent)
             try:
                 with paths.stdout.open("wb") as out:
@@ -603,6 +611,7 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions)
             if reason:
                 raise BusyError(reason)
+            self._prepare(spec, sandbox=not host)
             run_id, feedback_dir = self._prepare_feedback(spec, host=host)
             launch_argv = (
                 argv
@@ -639,6 +648,11 @@ class JobManager:
                     self._collect_feedback(job, final=True)
                     self.save(job)
 
+    def _prepare(self, spec: LaunchSpec, *, sandbox: bool) -> None:
+        """Create the workspace and deploy skills; with the lock held, after the busy check."""
+        if self.prepare is not None:
+            self.prepare(self.cfg, spec, sandbox)
+
     def _read_record(self, branch: str) -> JobRecord | None:
         try:
             return JobRecord.from_dict(json.loads(self._record_path(branch).read_text("utf-8")))
@@ -665,6 +679,7 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions or {})
             if reason:
                 raise BusyError(reason)
+            self._prepare(spec, sandbox=not host)
             run_id, feedback_dir = self._prepare_feedback(spec, host=host)
             paths = self.new_run_paths(spec.branch) if host or feedback_dir else None
             if paths:

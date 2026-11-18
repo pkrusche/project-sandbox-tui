@@ -115,6 +115,11 @@ def format_value(value: Any) -> str:
 def flatten(data: dict[str, Any]) -> list[tuple[str, Any]]:
     out = []
     for section, table in data.items():
+        if isinstance(table, list):  # [[workspace_skills]]
+            for index, entry in enumerate(table):
+                if isinstance(entry, dict):
+                    out += [(f"{section}[{index}].{k}", v) for k, v in entry.items()]
+            continue
         if not isinstance(table, dict):
             continue
         for name, value in table.items():
@@ -127,12 +132,13 @@ def flatten(data: dict[str, Any]) -> list[tuple[str, Any]]:
 
 def effective(cfg: Config) -> dict[str, Any]:
     """The merged configuration as ``{section: {key: value}}``."""
-    data = {name: dataclasses.asdict(getattr(cfg, name)) for name in _SECTIONS}
+    data: dict[str, Any] = {name: dataclasses.asdict(getattr(cfg, name)) for name in _SECTIONS}
     data["models"] = dict(cfg.models)
     data["commands"] = dict(cfg.commands)
     data["leader"] = dict(cfg.leader)
     data["actions"] = {name: action.to_dict() for name, action in cfg.actions.items()}
     data["profiles"] = {name: dataclasses.asdict(profile) for name, profile in cfg.profiles.items()}
+    data["workspace_skills"] = [dataclasses.asdict(skill) for skill in cfg.workspace_skills]
     return data
 
 
