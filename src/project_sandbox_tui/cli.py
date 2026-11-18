@@ -31,8 +31,9 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--init",
         action="store_true",
-        help="detect the project type and write missing config templates, install a "
-        "gitignored configuration skill, download the model list if missing, then exit",
+        help="detect the project type and write missing config templates, install "
+        "gitignored agent skills and feedback guidance, download the model list "
+        "if missing, then exit",
     )
     p.add_argument(
         "--update-models",
@@ -172,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
                 path = repo / directory / "SKILL.md"
                 written = config_mod.write_template(path, template)
                 print(f"{'wrote' if written else 'exists'}: {path}")
+            for message in initialization.install_feedback(repo):
+                print(message)
         except (OSError, ValueError) as exc:
             print(f"sbx-tui: could not install configuration skill: {exc}", file=sys.stderr)
             return 2

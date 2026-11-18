@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from project_sandbox_tui import feedback, feedback_transport
-from project_sandbox_tui.config import ConfigError
+from project_sandbox_tui import feedback, feedback_transport, initialization
+from project_sandbox_tui.config import Config, ConfigError
 
 
 @pytest.fixture
@@ -142,6 +142,40 @@ def test_state_type_changes_require_a_new_sequence(
         feedback.accept(changed, "abc123", previous)
     reordered = dict(reversed(list(previous.items())))
     assert feedback.accept(reordered, "abc123", previous) == previous
+
+
+def test_init_preserves_user_guidance_and_skill_edits(tmp_path: Path) -> None:
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("User guidance with no final newline")
+    initialization.install_feedback(tmp_path)
+    first = agents.read_text()
+    assert first.startswith("User guidance with no final newline")
+    initialization.install_feedback(tmp_path)
+    assert agents.read_text() == first
+    agents.write_text(first.replace("publish progress", "custom guidance"))
+    skill = tmp_path / initialization.FEEDBACK_DIRS[0] / "SKILL.md"
+    skill.write_text("custom skill")
+    messages = initialization.install_feedback(tmp_path)
+    assert "custom guidance" in agents.read_text()
+    assert skill.read_text() == "custom skill"
+    assert len([message for message in messages if "preserved" in message]) == 2
+
+
+def test_feedback_doctor_is_read_only_and_reports_drift(tmp_path: Path) -> None:
+    from project_sandbox_tui.doctor import check_feedback
+
+    cfg = Config()
+    checks = check_feedback(cfg, tmp_path, lambda *_: (0, "--mount MOUNT"))
+    assert [c.status for c in checks] == ["ok", "warn"]
+    assert not (tmp_path / "AGENTS.md").exists()
+    initialization.install_feedback(tmp_path)
+    assert all(
+        c.status == "ok" for c in check_feedback(cfg, tmp_path, lambda *_: (0, "--mount MOUNT"))
+    )
+    (tmp_path / initialization.FEEDBACK_DIRS[0] / "SKILL.md").write_text("customized")
+    assert check_feedback(cfg, tmp_path, lambda *_: (0, "--mount MOUNT"))[-1].status == "warn"
+    cfg.feedback.require_reported_success = True
+    assert check_feedback(cfg, tmp_path, lambda *_: (0, "old CLI"))[0].status == "fail"
 
 
 def test_feedback_config_validation() -> None:
