@@ -1,6 +1,6 @@
 ---
 name: sbx-tui-config
-description: Set up or edit sbx-tui configuration in a project using project-sandbox-tui, including container image selection, launch defaults, commands, and agent actions.
+description: Configure project-sandbox-tui container images, launch defaults, shared sandbox settings, agent profiles with per-launch project-sandbox flags, commands, and agent actions.
 ---
 
 # Configure sbx-tui
@@ -74,6 +74,46 @@ Clear `project.docker_context` before clearing `project.dockerfile`; clear
 string overrides an inherited global setting; `config unset` would expose it
 again. If the config is already invalid, edit the related TOML keys together.
 
+## Configure sandbox settings and profiles
+
+Use `[sandbox]` and `[network]` for shared settings such as runtime, memory,
+CPUs, proxies, and extra domains. Use `sandbox.extra_args` for shared CLI flags
+without a dedicated setting. Check the version and `--help` of the command in
+`sandbox.command` before adding flags. For runtime support, build options, and
+network restrictions, see the [project-sandbox usage guide](https://github.com/pkrusche/project-sandbox/blob/main/docs/usage.md),
+[runtimes](https://github.com/pkrusche/project-sandbox/blob/main/docs/runtimes.md),
+and [security guide](https://github.com/pkrusche/project-sandbox/blob/main/docs/security.md).
+
+Use `[profiles.NAME]` to save `agent`, `model`, `effort`, `fast`, and profile-only
+CLI flags. After global and project fields are merged, omitted profile fields use
+built-in profile defaults. A project `extra_args` array replaces the global array
+for that same profile. Set the prompt and timeout in the background launch form.
+
+A browser-testing profile can raise the memory limit and the size of `/dev/shm`.
+
+```toml
+[profiles.browser-tests]
+agent = "codex"
+extra_args = ["--memory=12g", "--shm-size=4g"]
+```
+
+Use `:config-profiles` to create or edit a project profile, enter
+`--memory=12g --shm-size=4g` in **CLI args**, and save with `ctrl+s`. The CLI
+can update the same argument array on an existing profile.
+
+```sh
+sbx-tui config set --project profiles.browser-tests.extra_args '["--memory=12g", "--shm-size=4g"]'
+```
+
+Each TOML array element is one argument. In the TUI, shell quoting groups words
+and shell expressions are passed literally. The TUI appends profile arguments
+after its shared flags and `sandbox.extra_args`. Upstream uses the last value
+for `--memory` and accumulates repeatable flags like `--extra-domain`. Omit a
+domain from the shared allowlist if only one profile should add it. Upstream
+rejects `--extra-domain` when using an Internet proxy or sidecar egress.
+Keep the image source in `[project]` and use the profile fields for agent
+selection. Leave branch, prompt, log, and summary flags to the TUI.
+
 ## Add project workflows
 
 Derive test and lint commands from project instructions and scripts.
@@ -116,8 +156,10 @@ Edit these dependent settings together if setting either alone fails validation.
 ## Validate and reload
 
 Run `sbx-tui config list` and `sbx-tui --print-config` to inspect effective
-settings and the generated sandbox command. `sbx-tui doctor` checks dependencies,
-runtime and configuration; it does not prove a container can build the project.
+settings and the default working-copy command. To verify a named profile, open
+`i` or `r` on the intended bookmark, select the profile, and inspect the command
+preview before submitting. Use `esc` to close the form after inspection.
+`sbx-tui doctor` checks dependencies, runtime, and configuration.
 
 Direct TOML edits require review: until trusted, a changed file uses its last
 trusted copy, and a never-trusted file is ignored. Explain this if inspection
