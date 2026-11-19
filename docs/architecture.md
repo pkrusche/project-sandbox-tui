@@ -140,6 +140,9 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 - Workers that change the repository are not `exclusive`. A second action waits
   for `_history_lock` instead of cancelling the first after jj has already run.
 - Launch defaults and host-command updates share the per-checkout `last_used.lock`.
+  CLI settings edits and the TUI profile editor share `config.lock` in the
+  application state directory while reading, validating and saving both scopes.
+  Project edits carry forward the trust status of the exact input they edited.
 
 ## Unsupervised queue dispatch
 

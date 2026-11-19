@@ -229,3 +229,17 @@ def test_set_actions(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli(capsys, "config", "unset", "--global", "actions.review.timeout")[0] == 0
     assert cli(capsys, "config", "unset", "--global", "actions.review.prompt")[0] == 0
     assert "actions" not in config.global_config_path().read_text()
+
+
+def test_concurrent_edits_preserve_distinct_keys_and_trust(repo: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def change(index: int) -> None:
+        editor = s.Editor("project", repo)
+        editor.set(s.parse_key(f"commands.test{index}"), f"echo {index}")
+
+    expected = {**config.load(repo).commands, **{f"test{i}": f"echo {i}" for i in range(12)}}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(change, range(12)))
+    assert config.load(repo).commands == expected
+    assert not config.ProjectTrust.check(repo).needs_review
