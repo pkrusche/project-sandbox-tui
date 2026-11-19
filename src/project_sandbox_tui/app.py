@@ -2432,9 +2432,8 @@ class SandboxTUI(App[None]):
 
     def _remember_host_command(self, command: tuple[str, ...]) -> None:
         if command:
-            last = LastUsed.load(self.repo)
-            last.host_command = list(command)
-            last.save(self.repo)
+            with contextlib.suppress(OSError), LastUsed.edit(self.repo) as last:
+                last.host_command = list(command)
             self.main.update_help_layout()
 
     def _open_host_agents(self, argv: tuple[str, ...] = ()) -> None:

@@ -419,7 +419,7 @@ sbx-tui config set --project actions.chores.effort low
 | Location | Contents |
 |---|---|
 | `models.json` | Downloaded model catalog |
-| `<repo>-<hash>/last_used.json` | Launch defaults, selected profile, Custom CLI arguments and host command |
+| `<repo>-<hash>/last_used.json`, `last_used.lock` in the same directory | Launch defaults, selected profile, Custom CLI arguments and host command |
 | `<repo>-<hash>/prompt_history.json` | Prompt history |
 | `<repo>-<hash>/command_history.json` | Command-line history |
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |

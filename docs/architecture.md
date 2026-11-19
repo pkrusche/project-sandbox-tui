@@ -139,8 +139,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
   such as `JobManager._busy_reason`.
 - Workers that change the repository are not `exclusive`. A second action waits
   for `_history_lock` instead of cancelling the first after jj has already run.
-- `last_used.json` and the trusted project config are replaced atomically
-  without a lock; the last write wins.
+- Launch defaults and host-command updates share the per-checkout `last_used.lock`.
 
 ## Unsupervised queue dispatch
 
