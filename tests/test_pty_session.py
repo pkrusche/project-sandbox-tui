@@ -264,6 +264,15 @@ def test_tui_survives_ctrl_c(repo: Path, launch: str, interrupt_at: str) -> None
     command = shlex.join([sys.executable, str(script)])
     tui = start_tui(repo, command, host_agent_command=command)
     try:
+        if launch != "shell":
+            tui.buf.clear()
+            tui.send(b"/")
+            assert tui.wait_for(b"filter"), "bookmark filter did not open"
+            tui.send(b"feature/x")
+            assert tui.wait_for(b"filter: feature/x"), tui.buf.decode(errors="replace")
+            tui.buf.clear()
+            tui.send(b"\r")
+            assert tui.wait_for(b"vs main"), "bookmark table did not repaint after filtering"
         for _ in range(2):  # a previous interrupt must not poison the next session
             tui.buf.clear()
             if launch == "shell":
@@ -271,9 +280,9 @@ def test_tui_survives_ctrl_c(repo: Path, launch: str, interrupt_at: str) -> None
                 tui.pump(0.5)  # let the command input mount before typing
                 tui.send(f"!exec {command}".encode())
             elif launch == "interactive":
-                tui.send(b"ggji")
+                tui.send(b"i")
             else:
-                tui.send(b"ggjI")
+                tui.send(b"I")
             if launch != "host":
                 tui.pump(0.5)
                 tui.send(b"\r")
