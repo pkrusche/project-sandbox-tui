@@ -83,6 +83,10 @@ class WorkflowRun:
 
 
 _WORKFLOW_STOPPED = "workflow stopped"
+_WORKFLOW_BUSY = (
+    "{branch}: a workflow is already in progress; let it finish, "
+    "or delete its queued or stopped step to abandon it"
+)
 
 
 @dataclass
@@ -183,6 +187,19 @@ class BookmarkQueue:
     @property
     def predecessor(self) -> QueuedTask | None:
         return next(self.real_runs(), None)
+
+    def workflow_in_progress(self) -> bool:
+        """A workflow step is pending, running, awaiting its decision, or stopped while paused."""
+        task = self.predecessor
+        return any(t.workflow for t in self.tasks) or bool(
+            task
+            and task.workflow
+            and (
+                (task.job and task.job.running)
+                or not task.decision_done
+                or (self.paused and task.decision == _WORKFLOW_STOPPED)
+            )
+        )
 
     def needs_decision(self, policy: Feedback) -> bool:
         task = self.predecessor
@@ -383,6 +400,8 @@ class TaskQueue:
         task.workflow = workflow
         with self.transaction() as queues:
             queue = queues.setdefault(spec.branch, BookmarkQueue())
+            if workflow and queue.workflow_in_progress():
+                raise BusyError(_WORKFLOW_BUSY.format(branch=spec.branch))
             queue.checkpoint()
             queue.tasks.append(task)
         return task
@@ -417,12 +436,10 @@ class TaskQueue:
             self._refresh(queues, jobs)
             queue = queues.setdefault(spec.branch, BookmarkQueue())
             previous = queue.predecessor
-            stopped = previous and previous.decision == _WORKFLOW_STOPPED
-            if (
-                (previous and previous.job and previous.job.running)
-                or queue.needs_decision(jobs.cfg.feedback)
-                or (queue.paused and stopped)
-                or any(task.workflow for task in queue.tasks)
+            if queue.workflow_in_progress():
+                raise BusyError(_WORKFLOW_BUSY.format(branch=spec.branch))
+            if (previous and previous.job and previous.job.running) or queue.needs_decision(
+                jobs.cfg.feedback
             ):
                 raise BusyError(f"{spec.branch}: finish or resume the current queue first")
             task = QueuedTask(uuid.uuid4().hex, spec, workflow=workflow)

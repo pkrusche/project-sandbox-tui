@@ -225,6 +225,10 @@ work. Write the planning action so it can run from the supplied topic and report
 `blocked` with the missing decisions when it needs input. In both modes the
 first action supplies the same `pass_state_keys` for the later steps.
 
+Each bookmark runs one workflow at a time. In either mode, `:workflow` is refused
+while another workflow's step is pending, running, awaiting its decision, or
+stopped in a paused queue.
+
 1. **Check the spec.** The first background task checks the acceptance criteria,
    checklist, and verification plan. If a decision is still needed, it reports
    `blocked` with the question to resolve.

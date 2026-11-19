@@ -343,3 +343,44 @@ def test_invalid_rendered_step_leaves_the_queue_usable(
             queue.add(planner, workflow=workflow)
     pending = queue.add(LaunchSpec(branch, "codex", mode="background", prompt_text="work"))
     assert queue.get(branch).tasks == [pending]
+
+
+@pytest.mark.parametrize("second", ["queued", "interactive"])
+def test_one_workflow_at_a_time_in_either_start_mode(
+    repo: Path, fake_cfg: Callable[..., Config], second: str
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    queue = TaskQueue(jobs.state_dir)
+    branch = "topic"
+
+    def workflow() -> WorkflowRun:
+        return WorkflowRun("spec", "plan", [("check", spec("report:success"))], [], [])
+
+    def start_second() -> None:
+        if second == "queued":
+            queue.add(spec("report:success"), workflow=workflow())
+            return
+        planner = LaunchSpec(branch, "codex", mode="interactive", prompt_text="plan")
+        with queue.start_workflow(planner, workflow(), jobs):
+            pytest.fail("a second workflow reached launch")
+
+    def dispatch() -> None:
+        queue.dispatch(jobs, lambda: {}, lambda _: None)
+        finish(jobs)
+        queue.dispatch(jobs, lambda: {}, lambda _: None)  # record the decision
+
+    queue.add(spec("report:blocked"), workflow=workflow())
+    with pytest.raises(BusyError, match="workflow is already in progress"):
+        start_second()  # pending planner
+
+    dispatch()
+    stopped = queue.get(branch)
+    assert stopped.paused and not stopped.tasks
+    with pytest.raises(BusyError, match="workflow is already in progress"):
+        start_second()  # stopped step awaiting retry or deletion
+
+    queue.delete(branch, [stopped.history[-1].id])
+    queue.pause(branch, False)
+    if second == "queued":
+        start_second()
+        assert [t.workflow is not None for t in queue.get(branch).tasks] == [True]
