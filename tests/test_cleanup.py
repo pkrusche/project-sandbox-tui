@@ -600,6 +600,16 @@ def test_cleanup_holds_task_lock_through_removal(
         assert remove_workspaces(detect(repo), Config(), [ws])[0].startswith("removed")
 
 
+def test_cleanup_keeps_bookmark_added_after_selection(repo: Path) -> None:
+    path = repo.parent / "work"
+    run("jj", "workspace", "add", str(path), "--name", "work", "-r", "main", cwd=repo)
+    ws = _scan(repo)["work"]
+    assert ws.removable and not ws.branch
+    run("jj", "bookmark", "create", "work", "-r", "main", cwd=repo)
+    assert remove_workspaces(detect(repo), Config(), [ws]) == [f"removed work: {path}"]
+    assert any(b.name == "work" for b in detect(repo).list_branches())
+
+
 @pytest.mark.parametrize("force", [False, True])
 def test_cleanup_keeps_reused_workspace_directory(jj_repo: Path, force: bool) -> None:
     path = workspace_path(jj_repo, "old", None)

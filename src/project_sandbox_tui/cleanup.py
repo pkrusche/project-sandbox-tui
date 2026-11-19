@@ -339,7 +339,7 @@ def remove_workspaces(
     jobs = JobManager(repo, cfg, state_dir)
     results: list[str] = []
 
-    def remove(ws: Workspace) -> None:
+    def remove(ws: Workspace, selected: Workspace) -> None:
         if not ws.removable:
             results.append(f"skipped {ws.describe}")
             return
@@ -357,8 +357,23 @@ def remove_workspaces(
             except (VcsError, OSError) as exc:
                 results.append(f"skipped {ws.name}: {ws.path} ({exc})")
                 return
-        if ws.branch:
+        if ws.branch and ws.branch == selected.branch:
             try:
+                # Snapshotting or work outside the TUI can move a bookmark since
+                # the survey, especially during a batch removal.
+                still_merged = survey.main and _jj(
+                    repo,
+                    "bookmark",
+                    "list",
+                    f"exact:{revset_symbol(ws.branch)}",
+                    "-r",
+                    f"::{revset_symbol(survey.main)}",
+                    "-T",
+                    'if(remote || conflict, "", "1")',
+                )
+                if not still_merged:
+                    results.append(f"kept bookmark {ws.branch} (no longer merged)")
+                    return
                 if not dry_run:
                     _jj(repo, "bookmark", "delete", f"exact:{revset_symbol(ws.branch)}")
                 verb = "would delete" if dry_run else "deleted"
@@ -376,11 +391,11 @@ def remove_workspaces(
         # them first: editors and shells take no lock, so files may change
         # while the others are being checked.
         for found in sorted(survey.found, key=lambda ws: ws.name):
-            if wanted.pop(key(found.path, found.name), None) is not None:
-                remove(survey.inspect(found))
+            if selected := wanted.pop(key(found.path, found.name), None):
+                remove(survey.inspect(found), selected)
         for ws in survey.bookmark_rows():
-            if wanted.pop(key(None, ws.name), None) is not None:
-                remove(ws)
+            if selected := wanted.pop(key(None, ws.name), None):
+                remove(ws, selected)
     results += [
         f"skipped {path or 'bookmark ' + name}: no longer found"
         for path, name in sorted(wanted, key=str)
