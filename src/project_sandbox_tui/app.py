@@ -13,6 +13,7 @@ import subprocess
 import time
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -1913,6 +1914,9 @@ class SandboxTUI(App[None]):
                         spec,
                         lambda: self._sessions_now([spec.branch]),
                         queue_id=task.id if task else "",
+                        base_commit=partial(self.backend._description_commit, spec.branch)
+                        if task
+                        else None,
                         blocked_guidance=blocked_guidance,
                     )
                 )
@@ -1985,6 +1989,9 @@ class SandboxTUI(App[None]):
                     argv,
                     lambda: self._sessions_now([spec.branch]),
                     queue_id=task.id if task else "",
+                    base_commit=partial(self.backend._description_commit, spec.branch)
+                    if task
+                    else None,
                     blocked_guidance=blocked_guidance,
                 )
                 if task:

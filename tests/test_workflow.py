@@ -50,6 +50,7 @@ def test_workflow_command_runs_plan_then_four_steps(
             ordinary = app.queue.add(
                 LaunchSpec("feature/x", "claude", mode="background", prompt_text="first")
             )
+        starting_commit = app.backend._description_commit("feature/x")
         await app.run_command(":workflow spec CSV export")
         if mode == "queued":
             pending = app.queue.get("feature/x").tasks
@@ -71,6 +72,7 @@ def test_workflow_command_runs_plan_then_four_steps(
             assert context["task_id"] == task.id
             assert context["interactive"] is (index == 0 and mode != "queued")
             if index == 0:
+                assert task.base_commit == task.job.base_commit == starting_commit
                 if mode == "queued":
                     assert any(
                         arg.startswith("--prompt-text=") and "CSV export" in arg

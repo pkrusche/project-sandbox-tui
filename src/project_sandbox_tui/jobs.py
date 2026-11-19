@@ -627,6 +627,7 @@ class JobManager:
         argv: list[str] | None = None,
         host: bool = False,
         queue_id: str = "",
+        base_commit: Callable[[], str] | None = None,
         blocked_guidance: str = "",
     ) -> Generator[JobRecord, None, None]:
         """Hold the branch for the duration of an in-terminal session."""
@@ -635,6 +636,7 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions)
             if reason:
                 raise BusyError(reason)
+            commit = base_commit() if base_commit else ""
             self._prepare(spec, sandbox=not host)
             run_id, feedback_dir = self._prepare_feedback(
                 spec,
@@ -657,6 +659,7 @@ class JobManager:
                 notified=True,  # nothing to notify: the user is watching
                 host=host,
                 queue_id=queue_id,
+                base_commit=commit,
             )
             self._attach_feedback(job, run_id, feedback_dir)
             self._archive(spec.branch)
@@ -701,6 +704,7 @@ class JobManager:
         *,
         host: bool = False,
         queue_id: str = "",
+        base_commit: Callable[[], str] | None = None,
         blocked_guidance: str = "",
     ) -> JobRecord:
         """Note an interactive session started in another terminal window.
@@ -715,6 +719,7 @@ class JobManager:
             reason = self._busy_reason(spec.branch, sessions or {})
             if reason:
                 raise BusyError(reason)
+            commit = base_commit() if base_commit else ""
             self._prepare(spec, sandbox=not host)
             run_id, feedback_dir = self._prepare_feedback(
                 spec,
@@ -741,6 +746,7 @@ class JobManager:
                 external=True,
                 host=host,
                 queue_id=queue_id,
+                base_commit=commit,
             )
             self._attach_feedback(job, run_id, feedback_dir)
             if paths:
