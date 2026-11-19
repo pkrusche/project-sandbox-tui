@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `:init` runs the same setup as `sbx-tui --init` inside the TUI, shows the
+  results and reloads configuration.
 - Structured per-run agent feedback: atomic JSON progress/outcome reports, a
   standalone `sbx-report` helper, and a bundled reporting skill deployed through
   existing sandbox mounts and into host workspaces. Reports survive workspace

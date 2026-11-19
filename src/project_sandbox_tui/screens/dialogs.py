@@ -446,6 +446,7 @@ HELP: tuple[tuple[HelpSection, ...], tuple[HelpSection, ...]] = (
                 (":", "commands: :! :& :*"),
                 ("\\ keys", "[leader] key mappings"),
                 ("R / ctrl+l", "refresh / reload config"),
+                (":init", "config and guidance"),
                 (":doctor", "diagnose ? and setup"),
                 ("H / ?", "cheat-sheet / this help"),
                 ("q", "quit (runs continue)"),

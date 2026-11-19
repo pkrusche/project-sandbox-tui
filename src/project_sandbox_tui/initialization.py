@@ -1,4 +1,4 @@
-"""Project detection and local agent guidance for ``sbx-tui --init``."""
+"""Project detection and local agent guidance for ``sbx-tui --init`` and ``:init``."""
 
 import contextlib
 import os
@@ -8,6 +8,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Literal, TextIO
 
+from project_sandbox_tui import config as config_mod
 from project_sandbox_tui.config import (
     CONFIG_SKILL_NAME,
     CONFIG_SKILL_TARGETS,
@@ -29,6 +30,26 @@ publish progress and a final task outcome. In a sandbox, read
 For host runs, use the skill and context in `$SBX_FEEDBACK_DIR`.
 Without reporting context, no feedback report is required.
 {GUIDANCE_END}"""
+
+
+def initialize(repo: Path, global_path: Path | None = None) -> Generator[str]:
+    """Write missing configuration and guidance, trusting only our new template."""
+    for path, template in (
+        (global_path or config_mod.global_config_path(), config_mod.GLOBAL_TEMPLATE),
+        (config_mod.project_config_path(repo), project_template(repo)),
+    ):
+        try:
+            written = config_mod.write_template(path, template)
+            if written and path == config_mod.project_config_path(repo):
+                # Trust only what we wrote, even if the file changes meanwhile.
+                config_mod.ProjectTrust(path, template, None).trust(repo)
+        except (OSError, config_mod.ConfigError) as exc:
+            raise config_mod.ConfigError(f"could not write {path}: {exc}") from exc
+        yield f"{'wrote' if written else 'exists'}: {path}"
+    try:
+        yield from install_feedback(repo, config_skill=True)
+    except (OSError, ValueError) as exc:
+        raise config_mod.ConfigError(f"could not install configuration skill: {exc}") from exc
 
 
 def project_template(repo: Path) -> str:

@@ -11,6 +11,10 @@ path). It writes missing global and project config files, trusts only the projec
 config it creates, and downloads the model catalog if missing. Existing files
 and their trust status are preserved.
 
+Inside the TUI, `:init` performs the same setup for the open repository and
+the selected global config file. It shows the results and reloads configuration
+so newly created settings take effect without restarting.
+
 For a new project config, it checks files at the repository root in this order:
 
 | File | Image source |

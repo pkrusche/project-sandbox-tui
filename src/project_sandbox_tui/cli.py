@@ -151,25 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     repo = backend.root
 
     if args.init:
-        gpath = args.config or config_mod.global_config_path()
-        for path, template in (
-            (gpath, config_mod.GLOBAL_TEMPLATE),
-            (config_mod.project_config_path(repo), initialization.project_template(repo)),
-        ):
-            try:
-                written = config_mod.write_template(path, template)
-                if written and path == config_mod.project_config_path(repo):
-                    # Trust only what we wrote, even if the file changes meanwhile.
-                    config_mod.ProjectTrust(path, template, None).trust(repo)
-            except (OSError, ConfigError) as exc:
-                print(f"sbx-tui: could not write {path}: {exc}", file=sys.stderr)
-                return 2
-            print(f"{'wrote' if written else 'exists'}: {path}")
         try:
-            for message in initialization.install_feedback(repo, config_skill=True):
+            for message in initialization.initialize(repo, args.config):
                 print(message)
-        except (OSError, ValueError) as exc:
-            print(f"sbx-tui: could not install configuration skill: {exc}", file=sys.stderr)
+        except ConfigError as exc:
+            print(f"sbx-tui: {exc}", file=sys.stderr)
             return 2
         if models_mod.load_store() is None:
             # not fatal: the launch form works without it

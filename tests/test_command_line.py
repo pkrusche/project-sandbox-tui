@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from textual.widgets import Input, Static
 
-from project_sandbox_tui import doctor
+from project_sandbox_tui import config, doctor, models
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.screens.command import CommandScreen
@@ -39,6 +39,101 @@ async def type_line(pilot: Any, line: str) -> None:
     await pilot.press("colon")
     assert isinstance(pilot.app.screen, CommandScreen)
     await pilot.press(*line)
+
+
+@pytest.mark.parametrize("catalog_exists", [False, True])
+def test_init_sets_up_repository_and_reloads_configuration(
+    repo: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    catalog_exists: bool,
+) -> None:
+    (repo / "pyproject.toml").touch()
+    global_path = repo.parent / "custom-global.toml"
+    global_path.write_text('[defaults]\nagent = "codex"\n[ui]\nnotify_command = "true"\n')
+    sources: list[str] = []
+
+    def update(source: str) -> Any:
+        sources.append(source)
+        raise models.ModelsError("offline")
+
+    monkeypatch.setattr(models, "load_store", lambda: object() if catalog_exists else None)
+    monkeypatch.setattr(models, "update", update)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.config_path = global_path
+        app.marked = ["feature/x"]  # initialization always uses the repository root
+        await type_line(pilot, "ini")
+        assert isinstance(app.screen, CommandScreen) and "init" in app.screen.names
+        await pilot.press("tab")
+        assert app.screen.input.value == "init"
+        await pilot.press("enter")
+        report = await wait_for_screen(app, pilot, MessageScreen)
+        await wait_until(pilot, lambda: "Configuration reloaded" in messages(app))
+        assert report.title_text == "initialization"
+        assert f"wrote: {config.project_config_path(repo)}" in report.body
+        assert app.cfg.project.build == "python-uv"
+        assert app.cfg.defaults.agent == "codex"
+        assert app.jobs.cfg is app.cfg
+        assert not config.ProjectTrust.check(repo).needs_review
+        assert not config.global_config_path().exists()
+        assert "feedback:start" in (repo / "AGENTS.md").read_text()
+        for root in (".agents", ".claude"):
+            for skill in ("sbx-tui-config", "sbx-run-feedback"):
+                assert (repo / root / "skills" / skill / "SKILL.md").is_file()
+        if not catalog_exists:
+            await wait_until(pilot, lambda: "models: offline" in messages(app))
+        assert sources == ([] if catalog_exists else [models.DEFAULT_SOURCE])
+        await pilot.press("escape")
+        assert app.screen is app.main and app.is_running
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_init_preserves_existing_config_and_customized_skills(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(models, "load_store", lambda: object())
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        project = config.project_config_path(repo)
+        original = '[sandbox]\ncommand = "unreviewed-command"\n'
+        project.write_text(original)
+        skill = repo / ".agents/skills/sbx-tui-config/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("custom instructions\n")
+        await type_line(pilot, "init")
+        await pilot.press("enter")
+        report = await wait_for_screen(app, pilot, MessageScreen)
+        await wait_until(pilot, lambda: "Configuration reloaded" in messages(app))
+        assert project.read_text() == original
+        assert config.ProjectTrust.check(repo).needs_review
+        assert app.cfg.sandbox.command == "project-sandbox"
+        assert skill.read_text() == "custom instructions\n"
+        assert "preserved customized or older skill" in report.body
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_init_reports_installation_failure(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(models, "load_store", lambda: object())
+    (repo / ".agents").write_text("not a directory\n")
+    cfg = fake_cfg()
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await type_line(pilot, "init")
+        await pilot.press("enter")
+        report = await wait_for_screen(app, pilot, MessageScreen)
+        await wait_until(pilot, lambda: "Initialization failed:" in report.body)
+        assert "could not install configuration skill" in report.body
+        assert app.cfg is cfg
+        assert "Configuration reloaded" not in messages(app)
+        await pilot.press("escape")
+        assert app.screen is app.main and app.is_running
+
+    run_app(repo, cfg, scenario)
 
 
 def test_doctor_explains_displayed_comparison_failures(

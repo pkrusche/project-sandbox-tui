@@ -32,7 +32,15 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, Static
 from textual.widgets.data_table import ColumnKey
 
-from project_sandbox_tui import commands, doctor, launchers, notify, octopus, terminal
+from project_sandbox_tui import (
+    commands,
+    doctor,
+    initialization,
+    launchers,
+    notify,
+    octopus,
+    terminal,
+)
 from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.cleanup import (
     Workspace,
@@ -2967,6 +2975,27 @@ class SandboxTUI(App[None]):
         if report in self.screen_stack:
             report.update_body(body + output)
 
+    @work(group="init")
+    async def _init(self) -> None:
+        report = MessageScreen("initialization", "Writing missing configuration and guidance…")
+        await self.push_screen(report)
+        try:
+            messages = await asyncio.to_thread(
+                lambda: list(initialization.initialize(self.repo, self.config_path))
+            )
+        except ConfigError as exc:
+            if report in self.screen_stack:
+                report.update_body(f"Initialization failed: {exc}")
+            self.notify(f"Initialization failed: {exc}", severity="error")
+            return
+        if report in self.screen_stack:
+            report.update_body("\n".join(messages))
+        await self._reload_config()
+        if models_mod.load_store() is None and not any(
+            worker.group == "models" for worker in self.workers
+        ):
+            self._update_models()
+
     @work(group="models")
     async def _update_models(self, source: str = models_mod.DEFAULT_SOURCE) -> None:
         if "://" not in source:
@@ -3047,6 +3076,11 @@ class SandboxTUI(App[None]):
             await self.action_quit()
         elif command.builtin == "help":
             self.action_help()
+        elif command.builtin == "init":
+            if any(worker.group == "init" for worker in self.workers):
+                self.notify("Initialization already running")
+            else:
+                self._init()
         elif command.builtin == "doctor":
             self.action_doctor()
         elif command.builtin == "update-models":

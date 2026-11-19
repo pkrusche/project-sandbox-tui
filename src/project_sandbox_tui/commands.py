@@ -31,6 +31,7 @@ from pathlib import Path
 
 BUILTINS: dict[str, str] = {
     "help": "full key reference",
+    "init": "write missing config and install setup/reporting guidance",
     "doctor": "diagnose comparisons, dependencies, runtime and config",
     "update-models": "refresh model suggestions: :update-models [SOURCE]",
     "host": "run a host agent: :host AGENT [ARGS...]",
