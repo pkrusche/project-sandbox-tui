@@ -127,6 +127,27 @@ the selected CI uv version remains compatible when changing that requirement.
   actions by SHA, and jj by `JJ_VERSION` plus `JJ_SHA256` (update together).
 - [Dependabot](../.github/dependabot.yml) proposes monthly action and lockfile updates.
 
+## OpenSpec skills
+
+`skills/openspec-*` holds the OpenSpec agent skills. `[[workspace_skills]]` in
+`.project-sandbox-tui.toml` copies them into each bookmark workspace's ignored
+`.agents/skills/` and `.claude/skills/` directories. Relative sources are read
+from the checkout that opened the TUI, so that checkout's revision must contain
+them. To refresh after an OpenSpec upgrade, regenerate them in a scratch
+directory and replace the copies:
+
+```sh
+tmp=$(mktemp -d)
+git -C "$tmp" init -q
+openspec init --tools agents --no-animation "$tmp"
+rm -rf skills/openspec-*
+cp -R "$tmp"/.agents/skills/openspec-* skills/
+```
+
+Keep the `[[workspace_skills]]` entries in sync if the skill set changes, then
+review the config with `sbx-tui --trust-config`. Existing workspace copies are
+kept: delete them while the workspace is idle to pick up new versions.
+
 ## Releases
 
 Run `scripts/make-release.sh` from a checkout with uv, git, jj, and an authenticated
