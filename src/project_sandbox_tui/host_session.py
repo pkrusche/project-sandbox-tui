@@ -29,6 +29,8 @@ def run(summary: Path, argv: list[str]) -> int:
 
     save()  # fail before starting an agent we cannot track
     try:
+        if not argv:
+            raise OSError("no command given")
         proc = subprocess.Popen(argv)
     except OSError as exc:
         print(f"Could not start agent command: {exc}", file=sys.stderr)
@@ -44,8 +46,16 @@ def run(summary: Path, argv: list[str]) -> int:
     return code if code >= 0 else 128 - code
 
 
+def main(argv: list[str]) -> int:
+    """``SUMMARY [--intro=TEXT] COMMAND...``; a missing command is recorded as exit 127."""
+    if not argv:
+        print("usage: host_session.py SUMMARY [--intro=TEXT] COMMAND...", file=sys.stderr)
+        return 2
+    summary, *command = argv
+    if command and command[0].startswith("--intro="):
+        print(command.pop(0).removeprefix("--intro="), flush=True)
+    return run(Path(summary), command)
+
+
 if __name__ == "__main__":
-    args = sys.argv[2:]
-    if args[0].startswith("--intro="):
-        print(args.pop(0).removeprefix("--intro="), flush=True)
-    sys.exit(run(Path(sys.argv[1]), args))
+    sys.exit(main(sys.argv[1:]))

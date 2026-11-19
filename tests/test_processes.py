@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import json
 import os
 import shlex
 import signal
@@ -166,3 +167,19 @@ def test_failed_host_summary_write_leaves_no_temporary_file(
         host_session.run(summary, argv)
     assert summary.exists() == marker.exists() == (phase == "finish")
     assert not summary.with_suffix(".tmp").exists()
+
+
+def test_host_session_main_prints_intro_and_records_missing_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = tmp_path / "run.summary.json"
+    assert host_session.main([str(summary), "--intro=Plan first"]) == 127
+    assert json.loads(summary.read_text())["exit_code"] == 127
+    out, err = capsys.readouterr()
+    assert out == "Plan first\n" and "no command given" in err
+    assert host_session.main([]) == 2
+
+    marker = tmp_path / "ran"
+    code = f"from pathlib import Path; Path({str(marker)!r}).touch()"
+    assert host_session.main([str(summary), sys.executable, "-c", code]) == 0
+    assert marker.exists() and json.loads(summary.read_text())["exit_code"] == 0
