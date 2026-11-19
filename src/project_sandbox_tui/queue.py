@@ -593,7 +593,8 @@ class TaskQueue:
 
     def _decide(self, jobs: JobManager) -> None:
         """Commit successors before launching them; never replay a decision."""
-        policy = jobs.cfg.feedback
+        cfg = jobs.cfg
+        policy = cfg.feedback
         with self.transaction() as queues:
             if not policy.makes_decisions and not any(
                 (task := queue.predecessor) and task.workflow and not task.decision_done
@@ -629,14 +630,17 @@ class TaskQueue:
                             queue.paused, queue.error = True, "feedback workflow step limit reached"
                             task.decision = queue.error
                         else:
-                            action = jobs.cfg.actions[action_name]
+                            action = cfg.actions[action_name]
                             spec = copy.deepcopy(task.spec)
-                            main = jobs.cfg.project.main_branch
+                            main = cfg.project.main_branch
                             if "{main}" in action.prompt and not main:
-                                main = (
-                                    main_branch([b.name for b in detect(jobs.repo).list_branches()])
-                                    or ""
-                                )
+                                try:
+                                    branches = detect(jobs.repo).list_branches()
+                                except (VcsError, OSError) as exc:
+                                    queue.paused, queue.error = True, str(exc)
+                                    task.decision_done = False  # retry the lookup on resume
+                                    continue
+                                main = main_branch([b.name for b in branches]) or ""
                             spec.prompt_text = action.render(spec.branch, main)
                             for key in ("agent", "model", "effort"):
                                 if value := getattr(action, key):
