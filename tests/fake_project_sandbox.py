@@ -46,7 +46,18 @@ def main() -> int:
 
     repo = Path(args.project)
     workspace = path_for(repo, args.branch, args.worktree_dir) if args.branch else repo
-    prompt = args.prompt_text or ""
+    feedback_root = None
+    for mount in args.mount:
+        parts = dict(item.split("=", 1) for item in mount.split(",") if "=" in item)
+        if parts.get("target") == "/run/sbx-feedback":
+            feedback_root = Path(parts["source"])
+    context = feedback_root / "context.json" if feedback_root else None
+    planning = (
+        json.loads(context.read_text()).get("planning_prompt", "")
+        if context and context.is_file()
+        else ""
+    )
+    prompt = args.prompt_text or planning
     sleep = float(m.group(1)) if (m := re.search(r"sleep:([\d.]+)", prompt)) else 0.0
     code = int(m.group(1)) if (m := re.search(r"exit:(\d+)", prompt)) else 0
     if "ignore-signals" in prompt:  # simulate a process that won't stop politely
@@ -73,14 +84,15 @@ def main() -> int:
     }
     record_path.write_text(json.dumps(record))
     print(f"fake project-sandbox: {' '.join(sys.argv[1:])}", flush=True)
-    feedback_root = None
-    for mount in args.mount:
-        parts = dict(item.split("=", 1) for item in mount.split(",") if "=" in item)
-        if parts.get("target") == "/run/sbx-feedback":
-            feedback_root = Path(parts["source"])
     if feedback_root and (match := re.search(r"report:(success|failure|blocked)", prompt)):
         import subprocess
 
+        state_args: list[str] = []
+        if "report-state:" in prompt:
+            state, _ = json.JSONDecoder().raw_decode(prompt.split("report-state:", 1)[1].lstrip())
+            state_path = feedback_root / "output" / "fake-state.json"
+            state_path.write_text(json.dumps(state))
+            state_args = ["--state-file", str(state_path)]
         subprocess.run(
             [
                 sys.executable,
@@ -92,6 +104,7 @@ def main() -> int:
                 match[1],
                 "--summary",
                 "Fake task outcome",
+                *state_args,
             ],
             check=True,
         )

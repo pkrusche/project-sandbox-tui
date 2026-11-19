@@ -42,6 +42,8 @@ def prepare(
     previous_state: dict[str, Any] | None = None,
     *,
     interactive: bool = False,
+    planning_prompt: str = "",
+    blocked_guidance: str = "",
 ) -> None:
     private_dir(root.parent)
     private_dir(root)
@@ -53,16 +55,19 @@ def prepare(
     (root / "skill" / "SKILL.md").write_text(
         package.joinpath("skills", SKILL_NAME, "SKILL.md").read_text(), encoding="utf-8"
     )
-    feedback.atomic_write(
-        root / "context.json",
-        {
-            "schema_version": feedback.VERSION,
-            "run_id": run_id,
-            "task_id": task_id,
-            "previous_state": previous_state or {},
-            "interactive": interactive,
-        },
-    )
+    context = {
+        "schema_version": feedback.VERSION,
+        "run_id": run_id,
+        "task_id": task_id,
+        "previous_state": previous_state or {},
+        "interactive": interactive,
+    }
+    if planning_prompt:
+        context["planning_prompt"] = planning_prompt
+    if blocked_guidance:
+        # Leave room for JSON escaping and the rest of the context. The TUI keeps the full report.
+        context["blocked_guidance"] = blocked_guidance[:8000]
+    feedback.atomic_write(root / "context.json", context)
 
 
 def mounts(root: Path) -> list[str]:

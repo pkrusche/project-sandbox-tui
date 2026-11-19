@@ -60,6 +60,10 @@ remain usable and have an unknown reported outcome.
 `context.json` belongs to the launcher. It contains `schema_version`, `run_id`,
 `task_id` (empty outside queues), `interactive`, and `previous_state` (an object
 containing only selected predecessor keys).
+Interactive workflow runs also receive `planning_prompt`, the configured brief
+and any topic supplied when starting the workflow.
+Interactive sessions opened to resolve a blocker receive `blocked_guidance`,
+which describes the issue and identifies the spec when its path is available.
 
 Example final report:
 
