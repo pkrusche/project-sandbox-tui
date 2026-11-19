@@ -1,9 +1,18 @@
 """Project detection and local agent guidance for ``sbx-tui --init``."""
 
+import contextlib
+import os
+import stat
+from collections.abc import Generator
 from importlib.resources import files
 from pathlib import Path
+from typing import Literal, TextIO
 
-from project_sandbox_tui.config import CONFIG_SKILL_NAME, CONFIG_SKILL_TARGETS, PROJECT_TEMPLATE
+from project_sandbox_tui.config import (
+    CONFIG_SKILL_NAME,
+    CONFIG_SKILL_TARGETS,
+    PROJECT_TEMPLATE,
+)
 from project_sandbox_tui.feedback_transport import SKILL_NAME as FEEDBACK_SKILL
 
 SKILL_NAME = CONFIG_SKILL_NAME
@@ -49,18 +58,61 @@ def skill_template() -> str:
     )
 
 
+@contextlib.contextmanager
+def _local_file(repo: Path, relative: Path, mode: Literal["a", "r", "x"]) -> Generator[TextIO]:
+    """Open a guidance file beneath the workspace, without traversing symlinks."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+    with contextlib.ExitStack() as stack:
+        parent = os.open(repo, flags)
+        stack.callback(os.close, parent)
+        for component in relative.parts[:-1]:
+            if mode == "x":
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(component, dir_fd=parent)
+            parent = os.open(component, flags, dir_fd=parent)
+            stack.callback(os.close, parent)
+
+        def opener(name: str, flags: int) -> int:
+            return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o666, dir_fd=parent)
+
+        with open(relative.name, mode, encoding="utf-8", opener=opener) as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError(f"{repo / relative} must be a regular file")
+            yield stream
+
+
+def _existing(repo: Path, relative: Path) -> str:
+    try:
+        with _local_file(repo, relative, "r") as stream:
+            return stream.read()
+    except FileNotFoundError:
+        return ""
+
+
+def _install_skill(repo: Path, directory: Path, template: str) -> str:
+    relative = directory / "SKILL.md"
+    try:
+        with _local_file(repo, relative, "x") as stream:
+            stream.write(template)
+    except FileExistsError:
+        if _existing(repo, relative) != template:
+            return (
+                f"preserved customized or older skill: {repo / relative}; "
+                "remove it and rerun --init to refresh"
+            )
+        return f"exists: {repo / relative}"
+    return f"wrote: {repo / relative}"
+
+
 def ignore_skills(repo: Path) -> bool:
     """Append only our skill directories, preserving existing ignore rules."""
-    path = repo / ".gitignore"
-    try:
-        existing = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        existing = ""
+    path = Path(".gitignore")
+    existing = _existing(repo, path)
     patterns = [f"/{directory.as_posix()}/" for directory in (*SKILL_DIRS, *FEEDBACK_DIRS)]
     missing = [pattern for pattern in patterns if pattern not in existing.splitlines()]
     if not missing:
         return False
-    with path.open("a", encoding="utf-8") as stream:
+    with _local_file(repo, path, "a") as stream:
         if existing and not existing.endswith("\n"):
             stream.write("\n")
         stream.write("\n# sbx-tui — local configuration skill\n")
@@ -68,36 +120,24 @@ def ignore_skills(repo: Path) -> bool:
     return True
 
 
-def install_feedback(repo: Path, *, guidance: bool = True) -> list[str]:
-    """Install missing resources; never overwrite a customized skill or block.
-
-    Like the configuration skill, updates require removing the old skill first.
-    Drift is reported so an intentional edit cannot silently disappear.
-    """
-    from project_sandbox_tui.config import write_template
-
+def install_feedback(repo: Path, *, guidance: bool = True, config_skill: bool = False) -> list[str]:
+    """Install missing resources while preserving customized guidance across launches."""
     messages = []
     template = (
         files("project_sandbox_tui").joinpath("skills", FEEDBACK_SKILL, "SKILL.md").read_text()
     )
-    ignore_skills(repo)
-    for directory in FEEDBACK_DIRS:
-        path = repo / directory / "SKILL.md"
-        written = write_template(path, template)
-        if not written and path.read_text() != template:
-            messages.append(
-                f"preserved customized or older skill: {path}; "
-                "remove it and rerun --init to refresh"
-            )
-        else:
-            messages.append(f"{'wrote' if written else 'exists'}: {path}")
+    updated = ignore_skills(repo)
+    messages.append(f"{'updated' if updated else 'exists'}: {repo / '.gitignore'}")
+    if config_skill:
+        config_template = skill_template()
+        messages.extend(
+            _install_skill(repo, directory, config_template) for directory in SKILL_DIRS
+        )
+    messages.extend(_install_skill(repo, directory, template) for directory in FEEDBACK_DIRS)
     if not guidance:
         return messages
     path = repo / "AGENTS.md"
-    try:
-        existing = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        existing = ""
+    existing = _existing(repo, Path("AGENTS.md"))
     if GUIDANCE_START in existing or GUIDANCE_END in existing:
         if GUIDANCE not in existing:
             messages.append(
@@ -106,6 +146,7 @@ def install_feedback(repo: Path, *, guidance: bool = True) -> list[str]:
         else:
             messages.append(f"exists: feedback guidance in {path}")
     else:
-        path.write_text(existing + ("\n\n" if existing else "") + GUIDANCE + "\n", encoding="utf-8")
+        with _local_file(repo, Path("AGENTS.md"), "a") as stream:
+            stream.write(("\n\n" if existing else "") + GUIDANCE + "\n")
         messages.append(f"updated: {path}")
     return messages

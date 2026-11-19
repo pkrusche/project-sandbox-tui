@@ -166,14 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(f"{'wrote' if written else 'exists'}: {path}")
         try:
-            template = initialization.skill_template()
-            updated = initialization.ignore_skills(repo)
-            print(f"{'updated' if updated else 'exists'}: {repo / '.gitignore'}")
-            for directory in initialization.SKILL_DIRS:
-                path = repo / directory / "SKILL.md"
-                written = config_mod.write_template(path, template)
-                print(f"{'wrote' if written else 'exists'}: {path}")
-            for message in initialization.install_feedback(repo):
+            for message in initialization.install_feedback(repo, config_skill=True):
                 print(message)
         except (OSError, ValueError) as exc:
             print(f"sbx-tui: could not install configuration skill: {exc}", file=sys.stderr)
