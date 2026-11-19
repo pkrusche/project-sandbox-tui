@@ -52,6 +52,11 @@ session's change but no skill files.
 It uses no model API or credentials and keeps the firewall enabled.
 Bash produces plain-text logs, so a Markdown transcript is not required.
 
+The commit-summary smoke test runs a second credential-free Bash session with
+the production summary launcher. It reads the pinned patch, checks that the
+mount is read-only and the reviewed checkout and jj store are inaccessible, and
+publishes a result through the feedback helper.
+
 Install `project-sandbox` ≥ 0.2.2 and jj ≥ 0.46, start Docker, Podman, or Apple
 Containers, then run:
 

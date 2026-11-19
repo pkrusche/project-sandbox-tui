@@ -267,3 +267,105 @@ def test_real_bash_container_lifecycle(
         assert main.reported_success, _diagnostics(main)
     finally:
         _cleanup(manager, cli, image)
+
+
+def test_real_commit_summary_mount_boundary(
+    repo: Path, pytestconfig: pytest.Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import asyncio
+    import tempfile
+
+    from project_sandbox_tui import commit_summary
+
+    cfg = Config()
+    cfg.sandbox.command = pytestconfig.getoption("--container-command")
+    cfg.sandbox.runtime = pytestconfig.getoption("--container-runtime")
+    cfg.sandbox.no_forward_credentials = True
+    prerequisites = (
+        doctor.check_jj(doctor.run),
+        doctor.check_project_sandbox(cfg, doctor.run),
+        doctor.check_runtime(cfg, doctor.run, shutil.which),
+    )
+    errors = [check.render() for check in prerequisites if check.status != "ok"]
+    assert not errors, "\n".join(errors)
+    cli = runtime_cli(cfg.sandbox.runtime)
+    assert cli is not None
+    cfg.sandbox.runtime = "apple-container" if cli == "container" else cli
+
+    backend = JjBackend(repo)
+    commits = backend.review_commits("main", "feature/x")
+    assert len(commits) == 1
+    sentinel = repo / "a.txt"
+    store = repo / ".jj/repo/store"
+    assert sentinel.is_file() and store.is_dir()
+    original_contents = sentinel.read_bytes()
+    image = f"sbx-tui-review-smoke-{uuid.uuid4().hex}:test"
+    cfg, spec = commit_summary.resolve_launch(cfg, repo)
+    cfg.project.base_image = pytestconfig.getoption("--container-base-image")
+    spec.agent = "bash"
+    spec.extra_args = [f"--image-tag={image}"]
+    spec.timeout = 120
+    spec.prompt_text = f"""set -euo pipefail
+test "$PWD" = /workspace
+test ! -e /workspace/a.txt
+test ! -e /workspace/.jj
+test ! -e /workspace/.git
+if jj root >/dev/null 2>&1; then exit 90; fi
+python3 - <<'PYTHON'
+import errno
+import json
+import subprocess
+from pathlib import Path
+
+for host_path in ({str(sentinel)!r}, {str(store)!r}):
+    assert not Path(host_path).exists(), host_path
+root = Path({commit_summary.INPUT!r})
+entries = json.loads((root / "commits.json").read_text())
+assert len(entries) == 1
+entry = entries[0]
+assert entry["commit_id"] == {commits[0].commit!r}
+patch = root / entry["patch"]
+assert "diff --git a/b.txt b/b.txt" in patch.read_text()
+try:
+    patch.open("a").close()
+except OSError as error:
+    assert error.errno == errno.EROFS, error
+else:
+    raise AssertionError("review patch is writable")
+state = Path("/tmp/review-state.json")
+state.write_text(json.dumps({{"commits": [{{
+    "commit_id": entry["commit_id"], "summary": "Mount boundary verified",
+    "complexity": "l", "harmful": False,
+}}]}}))
+subprocess.run([
+    "python3", "/run/sbx-feedback/sbx-report", "finish", "--outcome", "success",
+    "--summary", "Smoke complete", "--state-file", str(state),
+], check=True)
+PYTHON
+"""
+    scratch = tmp_path / "summaries"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    async def exercise() -> dict[str, commit_summary.Assessment]:
+        async with asyncio.timeout(BUILD_DEADLINE + spec.timeout):
+            return await commit_summary.run(cfg, spec, backend, commits)
+
+    print(f"Commit summary mount smoke: runtime={cfg.sandbox.runtime}, image={image}")
+    try:
+        results = asyncio.run(exercise())
+        assert results == {
+            commits[0].commit: commit_summary.Assessment("Mount boundary verified", "L", False, "")
+        }
+        assert sentinel.read_bytes() == original_contents
+        assert backend._bookmark_commit("feature/x") == commits[0].commit
+        assert not list(scratch.iterdir())
+    finally:
+        for record in read_sessions():
+            if Path(record.project_path).is_relative_to(scratch) and record.container_name:
+                if cli == "container":
+                    _runtime(cli, "stop", record.container_name)
+                    _runtime(cli, "rm", record.container_name)
+                else:
+                    _runtime(cli, "rm", "--force", record.container_name)
+        _runtime(cli, "image", "rm", image)

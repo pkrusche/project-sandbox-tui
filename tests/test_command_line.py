@@ -657,7 +657,9 @@ def test_each_rejects_builtins(repo: Path, fake_cfg: Callable[..., Config]) -> N
     run_app(repo, fake_cfg(), scenario)
 
 
-def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+def test_actions_start_a_run_on_each_target(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
     from project_sandbox_tui.config import Action, LastUsed
     from tests.test_app import wait_until
 
@@ -667,6 +669,15 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
     cfg.leader = {"rc": "chores sleep:1"}
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        # Launches may outlast a notification's display time on parallel runs.
+        notices: list[str] = []
+        notify = app.notify
+
+        def record_notify(message: str, **kwargs: Any) -> None:
+            notices.append(message)
+            notify(message, **kwargs)
+
+        monkeypatch.setattr(app, "notify", record_notify)
         mark(app, "@", "main", "feature/x")
         await type_line(pilot, "chores sleep:0.2")
         await pilot.press("enter")
@@ -675,7 +686,7 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
         await pilot.press("y")
         await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
         assert set(app.jobs.jobs) == {"@", "feature/x"}
-        assert any("skipped: main is protected; create a bookmark" in m for m in messages(app))
+        assert any("skipped: main is protected; create a bookmark" in m for m in notices)
         working_copy = app.jobs.jobs["@"]
         assert working_copy.spec.main_checkout
         assert working_copy.spec.prompt_text == "chores on @ vs main\n\nsleep:0.2\n"
@@ -699,16 +710,17 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
         app.queue.pause("feature/x", True)
         await pilot.press("backslash", "r", "c")
         await pilot.pause()
-        assert any("feature/x: prompt queued" in m for m in messages(app))
+        assert any("feature/x: prompt queued" in m for m in notices)
         assert len(app.queue.get("feature/x").tasks) == 1
 
         # The main bookmark is blocked even when it is the only target.
         await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
         app.table.move_cursor(row=names.index("main"))
+        notices.clear()
         await pilot.press("backslash", "r", "c")
         await pilot.pause()
         assert app.screen is app.main
-        assert any("main is protected; create a bookmark" in m for m in messages(app))
+        assert any("main is protected; create a bookmark" in m for m in notices)
         assert "main" not in app.jobs.jobs
 
     run_app(repo, cfg, scenario)
