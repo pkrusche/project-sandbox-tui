@@ -207,9 +207,13 @@ sbx-tui config get profiles.review.extra_args
 
 Project fields override global fields of the same profile; arrays replace the
 inherited array. The TUI editor saves all fields as a project profile, including
-when editing an inherited global profile. To remove a profile, delete its entire
-`[profiles.NAME]` table from the config file and reload with `ctrl+l`. Removing
-only its project table reveals any global profile with the same name.
+when editing an inherited global profile. The **source** field shows `project`,
+`global`, or `project + global` for the selected profile. Press `ctrl+d`, then
+`y` to delete it from the config file shown in the confirmation. For a profile
+defined in both files, this removes the project entry and the global profile
+remains available. Deleting a global entry affects all projects using that file.
+You can also remove the whole `[profiles.NAME]` table manually and reload with
+`ctrl+l`.
 
 ## From the command line
 

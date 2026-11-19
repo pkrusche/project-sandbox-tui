@@ -240,7 +240,7 @@ def _subcommand(args: Namespace) -> int:
 def _config(args: Namespace, repo: Path | None) -> int:
     from project_sandbox_tui import settings
 
-    scope: settings.Scope | None = getattr(args, "scope", None)
+    scope: config_mod.ConfigScope | None = getattr(args, "scope", None)
     if args.action == "list":
         if scope is None:
             data = settings.effective_values(repo, args.config)
@@ -332,6 +332,7 @@ def _print_config(repo: Path, backend: JjBackend, cfg: config_mod.Config) -> int
     from project_sandbox_tui.sandbox import LaunchSpec, build_argv
 
     data = dataclasses.asdict(cfg)
+    del data["profile_sources"]
     data["sources"] = [str(p) for p in cfg.sources]
     print(json.dumps(data, indent=2))
     try:

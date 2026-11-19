@@ -44,6 +44,7 @@ from project_sandbox_tui.config import (
     AgentProfile,
     Config,
     ConfigError,
+    ConfigScope,
     LastUsed,
     LaunchDefaults,
     ProjectTrust,
@@ -83,7 +84,7 @@ from project_sandbox_tui.screens.dialogs import (
 from project_sandbox_tui.screens.launch import LaunchScreen, OctopusSetup
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
-from project_sandbox_tui.screens.profiles import ProfilesScreen
+from project_sandbox_tui.screens.profiles import ProfileEdit, ProfilesScreen
 from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen, ReviewPosition
 from project_sandbox_tui.screens.tasks import TasksScreen
@@ -2742,16 +2743,37 @@ class SandboxTUI(App[None]):
         self.show_cheatsheet(not self.cheatsheet_visible)
 
     def action_config_profiles(self) -> None:
-        def save(name: str, profile: AgentProfile) -> None:
-            Editor("project", self.repo, self.config_path).save_profile(name, profile)
-            self.cfg.profiles = load(self.repo, self.config_path).profiles
+        editors: dict[ConfigScope, Editor] = {
+            "project": Editor("project", self.repo, self.config_path),
+            "global": Editor("global", self.repo, self.config_path),
+        }
 
-        def saved(changed: bool | None) -> None:
-            if changed:
-                self.notify("Agent profile saved to project config")
+        def refresh_profiles() -> None:
+            cfg = load(self.repo, self.config_path)
+            self.cfg.profiles = cfg.profiles
+            self.cfg.profile_sources = cfg.profile_sources
+
+        def save(name: str, profile: AgentProfile) -> None:
+            editors["project"].save_profile(name, profile)
+            refresh_profiles()
+
+        def delete(name: str, scope: ConfigScope) -> None:
+            if not editors[scope].delete_profile(name):
+                raise ConfigError(f"Profile {name!r} is already absent from the {scope} config")
+            refresh_profiles()
+
+        def edited(result: ProfileEdit | None) -> None:
+            if result is None:
+                return
+            operation, scope = result
+            preposition = "to" if operation == "saved" else "from"
+            self.notify(f"Agent profile {operation} {preposition} {scope} config")
+            if scope == "project":
                 self._review_project_config()
 
-        self.push_screen(ProfilesScreen(self.cfg, LastUsed.load(self.repo), save), saved)
+        paths = {scope: editor.path for scope, editor in editors.items()}
+        screen = ProfilesScreen(self.cfg, LastUsed.load(self.repo), save, delete, paths)
+        self.push_screen(screen, edited)
 
     def show_cheatsheet(self, visible: bool) -> None:
         """Show the sheet when it fits, otherwise keep the one-line help hint."""

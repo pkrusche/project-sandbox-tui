@@ -160,7 +160,7 @@ removes the workspace instead.
 | `:action args` | Start the [`[actions]`](configuration.md#agent-actions) prompt on each target, with `args` appended |
 | `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
-| `:config-profiles` | Create or edit saved agent profiles in the project config |
+| `:config-profiles` | View profile sources, create or edit project profiles, or delete the selected profile with `ctrl+d` |
 | `:doctor` | Explain unavailable comparisons to main and append the full `sbx-tui doctor` report |
 | `:update-models [SOURCE]` | Refresh [model suggestions](models.md) from models.dev, an HTTPS URL or a local file |
 

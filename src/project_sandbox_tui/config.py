@@ -25,7 +25,7 @@ import tomllib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from project_sandbox_tui import commands
 from project_sandbox_tui.launchers import TERMINALS, fill_command
@@ -39,6 +39,7 @@ GENERATED_BUILDS: tuple[str, ...] = ("", "python-uv", "rust-cargo", "node-npm")
 PROJECT_CONFIG_NAME = ".project-sandbox-tui.toml"
 TRUSTED_CONFIG_NAME = "trusted-project-config.toml"  # in the repo's state directory
 APP_NAME = "project-sandbox-tui"
+ConfigScope = Literal["global", "project"]
 
 
 class ConfigError(ValueError):
@@ -287,6 +288,8 @@ class Config:
     profiles: dict[str, AgentProfile] = field(default_factory=dict)
     workspace_skills: list[WorkspaceSkill] = field(default_factory=list)  # [[workspace_skills]]
     sources: list[Path] = field(default_factory=list)  # files that were loaded
+    # List the project scope first when both files define the profile.
+    profile_sources: dict[str, tuple[ConfigScope, ...]] = field(default_factory=dict)
 
     # ---------------------------------------------------------- helpers
 
@@ -589,21 +592,34 @@ def _load(
     global_path: Path | None, project_text: str | None, project_source: Path | None
 ) -> Config:
     gpath = global_path or global_config_path()
-    merged: dict[str, Any] = {}
+    global_data: dict[str, Any] = {}
+    project_data: dict[str, Any] = {}
     sources: list[Path] = []
     if global_path is not None and not gpath.is_file():
         raise ConfigError(f"{gpath}: config file does not exist or is not a file")
     if gpath.is_file():
-        merged = _read_toml(gpath)
+        global_data = _read_toml(gpath)
         sources.append(gpath)
     if project_text is not None and project_source is not None:
         try:
-            merged = deep_merge(merged, tomllib.loads(project_text))
+            project_data = tomllib.loads(project_text)
         except ValueError as exc:
             raise ConfigError(f"{project_source}: {exc}") from exc
         sources.append(project_source)
-    cfg = from_dict(merged)
+    cfg = from_dict(deep_merge(global_data, project_data))
     cfg.sources = sources
+    profile_tables: dict[ConfigScope, Any] = {
+        "project": project_data.get("profiles"),
+        "global": global_data.get("profiles"),
+    }
+    cfg.profile_sources = {
+        name: tuple(
+            scope
+            for scope, table in profile_tables.items()
+            if isinstance(table, dict) and isinstance(table.get(name), dict)
+        )
+        for name in cfg.profiles
+    }
     cfg.validate()
     return cfg
 
