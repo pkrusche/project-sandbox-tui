@@ -14,3 +14,9 @@ build/
 # OpenSpec skills deployed by sbx-tui ([[workspace_skills]]); sources live in skills/
 /.agents/skills/openspec-*/
 /.claude/skills/openspec-*/
+
+# sbx-tui — local configuration skill
+/.agents/skills/sbx-tui-config/
+/.claude/skills/sbx-tui-config/
+/.agents/skills/sbx-run-feedback/
+/.claude/skills/sbx-run-feedback/
