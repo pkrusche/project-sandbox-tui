@@ -746,8 +746,8 @@ class JobManager:
             if paths:
                 job.summary_path = str(paths.summary)
             self._archive(spec.branch)
-            self.jobs[spec.branch] = job
             self.save(job)
+            self.jobs[spec.branch] = job
             return job
 
     # ------------------------------------------------------------ polling
