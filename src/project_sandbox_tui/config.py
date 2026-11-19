@@ -792,6 +792,12 @@ def write_state(path: Path, data: Any, *, durable: bool = False) -> None:
                 stream.flush()
                 os.fsync(stream.fileno())
         tmp.replace(path)
+        if durable:
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
