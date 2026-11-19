@@ -110,9 +110,10 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, queue → jobs, then graph and dispatch when needed | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
 | `i` | jobs, graph | Recheck busy, prepare the workspace, reserve the session and add the run node |
 | `r`, `:NAME` actions | queue; queue → jobs, graph | Save the prompt, launch when idle and add the run node. A new bookmark typed into the form is recorded first, under graph |
+| `:workflow` | queued: as `r`; interactive: queue → jobs, graph | Refuse while another workflow is in progress, reserve the planner and its queue entry together, then add the run node |
 | `L` edits / pause / resume | queue | Reload and atomically save pending tasks, history, marks and pause state |
 | `I` | jobs, graph | Recheck busy, create a missing workspace and deploy skills, reserve the target before launching the host agent; add the run node |
-| `r` / `i` with bookmarks selected | history → graph → jobs, then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark |
+| `r` / `i` with bookmarks selected | history → graph → jobs, then as `r` / `i` | Check the result bookmark is free, merge or rebase with jj, record the result bookmark. jj runs with `jobs.lock` held |
 | `n` | history → graph | Create with jj, then record the creation and its undo entry |
 | `dd` | history → graph → jobs | Busy check, delete, undo entry |
 | `u` / `ctrl+r` | history → graph → jobs | Busy check, delete or restore, move the undo position |
@@ -137,6 +138,9 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 - Locks are `flock`s on separately opened files, so they also order the threads
   of one TUI. They are not re-entrant: code holding one uses unlocked helpers
   such as `JobManager._busy_reason`.
+- Merging or rebasing selected bookmarks keeps `jobs.lock` while jj runs, so no
+  session can start on an input or the result bookmark mid-operation. Refreshes
+  and launches in other TUIs of the repository wait until jj finishes.
 - Workers that change the repository are not `exclusive`. A second action waits
   for `_history_lock` instead of cancelling the first after jj has already run.
 - Launch defaults and host-command updates share the per-checkout `last_used.lock`.
