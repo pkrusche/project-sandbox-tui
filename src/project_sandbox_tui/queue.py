@@ -83,7 +83,7 @@ class WorkflowRun:
 
 
 _WORKFLOW_STOPPED = "workflow stopped"
-_WORKFLOW_BUSY = (
+WORKFLOW_BUSY = (
     "{branch}: a workflow is already in progress; let it finish, "
     "or delete its queued or stopped step to abandon it"
 )
@@ -401,7 +401,7 @@ class TaskQueue:
         with self.transaction() as queues:
             queue = queues.setdefault(spec.branch, BookmarkQueue())
             if workflow and queue.workflow_in_progress():
-                raise BusyError(_WORKFLOW_BUSY.format(branch=spec.branch))
+                raise BusyError(WORKFLOW_BUSY.format(branch=spec.branch))
             queue.checkpoint()
             queue.tasks.append(task)
         return task
@@ -437,7 +437,7 @@ class TaskQueue:
             queue = queues.setdefault(spec.branch, BookmarkQueue())
             previous = queue.predecessor
             if queue.workflow_in_progress():
-                raise BusyError(_WORKFLOW_BUSY.format(branch=spec.branch))
+                raise BusyError(WORKFLOW_BUSY.format(branch=spec.branch))
             if (previous and previous.job and previous.job.running) or queue.needs_decision(
                 jobs.cfg.feedback
             ):

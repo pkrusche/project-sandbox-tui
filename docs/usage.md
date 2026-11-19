@@ -239,9 +239,11 @@ prompt filled in. Words after the name are appended to the prompt, e.g.
 `:review focus on error handling`. Busy targets and targets with pending or paused
 queues receive a queued prompt; the protected main
 bookmark is skipped. `@` runs in the current checkout.
-sbx-tui asks first for several eligible targets. Action runs use the launch
-defaults unless the action sets its own agent, model, effort or timeout. They
-don't change the remembered defaults or the prompt history.
+sbx-tui asks first for several eligible targets. Action runs use the action's
+`profile` or its own agent, model and effort; otherwise they use the profile the
+launch forms would select. See [agent actions](configuration.md#agent-actions).
+They don't change the remembered defaults, the remembered profile or the prompt
+history.
 
 ### Leader key
 

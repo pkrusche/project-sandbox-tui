@@ -149,3 +149,34 @@ def test_warnings_do_not_fail_doctor(
     assert doctor.main(tmp_path) == 0
     out = capsys.readouterr().out
     assert "! repository:" in out and "all good" in out
+
+
+def test_unknown_action_profiles_warn(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from project_sandbox_tui.config import ProjectTrust
+
+    config = repo / ".project-sandbox-tui.toml"
+    config.write_text(
+        '[project]\nbase_image = "img"\n[sandbox]\nruntime = "docker"\n'
+        '[profiles.deep]\nagent = "codex"\n'
+        "[actions.review]\nprompt = 'r'\nprofile = 'deep'\n"
+        "[actions.check]\nprompt = 'c'\nprofile = 'gone'\n"
+        "[actions.lint]\nprompt = 'l'\nprofile = 'typo'\n"
+    )
+    ProjectTrust.check(repo).trust(repo)
+    checks = by_name(doctor.run_checks(repo, runner=runner(HEALTHY), which=lambda c: f"/bin/{c}"))
+    check = checks["action profiles"]
+    assert check.status == "warn"
+    assert check.detail == "unknown profile: actions.check -> 'gone', actions.lint -> 'typo'"
+    assert "review" not in check.detail
+
+    monkeypatch.setattr(doctor, "run", runner(HEALTHY))
+    monkeypatch.setattr(doctor.shutil, "which", lambda cmd: f"/bin/{cmd}")
+    assert doctor.main(repo) == 0  # a warning, not a problem
+    assert "! action profiles:" in capsys.readouterr().out
+
+    config.write_text(config.read_text().replace("'gone'", "'deep'").replace("'typo'", "'deep'"))
+    ProjectTrust.check(repo).trust(repo)
+    checks = by_name(doctor.run_checks(repo, runner=runner(HEALTHY), which=lambda c: f"/bin/{c}"))
+    assert "action profiles" not in checks

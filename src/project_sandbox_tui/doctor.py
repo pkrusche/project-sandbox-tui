@@ -224,6 +224,22 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
         checks.append(
             Check("notifications", "warn", "no notifier found", "install notify-send (libnotify)")
         )
+    unknown = [
+        (name, action.profile)
+        for name, action in cfg.actions.items()
+        if action.profile and action.profile not in cfg.profiles
+    ]
+    if unknown:
+        checks.append(
+            Check(
+                "action profiles",
+                "warn",
+                "unknown profile: "
+                + ", ".join(f"actions.{name} -> {profile!r}" for name, profile in unknown),
+                "define [profiles.NAME] or change actions.NAME.profile; "
+                "these actions use the remembered launch profile",
+            )
+        )
     return checks
 
 

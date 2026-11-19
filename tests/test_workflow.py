@@ -17,8 +17,17 @@ from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.dialogs import ConfirmScreen, MessageScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.queue import QueueScreen
+from project_sandbox_tui.screens.workflow import WorkflowProfilesScreen
 from tests.test_app import run_app, wait_for_screen, wait_until
 from tests.test_feedback import finish, spec
+
+
+async def start_workflow(app: SandboxTUI, pilot: Any, line: str) -> WorkflowProfilesScreen:
+    """Run ``:workflow ...`` and accept the stage profile picker as shown."""
+    await app.run_command(line)
+    picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+    await pilot.press("enter")
+    return picker
 
 
 @pytest.mark.parametrize("mode", ["inline", "external", "queued"])
@@ -51,7 +60,7 @@ def test_workflow_command_runs_plan_then_four_steps(
                 LaunchSpec("feature/x", "claude", mode="background", prompt_text="first")
             )
         starting_commit = app.backend._description_commit("feature/x")
-        await app.run_command(":workflow spec CSV export")
+        await start_workflow(app, pilot, ":workflow spec CSV export")
         if mode == "queued":
             pending = app.queue.get("feature/x").tasks
             assert [task.workflow is not None for task in pending] == [False, True]
@@ -106,7 +115,7 @@ def test_failed_external_planning_launch_preserves_the_queue(
         branch = "feature/x"
         app.queue.pause(branch, True)
         pending = app.queue.add(LaunchSpec(branch, "codex", mode="background", prompt_text="work"))
-        await app.run_command(":workflow spec")
+        await start_workflow(app, pilot, ":workflow spec")
         await wait_until(
             pilot,
             lambda: any(
@@ -140,7 +149,7 @@ def test_blocked_queued_planner_guides_interactive_repair_and_editor(
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         branch = "feature/x"
         await pilot.press("j")
-        await app.run_command(":workflow spec")
+        await start_workflow(app, pilot, ":workflow spec")
         await wait_until(pilot, lambda: app.queue.get(branch).paused)
         blocked = app.queue.get(branch).history[-1]
         assert blocked.job and blocked.job.blocked_summary == "Fake task outcome"
@@ -384,3 +393,169 @@ def test_one_workflow_at_a_time_in_either_start_mode(
     if second == "queued":
         start_second()
         assert [t.workflow is not None for t in queue.get(branch).tasks] == [True]
+
+
+def profile_workflow_cfg(fake_cfg: Callable[..., Config]) -> Config:
+    from project_sandbox_tui.config import AgentProfile
+
+    cfg = fake_cfg()
+    cfg.profiles = {
+        "fast": AgentProfile(agent="bash", extra_args=["--fast-flag"]),
+        "deep": AgentProfile(agent="bash", effort="high", extra_args=["--memory=16g"]),
+    }
+    cfg.actions = {
+        "plan": Action("report:success"),
+        "check": Action("report:success", agent="bash", effort="low"),
+        "implement": Action("report:success", profile="deep"),
+        "broken": Action("report:success", profile="gone"),
+    }
+    cfg.workflows = {
+        "spec": Workflow("plan", ["check", "implement", "check"], first_step_interactive=False),
+        "odd": Workflow("plan", ["broken"], first_step_interactive=False),
+    }
+    return cfg
+
+
+def test_workflow_picker_choices_initial_values_and_cancel(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.config import LastUsed
+    from project_sandbox_tui.widgets import CycleField
+
+    cfg = profile_workflow_cfg(fake_cfg)
+    LastUsed(profile="fast").save(repo)
+
+    def fields(picker: WorkflowProfilesScreen) -> list[tuple[list[str], str]]:
+        return [
+            (field.options, field.value)
+            for field in picker.query(CycleField)
+            if (field.id or "").startswith("stage-")
+        ]
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        branch = "feature/x"
+        await pilot.press("j")
+        await app.run_command(":workflow spec")
+        picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+        own = ["fast", "deep", "action settings", "custom"]
+        assert fields(picker) == [
+            (["fast", "deep", "custom"], "fast"),  # remembered launch profile
+            (own, "action settings"),
+            (["fast", "deep", "custom"], "deep"),  # the action's profile
+            (own, "action settings"),  # a repeated action gets its own row
+        ]
+        hint = picker.query_one("#stage-hint-2").render()
+        assert str(hint) == "bash/high · --memory=16g"
+        assert "1. plan · queued" in str(picker.query_one(".stage").render())
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is app.main
+        assert not app.queue.get(branch).tasks and not app.jobs.jobs
+        assert LastUsed.load(repo).profile == "fast"
+
+        await app.run_command(":workflow odd")  # not refused after a cancel
+        picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+        assert fields(picker)[1] == (["fast", "deep", "custom"], "fast")
+        assert any(
+            "actions.broken refers to unknown profile 'gone'; using fast" in str(n.message)
+            for n in app._notifications
+        )
+        await pilot.press("escape")
+
+        # A workflow in progress is refused before the picker opens.
+        app.queue.pause(branch, True)
+        await start_workflow(app, pilot, ":workflow spec")
+        await wait_until(pilot, lambda: bool(app.queue.get(branch).tasks))
+        await app.run_command(":workflow spec")
+        await pilot.pause()
+        assert not isinstance(app.screen, WorkflowProfilesScreen)
+        assert any(
+            "a workflow is already in progress" in str(n.message) for n in app._notifications
+        )
+
+    run_app(repo, cfg, scenario)
+
+
+def test_workflow_picker_overrides_are_snapshotted_and_not_remembered(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.config import AgentProfile, LastUsed
+    from project_sandbox_tui.widgets import CycleField
+
+    cfg = profile_workflow_cfg(fake_cfg)
+    LastUsed(profile="fast").save(repo)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        branch = "feature/x"
+        await pilot.press("j")
+        app.queue.pause(branch, True)
+        await app.run_command(":workflow spec")
+        picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+        picker.query_one("#stage-0", CycleField).focus()
+        await pilot.press("l")  # plan: fast -> deep
+        picker.query_one("#stage-2", CycleField).focus()
+        await pilot.press("h")  # implement: deep -> fast
+        await pilot.pause()
+        assert str(picker.query_one("#stage-hint-2").render()) == "bash · --fast-flag"
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: bool(app.queue.get(branch).tasks))
+
+        app.queue.load()
+        planner = app.queue.get(branch).tasks[0]
+        assert planner.spec.profile == "deep" and planner.spec.extra_args == ["--memory=16g"]
+        assert planner.workflow is not None
+        steps = {name: step for name, step in planner.workflow.next_steps}
+        assert steps["implement"].profile == "fast"
+        assert steps["check"].profile == "" and steps["check"].effort == "low"
+
+        # Later profile edits don't reach a started workflow.
+        app.cfg.profiles["fast"] = AgentProfile(agent="bash", extra_args=["--changed"])
+        app.queue.pause(branch, False)
+        app._dispatch_queue()
+
+        def complete() -> bool:
+            history = app.queue.get(branch).history
+            return bool(history and history[-1].decision == "workflow complete")
+
+        await wait_until(pilot, complete, timeout=30)
+        history = app.queue.get(branch).history
+        implement = next(t for t in history if t.workflow and t.workflow.action == "implement")
+        assert implement.job is not None
+        assert "--fast-flag" in implement.job.argv and "--changed" not in implement.job.argv
+        planned = history[0].job
+        assert planned is not None and "--memory=16g" in planned.argv
+
+        # Picks are not remembered for the launch forms or the next workflow.
+        assert LastUsed.load(repo).profile == "fast"
+        await pilot.press("r")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        assert form.query_one("#profile", CycleField).value == "fast"
+        await pilot.press("escape")
+        await app.run_command(":workflow spec")
+        picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+        assert picker.query_one("#stage-0", CycleField).value == "fast"
+        assert picker.query_one("#stage-2", CycleField).value == "deep"
+
+    run_app(repo, cfg, scenario)
+
+
+def test_workflow_dry_run_preview_shows_stage_profiles(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.config import LastUsed
+
+    cfg = profile_workflow_cfg(fake_cfg)
+    LastUsed(profile="").save(repo)  # Custom
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.dry_run = True
+        await pilot.press("j")
+        await start_workflow(app, pilot, ":workflow spec")
+        preview = await wait_for_screen(app, pilot, MessageScreen)
+        body = preview.body
+        assert "plan (background) · profile custom · claude" in body
+        assert "check (background) · profile action settings · bash/low" in body
+        assert "implement (background) · profile deep · bash/high" in body
+        assert not app.queue.get("feature/x").tasks and not app.jobs.jobs
+
+    run_app(repo, cfg, scenario)

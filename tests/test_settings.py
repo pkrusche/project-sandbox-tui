@@ -211,7 +211,7 @@ def test_set_actions(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     code, _, err = cli(capsys, "config", "set", "--global", "actions.review.agent", "codex")
     assert code == 2 and "needs a prompt" in err  # validated before writing
     code, _, err = cli(capsys, "config", "set", "--global", "actions.review.mode", "x")
-    assert code == 2 and "actions.<name>.<prompt|agent|model|effort|timeout>" in err
+    assert code == 2 and "actions.<name>.<prompt|agent|model|effort|timeout|profile>" in err
     prompt = "Review {bookmark}"
     assert cli(capsys, "config", "set", "--global", "actions.review.prompt", prompt)[0] == 0
     assert cli(capsys, "config", "set", "--global", "actions.review.timeout", "60")[0] == 0
@@ -229,6 +229,17 @@ def test_set_actions(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli(capsys, "config", "unset", "--global", "actions.review.timeout")[0] == 0
     assert cli(capsys, "config", "unset", "--global", "actions.review.prompt")[0] == 0
     assert "actions" not in config.global_config_path().read_text()
+
+
+def test_set_action_profile(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    r = ("-R", str(repo))
+    assert cli(capsys, "config", "set", "--project", "actions.review.prompt", "Review", *r)[0] == 0
+    assert cli(capsys, "config", "set", "--project", "actions.review.profile", "deep", *r)[0] == 0
+    assert 'profile = "deep"' in config.project_config_path(repo).read_text()
+    listed = cli(capsys, "config", "list", "--project", *r)[1]
+    assert 'actions.review.profile = "deep"' in listed
+    code, _, err = cli(capsys, "config", "set", "--project", "actions.review.effort", "high", *r)
+    assert code == 2 and "sets profile and effort" in err
 
 
 def test_concurrent_edits_preserve_distinct_keys_and_trust(repo: Path) -> None:

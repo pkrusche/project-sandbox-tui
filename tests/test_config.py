@@ -148,6 +148,38 @@ def test_actions(tmp_path: Path) -> None:
     assert action.to_dict() == {"prompt": action.prompt, "effort": "high", "timeout": 0}
 
 
+def test_action_profile(tmp_path: Path) -> None:
+    write(
+        tmp_path / c.PROJECT_CONFIG_NAME,
+        "[actions.review]\nprompt = 'Review {bookmark}'\nprofile = 'Deep review'\ntimeout = 600\n"
+        "[actions.check]\nprompt = 'Check'\nprofile = 'not configured'\n",
+    )
+    cfg = candidate(tmp_path)  # unknown profiles warn where used, not at load
+    review = cfg.actions["review"]
+    assert (review.profile, review.timeout, review.has_own_settings) == ("Deep review", 600, False)
+    assert review.to_dict() == {
+        "prompt": "Review {bookmark}",
+        "profile": "Deep review",
+        "timeout": 600,
+    }
+    assert cfg.actions["check"].profile == "not configured"
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ("profile = 'deep'\nagent = 'claude'\n", "sets profile and agent"),
+        ("profile = 'deep'\nmodel = 'opus'\neffort = 'high'\n", "sets profile and model, effort"),
+        ("profile = 'Custom'\n", "actions.review.profile: profile name 'custom' is reserved"),
+        ("profile = ' deep'\n", "actions.review.profile: profile name must contain"),
+    ],
+)
+def test_action_profile_rejected(tmp_path: Path, fields: str, message: str) -> None:
+    write(tmp_path / c.PROJECT_CONFIG_NAME, f"[actions.review]\nprompt = 'Review'\n{fields}")
+    with pytest.raises(c.ConfigError, match=message):
+        candidate(tmp_path)
+
+
 def test_last_used_updates_defaults(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -416,3 +448,93 @@ def test_simultaneous_launches_retain_each_agents_model(tmp_path: Path) -> None:
     with ThreadPoolExecutor(max_workers=len(c.AGENTS)) as pool:
         list(pool.map(lambda agent: c.remember(tmp_path, agent, agent, "", None), c.AGENTS))
     assert c.LastUsed.load(tmp_path).model_by_agent == {agent: agent for agent in c.AGENTS}
+
+
+def profiles_cfg() -> c.Config:
+    cfg = c.Config()
+    cfg.defaults.timeout = 900
+    cfg.profiles = {
+        "fast": c.AgentProfile(agent="claude", model="haiku", effort="low"),
+        "deep": c.AgentProfile(
+            agent="codex", model="gpt-x", effort="high", fast=True, extra_args=["--memory=16g"]
+        ),
+        "shell": c.AgentProfile(agent="bash", model="ignored"),
+    }
+    return cfg
+
+
+def test_remembered_profile_matches_launch_form_rules() -> None:
+    cfg = profiles_cfg()
+    assert c.remembered_profile(cfg, c.LastUsed()) == "fast"  # nothing chosen: first profile
+    assert c.remembered_profile(cfg, c.LastUsed(profile="deep")) == "deep"
+    assert c.remembered_profile(cfg, c.LastUsed(profile="")) == ""  # Custom
+    assert c.remembered_profile(cfg, c.LastUsed(profile="gone")) == ""  # removed: Custom
+    assert c.remembered_profile(c.Config(), c.LastUsed()) == ""  # no profiles: Custom
+
+
+@pytest.mark.parametrize(
+    ("action", "last", "expected", "warns"),
+    [
+        (
+            c.Action("p", profile="deep"),
+            c.LastUsed(profile="fast"),
+            c.StepChoice("profile", "deep"),
+            False,
+        ),
+        (c.Action("p", effort="low"), c.LastUsed(profile="fast"), c.ACTION_SETTINGS, False),
+        (c.Action("p", agent="pi"), c.LastUsed(profile="fast"), c.ACTION_SETTINGS, False),
+        (c.Action("p"), c.LastUsed(profile="fast"), c.StepChoice("profile", "fast"), False),
+        (c.Action("p"), c.LastUsed(), c.StepChoice("profile", "fast"), False),
+        (c.Action("p"), c.LastUsed(profile=""), c.CUSTOM, False),
+        (c.Action("p"), c.LastUsed(profile="gone"), c.CUSTOM, False),
+        (
+            c.Action("p", profile="gone"),
+            c.LastUsed(profile="deep"),
+            c.StepChoice("profile", "deep"),
+            True,
+        ),
+        (c.Action("p", profile="gone"), c.LastUsed(profile=""), c.CUSTOM, True),
+    ],
+)
+def test_initial_choice(
+    action: c.Action, last: c.LastUsed, expected: c.StepChoice, warns: bool
+) -> None:
+    choice, warning = c.initial_choice(profiles_cfg(), last, "review", action)
+    assert choice == expected
+    if warns:
+        assert warning == "actions.review refers to unknown profile 'gone'"
+    else:
+        assert warning == ""
+
+
+def test_resolve_action_settings() -> None:
+    cfg = profiles_cfg()
+    last = c.LastUsed(
+        agent="pi", effort="medium", model_by_agent={"pi": "pi-model"}, extra_args=["--cpus=2"]
+    )
+    action = c.Action("p", timeout=600)
+
+    deep = c.resolve_action_settings(cfg, last, action, c.StepChoice("profile", "deep"))
+    assert deep == c.ActionSettings(
+        "codex", "gpt-x", "high", True, 600, ["--memory=16g"], profile="deep"
+    )
+    assert deep.label() == "codex/gpt-x/high/fast"
+
+    shell = c.resolve_action_settings(cfg, last, c.Action("p"), c.StepChoice("profile", "shell"))
+    assert (shell.agent, shell.model, shell.timeout) == ("bash", "", 900)
+
+    custom = c.resolve_action_settings(cfg, last, action, c.CUSTOM)
+    assert custom == c.ActionSettings("pi", "pi-model", "medium", False, 600, ["--cpus=2"])
+
+    # a profile deleted after it was chosen resolves as Custom
+    missing = c.resolve_action_settings(cfg, last, action, c.StepChoice("profile", "gone"))
+    assert missing == custom
+
+    own = c.Action("p", agent="claude", effort="low")
+    settings = c.resolve_action_settings(cfg, last, own, c.ACTION_SETTINGS)
+    # unchanged pre-profile behaviour: no profile args, model only from the same agent
+    assert settings == c.ActionSettings("claude", "", "low", False, 900, [])
+    same_agent = c.resolve_action_settings(
+        cfg, last, c.Action("p", effort="low"), c.ACTION_SETTINGS
+    )
+    assert (same_agent.agent, same_agent.model, same_agent.effort) == ("pi", "pi-model", "low")

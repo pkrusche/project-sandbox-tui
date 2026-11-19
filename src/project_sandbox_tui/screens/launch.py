@@ -21,6 +21,7 @@ from project_sandbox_tui.config import (
     ConfigError,
     LastUsed,
     LaunchDefaults,
+    remembered_profile,
 )
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import LaunchSpec, Mode
@@ -116,11 +117,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.cfg = cfg
         self.last = last
         self.defaults = defaults
-        self.initial_profile = (
-            next(iter(cfg.profiles), "") if last.profile is None else last.profile
-        )
-        if self.initial_profile not in cfg.profiles:
-            self.initial_profile = ""
+        self.initial_profile = remembered_profile(cfg, last)
         self.preview_fn = preview
         self.initial_prompt = draft or prompt_text
         self._baseline_prompt = prompt_text  # what the prompt shows without edits

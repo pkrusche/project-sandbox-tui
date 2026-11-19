@@ -25,6 +25,7 @@ require a `.jj/` directory.
 | `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
 | `screens/agent.py`, `screens/profiles.py` | Shared agent controls and the project profile editor |
+| `screens/workflow.py` | Per-step profile picker shown before a workflow starts |
 
 ## Launches and job lifecycle
 

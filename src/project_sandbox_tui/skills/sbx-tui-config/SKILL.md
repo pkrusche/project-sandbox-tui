@@ -1,6 +1,6 @@
 ---
 name: sbx-tui-config
-description: Configure project-sandbox-tui container images, launch defaults, shared sandbox settings, agent profiles with per-launch project-sandbox flags, commands, and agent actions.
+description: Configure project-sandbox-tui container images, launch defaults, shared sandbox settings, agent profiles with per-launch project-sandbox flags, commands, agent actions, and the agent profile used by each action and workflow step.
 ---
 
 # Configure sbx-tui
@@ -135,12 +135,72 @@ t = "test"
 r = "review"
 ```
 
-Adapt the example to the project. Actions require a prompt and may override
-`agent`, `model`, `effort`, and `timeout`. Only `{bookmark}` and `{main}` are
-substituted in action prompts. Leader mappings name existing command lines;
-create the command/action before its mapping.
-Actions use the selected agent's remembered fast-mode choice, falling back to
-`defaults.fast`; `fast` is not an action-specific setting.
+Adapt the example to the project. Actions require a prompt and may set a
+`timeout`. Only `{bookmark}` and `{main}` are substituted in action prompts.
+Leader mappings name existing command lines; create the command/action before
+its mapping.
+
+### Choose agent profiles for actions and workflow steps
+
+Each action gets its agent settings in one of three ways. Pick one per action:
+
+| Action sets | Agent, model, effort, fast | Extra CLI args |
+| --- | --- | --- |
+| `profile = "NAME"` | from `[profiles.NAME]` | the profile's `extra_args` |
+| `agent`, `model` or `effort` | those fields; unset ones from the launch defaults | none |
+| neither | the profile the `i`/`r` launch forms would select | that profile's, or the remembered Custom args |
+
+`profile` cannot be combined with `agent`, `model` or `effort`; config
+validation rejects it, as it does the reserved name `custom`. `timeout` applies
+in every case. In the third row, the launch forms select the remembered profile,
+or the first configured profile before the user has chosen one. Prefer an
+explicit `profile` for unattended work so its setup doesn't depend on the last
+interactive launch. Use a profile to set `fast` or extra CLI flags for an action.
+
+Workflows run one action after another on a bookmark. Assign each step's agent
+setup through its action:
+
+```toml
+[profiles.deep]
+agent = "codex"
+effort = "high"
+extra_args = ["--memory=16g"]
+
+[profiles.quick]
+agent = "claude"
+effort = "low"
+
+[actions.spec-plan]
+prompt = "Plan {bookmark}; report state.spec_path."
+profile = "deep"
+
+[actions.spec-check]
+prompt = "Check the spec at previous_state.spec_path."
+profile = "quick"
+
+[actions.spec-implement]
+prompt = "Implement the spec at previous_state.spec_path."
+profile = "deep"
+timeout = 3600
+
+[workflows.spec]
+planning_action = "spec-plan"
+steps = ["spec-check", "spec-implement"]
+pass_state_keys = ["spec_path"]
+```
+
+Workflows require `feedback.enabled` (the default), and every referenced action
+must exist. Before anything starts, `:workflow NAME [TOPIC]` shows a picker with
+a profile field for the planning action and each step. Each field starts at the
+action's profile, then **action settings** for an action with its own fields,
+then the launch forms' profile. The user can change any field for that run;
+choices are not remembered, so put lasting choices in the action's `profile`.
+Steps keep the settings chosen at start even if profiles change later.
+
+A `profile` naming a profile that is not configured still loads. sbx-tui warns
+when the action or workflow is used and falls back to the launch forms' profile,
+and `sbx-tui doctor` reports it under `action profiles`. Define the profile, or
+fix the name, before relying on the action.
 
 For host commands, use quoted environment variables such as `"$SBX_WORKSPACE"`.
 `ui.host_agent_command` customizes `I`, the interactive host agent shortcut,
@@ -159,7 +219,11 @@ Run `sbx-tui config list` and `sbx-tui --print-config` to inspect effective
 settings and the default working-copy command. To verify a named profile, open
 `i` or `r` on the intended bookmark, select the profile, and inspect the command
 preview before submitting. Use `esc` to close the form after inspection.
-`sbx-tui doctor` checks dependencies, runtime, and configuration.
+To check workflow step profiles without launching anything, run `sbx-tui
+--dry-run`, select a bookmark, run `:workflow NAME`, and press `enter` in the
+picker: the preview lists each step's profile and agent settings.
+`sbx-tui doctor` checks dependencies, runtime, and configuration, including
+actions that name unknown profiles.
 
 Direct TOML edits require review: until trusted, a changed file uses its last
 trusted copy, and a never-trusted file is ignored. Explain this if inspection

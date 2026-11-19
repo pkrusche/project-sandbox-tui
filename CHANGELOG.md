@@ -19,6 +19,16 @@ All notable changes to this project are documented in this file.
   into an interactive session or workspace editor. The project config includes
   a spec-to-implementation workflow with checks and a structured commit summary.
   Each bookmark runs one workflow at a time.
+- Agent actions accept `profile = "NAME"` to run with a saved agent profile,
+  including its CLI args; it cannot be combined with the action's own `agent`,
+  `model` or `effort`. Actions that set neither now use the profile the `i` / `r`
+  launch forms would select (the first profile before any choice), including its
+  CLI args or the remembered Custom CLI args. A missing profile warns and falls
+  back to that choice, and `doctor` lists actions with unknown profiles.
+- `:workflow` now shows a picker with a profile for the planning action and each
+  step before starting; `enter` starts, `esc` cancels. Fields start at the
+  action's profile or own agent settings, else the launch forms' profile, and
+  the dry-run preview shows each step's profile.
 - `:config-profiles` shows whether a profile comes from the project config, the
   global config or both, and `ctrl+d` deletes it from the file that defines it
   after confirmation.

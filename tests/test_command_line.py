@@ -619,6 +619,74 @@ def test_actions_start_a_run_on_each_target(repo: Path, fake_cfg: Callable[..., 
     run_app(repo, cfg, scenario)
 
 
+def test_action_profile_and_remembered_fallback(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.config import Action, AgentProfile, LastUsed
+    from project_sandbox_tui.screens.launch import LaunchScreen
+    from project_sandbox_tui.widgets import CycleField
+
+    cfg = fake_cfg()
+    cfg.sandbox.extra_args = ["--shared-flag"]
+    cfg.profiles = {
+        "fast": AgentProfile(agent="bash", extra_args=["--fast-flag"]),
+        "deep": AgentProfile(agent="bash", effort="high", extra_args=["--memory=16g"]),
+    }
+    cfg.actions = {
+        "review": Action(prompt="review {bookmark}", profile="deep", timeout=600),
+        "check": Action(prompt="check {bookmark}"),
+        "broken": Action(prompt="broken {bookmark}", profile="gone"),
+    }
+    LastUsed(profile="fast").save(repo)
+
+    async def run(app: SandboxTUI, pilot: Any, line: str) -> list[str]:
+        await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
+        app.jobs.jobs.pop("feature/x", None)
+        await app.run_command(line)
+        await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+        return app.jobs.jobs["feature/x"].argv
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        mark(app, "@", "feature/x")
+        await app.run_command(":review")
+        confirm = await wait_for_screen(app, pilot, ConfirmScreen)
+        assert "unsupervised bash/high run with profile deep" in confirm.body
+        await pilot.press("n")
+        await pilot.press("escape")
+        app.clear_branch_selection()
+        await pilot.press("j")
+        assert app.selected_branch_name() == "feature/x"
+
+        argv = await run(app, pilot, ":review")
+        spec = app.jobs.jobs["feature/x"].spec
+        assert (spec.agent, spec.effort, spec.timeout, spec.profile) == (
+            "bash",
+            "high",
+            600,
+            "deep",
+        )
+        assert argv.index("--shared-flag") < argv.index("--memory=16g")
+
+        argv = await run(app, pilot, ":check")
+        assert app.jobs.jobs["feature/x"].spec.profile == "fast" and "--fast-flag" in argv
+
+        argv = await run(app, pilot, ":broken")
+        assert any(
+            "actions.broken refers to unknown profile 'gone'; using fast" in m
+            for m in messages(app)
+        )
+        assert app.jobs.jobs["feature/x"].spec.profile == "fast" and "--fast-flag" in argv
+
+        # Action runs leave the launch forms' remembered profile alone.
+        await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
+        assert LastUsed.load(repo).profile == "fast"
+        await pilot.press("r")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        assert form.query_one("#profile", CycleField).value == "fast"
+
+    run_app(repo, cfg, scenario)
+
+
 def test_open_editor_on_each_selected_workspace(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:

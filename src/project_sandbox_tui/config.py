@@ -196,6 +196,12 @@ class Action:
     model: str = ""  # "" = launch default for the agent
     effort: str = ""  # "" = launch default
     timeout: int | None = None  # None = launch default
+    profile: str = ""  # [profiles.NAME]; excludes agent, model and effort
+
+    @property
+    def has_own_settings(self) -> bool:
+        """The action sets its own agent, model or effort instead of a profile."""
+        return bool(self.agent or self.model or self.effort)
 
     def render(self, bookmark: str, main: str, extra: str = "") -> str:
         text = self.prompt.replace("{bookmark}", bookmark).replace("{main}", main).rstrip()
@@ -206,7 +212,9 @@ class Action:
     def to_dict(self) -> dict[str, Any]:
         """The keys a config file sets, for ``sbx-tui config list``."""
         out: dict[str, Any] = {"prompt": self.prompt}
-        out.update({k: v for k in ("agent", "model", "effort") if (v := getattr(self, k))})
+        out.update(
+            {k: v for k in ("agent", "model", "effort", "profile") if (v := getattr(self, k))}
+        )
         if self.timeout is not None:
             out["timeout"] = self.timeout
         return out
@@ -257,7 +265,14 @@ def validate_skill_target(target: str, where: str) -> None:
         raise ConfigError(f"{where}: {target!r} needs a plain directory name in {root}/")
 
 
-ACTION_KEYS: dict[str, Any] = {"prompt": "", "agent": "", "model": "", "effort": "", "timeout": 0}
+ACTION_KEYS: dict[str, Any] = {
+    "prompt": "",
+    "agent": "",
+    "model": "",
+    "effort": "",
+    "timeout": 0,
+    "profile": "",
+}
 
 # [commands] every configuration starts with; config files can redefine them.
 DEFAULT_COMMANDS: dict[str, str] = {
@@ -395,6 +410,19 @@ class Config:
                 )
             if action.timeout is not None and action.timeout < 0:
                 raise ConfigError(f"actions.{name}.timeout must be >= 0")
+            if action.profile:
+                # Existence is checked where the profile is used: profiles can be
+                # deleted at runtime, and a missing one warns and falls back.
+                try:
+                    validate_profile_name(action.profile)
+                except ConfigError as exc:
+                    raise ConfigError(f"actions.{name}.profile: {exc}") from exc
+                if action.has_own_settings:
+                    fields = [k for k in ("agent", "model", "effort") if getattr(action, k)]
+                    raise ConfigError(
+                        f"[actions.{name}] sets profile and {', '.join(fields)}: "
+                        "use either a profile or the action's own agent settings"
+                    )
         self._validate_workflows()
         self._validate_workspace_skills()
         try:
@@ -930,6 +958,102 @@ def resolve_launch_defaults(cfg: Config, last: LastUsed) -> LaunchDefaults:
     )
 
 
+def remembered_profile(cfg: Config, last: LastUsed) -> str:
+    """The profile the launch forms select first: the remembered one, or the first
+    configured profile before any choice. "" means Custom, including when the
+    remembered profile is no longer configured."""
+    name = next(iter(cfg.profiles), "") if last.profile is None else last.profile
+    return name if name in cfg.profiles else ""
+
+
+@dataclass(frozen=True)
+class StepChoice:
+    """How an action run or workflow step picks its agent settings."""
+
+    kind: Literal["profile", "action", "custom"]
+    profile: str = ""  # for kind "profile"
+
+    def label(self) -> str:
+        return self.profile if self.kind == "profile" else ACTION_CHOICE_LABELS[self.kind]
+
+
+ACTION_CHOICE_LABELS = {"action": "action settings", "custom": "custom"}
+ACTION_SETTINGS = StepChoice("action")
+CUSTOM = StepChoice("custom")
+
+
+def initial_choice(
+    cfg: Config, last: LastUsed, name: str, action: Action
+) -> tuple[StepChoice, str]:
+    """The choice an action starts with, and a warning when its profile is missing.
+
+    The action's profile comes first, then its own agent settings, then the profile
+    the launch forms would select (Custom when that is none)."""
+    warning = ""
+    if action.profile:
+        if action.profile in cfg.profiles:
+            return StepChoice("profile", action.profile), ""
+        warning = f"actions.{name} refers to unknown profile {action.profile!r}"
+    elif action.has_own_settings:
+        return ACTION_SETTINGS, ""
+    profile = remembered_profile(cfg, last)
+    return (StepChoice("profile", profile) if profile else CUSTOM), warning
+
+
+@dataclass
+class ActionSettings:
+    """Launch settings resolved for one action run or workflow step."""
+
+    agent: str
+    model: str
+    effort: str
+    fast: bool
+    timeout: int
+    extra_args: list[str] = field(default_factory=list)
+    profile: str = ""  # the named profile used, "" otherwise
+
+    def label(self) -> str:
+        parts = [self.agent, self.model, self.effort, "fast" if self.fast else ""]
+        return "/".join(part for part in parts if part)
+
+
+def resolve_action_settings(
+    cfg: Config, last: LastUsed, action: Action, choice: StepChoice
+) -> ActionSettings:
+    """Agent settings for ``action`` under ``choice``; the timeout always comes from
+    the action, else the launch defaults. A choice naming a profile that is not
+    configured resolves as Custom."""
+    defaults = resolve_launch_defaults(cfg, last)
+    timeout = action.timeout if action.timeout is not None else defaults.timeout
+    if choice.kind == "profile" and (profile := cfg.profiles.get(choice.profile)):
+        return ActionSettings(
+            agent=profile.agent,
+            model=profile.model if profile.agent != "bash" else "",
+            effort=profile.effort,
+            fast=profile.fast and profile.agent in FAST_AGENTS,
+            timeout=timeout,
+            extra_args=list(profile.extra_args),
+            profile=choice.profile,
+        )
+    if choice.kind == "action":
+        agent = action.agent or defaults.agent
+        return ActionSettings(
+            agent=agent,
+            model=action.model or (defaults.model if agent == defaults.agent else ""),
+            effort=action.effort or defaults.effort,
+            fast=resolve_fast(cfg, last, agent),
+            timeout=timeout,
+        )
+    return ActionSettings(
+        agent=defaults.agent,
+        model=defaults.model if defaults.agent != "bash" else "",
+        effort=defaults.effort,
+        fast=defaults.fast,
+        timeout=timeout,
+        extra_args=list(last.extra_args),
+    )
+
+
 def remember(
     repo: Path,
     agent: str,
@@ -999,7 +1123,7 @@ keep_workspace = true                  # -> --keep-workspace
 
 # [actions.review]                     # :review starts this prompt as a background run on
 # prompt = "Review {bookmark} against {main}; fix what you find."  # each selected bookmark
-# effort = "high"                      # agent / model / effort / timeout: launch defaults
+# effort = "high"                      # agent/model/effort/timeout: launch defaults; or a profile
 
 # [leader]                             # ui.leader (\\) then these keys run a command line
 # t = "test"                           # "*test" runs it in each selected workspace
@@ -1068,7 +1192,8 @@ cheatsheet = true             # auto-collapses in small terminals (H toggles)
 # [actions.chores]            # :chores starts this prompt as a background sandbox run on
 #                             # each selected bookmark; {bookmark} and {main} are filled in
 # prompt = "Tidy up {bookmark}: update docs and tests for its changes against {main}."
-# agent = "claude"            # agent / model / effort / timeout default to the launch defaults
+# agent = "claude"            # agent / model / effort / timeout default to the launch defaults;
+#                             # profile = "NAME" uses [profiles.NAME] instead of agent/model/effort
 
 # [leader]                    # ui.leader, then these keys run a command line (as after :)
 # l = "lint"

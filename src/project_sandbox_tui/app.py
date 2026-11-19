@@ -50,11 +50,14 @@ from project_sandbox_tui.config import (
     LastUsed,
     LaunchDefaults,
     ProjectTrust,
+    StepChoice,
+    Workflow,
     command_warning,
+    initial_choice,
     load,
     load_candidate,
     remember,
-    resolve_fast,
+    resolve_action_settings,
     resolve_launch_defaults,
     trusted_config_path,
 )
@@ -62,7 +65,7 @@ from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
 from project_sandbox_tui.processes import reap_later
-from project_sandbox_tui.queue import QueuedTask, TaskQueue, WorkflowRun
+from project_sandbox_tui.queue import WORKFLOW_BUSY, QueuedTask, TaskQueue, WorkflowRun
 from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
@@ -90,6 +93,7 @@ from project_sandbox_tui.screens.profiles import ProfileEdit, ProfilesScreen
 from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen, ReviewPosition
 from project_sandbox_tui.screens.tasks import TasksScreen
+from project_sandbox_tui.screens.workflow import Stage, WorkflowProfilesScreen
 from project_sandbox_tui.settings import Editor
 from project_sandbox_tui.tasks import TaskManager, TaskRecord
 from project_sandbox_tui.vcs import (
@@ -3181,21 +3185,23 @@ class SandboxTUI(App[None]):
         action: Action,
         name: str,
         last: LastUsed,
-        defaults: LaunchDefaults,
+        choice: StepChoice,
         *,
         mode: Mode = "background",
         extra: str = "",
     ) -> LaunchSpec:
-        agent = action.agent or defaults.agent
+        settings = resolve_action_settings(self.cfg, last, action, choice)
         return LaunchSpec(
             branch=name,
-            agent=agent,
-            model=action.model or (defaults.model if agent == defaults.agent else ""),
-            effort=action.effort or defaults.effort,
-            fast=resolve_fast(self.cfg, last, agent),
+            agent=settings.agent,
+            model=settings.model,
+            effort=settings.effort,
+            fast=settings.fast,
             mode=mode,
             prompt_text=action.render(name, self.main_name() or "", extra),
-            timeout=action.timeout if action.timeout is not None else defaults.timeout,
+            timeout=settings.timeout,
+            extra_args=settings.extra_args,
+            profile=settings.profile,
         )
 
     def _run_workflow(self, command: commands.Command) -> None:
@@ -3215,33 +3221,71 @@ class SandboxTUI(App[None]):
             self.notify("Select one bookmark for the workflow", severity="warning")
             return
         branch = targets[0]
+        if self.queue.get(branch).workflow_in_progress():
+            self.notify(WORKFLOW_BUSY.format(branch=branch), severity="error", timeout=8)
+            return
         last = LastUsed.load(self.repo)
-        defaults = resolve_launch_defaults(self.cfg, last)
+        stages: list[Stage] = []
+        for index, action in enumerate((workflow.planning_action, *workflow.steps)):
+            choice, warning = initial_choice(self.cfg, last, action, self.cfg.actions[action])
+            if warning:
+                self.notify(f"{warning}; using {choice.label()}", severity="warning")
+            mode = "background"
+            if index == 0:
+                mode = "interactive" if workflow.first_step_interactive else "queued"
+            stages.append(Stage(action, self.cfg.actions[action], mode, choice))
+
+        def chosen(choices: list[StepChoice] | None) -> None:
+            if choices is not None:
+                self._start_workflow(name, workflow, branch, last, choices, command.args)
+
+        self.push_screen(
+            WorkflowProfilesScreen(f"workflow {name} on {branch}", self.cfg, last, stages),
+            chosen,
+        )
+
+    def _start_workflow(
+        self,
+        name: str,
+        workflow: Workflow,
+        branch: str,
+        last: LastUsed,
+        choices: list[StepChoice],
+        topic: str,
+    ) -> None:
+        """Start ``workflow`` with one chosen profile per stage, planning first."""
         spec = self._action_spec(
             self.cfg.actions[workflow.planning_action],
             branch,
             last,
-            defaults,
+            choices[0],
             mode="interactive" if workflow.first_step_interactive else "background",
-            extra=command.args,
+            extra=topic,
         )
         if workflow.pass_state_keys:
             keys = ", ".join(workflow.pass_state_keys)
             spec.prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
         steps = [
-            (action, self._action_spec(self.cfg.actions[action], branch, last, defaults))
-            for action in workflow.steps
+            (action, self._action_spec(self.cfg.actions[action], branch, last, choice))
+            for action, choice in zip(workflow.steps, choices[1:], strict=True)
         ]
         if workflow.result_state_keys:
             keys = ", ".join(workflow.result_state_keys)
             steps[-1][1].prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
         if self.dry_run or "--dry-run" in self.cfg.sandbox.extra_args:
+
+            def chosen_label(stage: LaunchSpec, choice: StepChoice) -> str:
+                # A profile deleted while the picker was open resolves as Custom.
+                return stage.profile or ("action settings" if choice.kind == "action" else "custom")
+
+            stages = [(workflow.planning_action, spec), *steps]
             self.push_screen(
                 MessageScreen(
                     f"Workflow {name} on {branch}",
                     "\n\n".join(
-                        f"{action} ({stage.mode})\n{stage.prompt_text}"
-                        for action, stage in [(workflow.planning_action, spec), *steps]
+                        f"{action} ({stage.mode}) · profile {chosen_label(stage, choice)}"
+                        f" · {stage.label()}\n{stage.prompt_text}"
+                        for (action, stage), choice in zip(stages, choices, strict=True)
                     ),
                 )
             )
@@ -3273,9 +3317,11 @@ class SandboxTUI(App[None]):
         if not eligible:
             return
         last = LastUsed.load(self.repo)
-        defaults = resolve_launch_defaults(self.cfg, last)
+        choice, warning = initial_choice(self.cfg, last, command.action, action)
+        if warning:
+            self.notify(f"{warning}; using {choice.label()}", severity="warning")
         specs = [
-            self._action_spec(action, name, last, defaults, extra=command.args) for name in eligible
+            self._action_spec(action, name, last, choice, extra=command.args) for name in eligible
         ]
 
         def go() -> None:
@@ -3284,7 +3330,11 @@ class SandboxTUI(App[None]):
                 # Each start re-lists bookmarks and rechecks sessions, as r does.
                 self.call_after_refresh(self._start_launch, spec, remember_defaults=False)
 
-        body = f"Each starts or queues :{command.action} as an unsupervised {specs[0].label()} run."
+        profile = f" with profile {specs[0].profile}" if specs[0].profile else ""
+        body = (
+            f"Each starts or queues :{command.action} as an unsupervised "
+            f"{specs[0].label()} run{profile}."
+        )
         if len(eligible) == 1:
             go()
             return

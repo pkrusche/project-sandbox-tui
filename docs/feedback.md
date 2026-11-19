@@ -197,8 +197,9 @@ upstream mount format cannot represent them.
 Use named workflows to run a sequence of actions on one bookmark. Add a workflow
 to your trusted project config (`.project-sandbox-tui.toml`) and define each
 referenced action in `[actions.NAME]`.
-Actions supply the prompts and optional agent, model, effort, and timeout
-settings. Workflow commands support inline and external terminals.
+Actions supply the prompts, an optional timeout, and either a `profile` or their
+own agent, model, and effort; see [agent actions](configuration.md#agent-actions).
+Workflow commands support inline and external terminals.
 
 ```toml
 [workflows.spec]
@@ -225,6 +226,20 @@ work. Write the planning action so it can run from the supplied topic and report
 `blocked` with the missing decisions when it needs input. In both modes the
 first action supplies the same `pass_state_keys` for the later steps.
 
+Before anything starts, `:workflow` lists the planning action and each step with
+a **profile** field. Use `tab` or `j` / `k` to move between steps and `h` / `l`
+to change a profile; the line below each field shows the resulting agent
+settings and CLI args. Press `enter` to start the workflow or `esc` to cancel
+without starting or queueing anything. Each field offers the configured
+profiles and **custom**, plus **action settings** for an action that sets its
+own agent, model, or effort. A field starts at the action's `profile`, then
+**action settings**, then the profile the `i` / `r` launch forms would select
+(the remembered one, or the first configured one). Choices made here are not
+remembered for the launch forms or the next workflow; set `profile` on the
+action to keep one. If an action names a profile that is not configured, the TUI
+warns and starts that field at the launch forms' profile. In `--dry-run` mode,
+`enter` shows each step's profile, agent settings, and prompt instead of starting.
+
 Each bookmark runs one workflow at a time. In either mode, `:workflow` is refused
 while another workflow's step is pending, running, awaiting its decision, or
 stopped in a paused queue.
@@ -248,8 +263,9 @@ requires the final step to report every key in `result_state_keys`. Both lists
 default to empty. The actions define what the state values mean. Workflow steps
 use their own sequence and handoff rules, and run ahead of ordinary prompts
 queued on the same bookmark once its queue is active. The action sequence and
-launch choices are saved at the start so an in-progress workflow can continue
-after a TUI restart or config reload. Reporting requires `project-sandbox` with
+launch choices, including each step's profile settings, are saved at the start
+so an in-progress workflow can continue after a TUI restart or config reload;
+later profile edits don't change it. Reporting requires `project-sandbox` with
 `--mount` support.
 
 If a step reports `blocked`, open the queue with `L` and select it. Press `i`

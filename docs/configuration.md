@@ -193,8 +193,8 @@ is selected.
 If a remembered profile is removed, the form falls back to Custom.
 Prompts and timeouts are not saved in profiles; timeouts use the usual remembered
 launch defaults. Cancelling a launch or editing the queue in `L` does not change
-the remembered choices. Host-agent commands and configured agent actions do not
-select profiles.
+the remembered choices. Host-agent commands do not select profiles; configured
+[agent actions](#agent-actions) can name one with `profile`.
 
 Profiles can also be defined globally or edited from the command line:
 
@@ -395,7 +395,7 @@ command line:
 prompt = '''
 Tidy up {bookmark}: update the docs and tests for its changes against {main}.
 '''
-agent = "claude"        # optional: agent, model, effort, timeout
+agent = "claude"        # optional: agent, model, effort or profile; timeout
 timeout = 1800
 
 [leader]
@@ -403,13 +403,36 @@ rc = "chores"
 ```
 
 `prompt` is required. `{bookmark}` and `{main}` are replaced; other braces stay
-as written. Unset `agent`, `model`, `effort` and `timeout` take the launch
-defaults; a `model` is only taken from the defaults for the same agent. Names
-follow the `[commands]` rules and must not repeat a `[commands]` name.
+as written. Names follow the `[commands]` rules and must not repeat a
+`[commands]` name. An action chooses its agent settings in one of three ways:
+
+- `profile = "NAME"` runs it with the [agent profile](#agent-profiles)'s agent,
+  model, effort, fast mode and CLI args. It cannot be combined with `agent`,
+  `model` or `effort`, and `custom` is not a profile name.
+- `agent`, `model` or `effort` set on the action apply directly; unset ones take
+  the launch defaults, and a `model` is only taken from the defaults for the same
+  agent. No profile CLI args are added.
+- With neither, the action uses the profile that the `i` / `r` launch forms would
+  select: the remembered profile, or the first configured one before any choice.
+  When that is **custom**, the remembered custom agent settings and CLI args apply.
+
+`timeout` applies in every case; unset, it takes the launch default. If `profile`
+names a profile that is not configured, for example after deleting it in
+`:config-profiles`, sbx-tui warns when the action runs and uses the remembered
+profile as above. `sbx-tui doctor` lists such actions as an `action profiles`
+warning.
+
+```toml
+[actions.deep-review]
+prompt = "Review {bookmark} against {main}."
+profile = "Deep review"
+timeout = 1800
+```
 
 ```sh
 sbx-tui config set --project actions.chores.prompt 'Tidy up {bookmark}.'
 sbx-tui config set --project actions.chores.effort low
+sbx-tui config set --project actions.deep-review.profile 'Deep review'
 ```
 
 ## State directory
