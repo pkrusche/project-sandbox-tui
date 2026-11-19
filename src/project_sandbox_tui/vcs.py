@@ -641,6 +641,10 @@ class JjBackend:
         """Files in a pinned commit, with independent seen keys for each commit and file."""
         return self._changed_files("", commit.commit, ("-r", commit.commit), f"{commit.key}:file:")
 
+    def review_commit_patch(self, commit: ReviewCommit) -> bytes:
+        """Plain patch against the same automatically merged parents as file review."""
+        return self._jj_bytes("diff", "-r", commit.commit, "--git")
+
     def review_file_keys(self, base: str, target: str) -> set[str]:
         """Review identities between pinned commit IDs, in one metadata-only query.
 

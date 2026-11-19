@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from project_sandbox_tui import vcs
+from project_sandbox_tui.commit_summary import stage_patches
 
 
 def test_detect_and_list(repo: Path) -> None:
@@ -953,6 +955,41 @@ def test_review_commits_snapshots_empty_and_dirty_working_copy(repo: Path) -> No
     assert "A dirty.txt" in run(
         *backend.diff_commit_files_command(dirty[0], ["dirty.txt"]), cwd=repo
     )
+
+
+def test_stage_review_patches_from_pinned_commits(repo: Path, tmp_path: Path) -> None:
+    from tests.conftest import add_bookmark, jj
+
+    backend = vcs.detect(repo)
+    add_bookmark(repo, "side", "side.txt", "side\n")
+    jj(repo, "new", "feature/x", "side", "-m", "merge")
+    (repo / "merge.txt").write_text("merge only\n")
+    jj(repo, "new", "-m", "empty commit")
+    jj(repo, "bookmark", "create", "review", "-r", "@")
+    pinned = backend.review_commits("main", "review")
+    expected = []
+    for commit in pinned:
+        files = backend.changed_files_for_commit(commit).files
+        cmd = backend.diff_commit_files_command(commit, [path for f in files for path in f.paths])
+        expected.append(
+            subprocess.check_output(
+                [cmd[0], "--no-pager", "--color=never", *cmd[1:], "--git"], cwd=repo
+            )
+        )
+
+    (repo / "later.txt").write_text("rewrite the empty commit\n")
+    jj(repo, "status")
+    assert backend.review_commits("main", "review")[-1].commit != pinned[-1].commit
+    jj(repo, "bookmark", "move", "review", "--to", "main", "--allow-backwards")
+    destination = tmp_path / "input"
+    stage_patches(backend, pinned, destination)
+    manifest = json.loads((destination / "commits.json").read_text())
+    assert [entry["commit_id"] for entry in manifest] == [commit.commit for commit in pinned]
+    assert [entry["subject"] for entry in manifest] == [commit.subject for commit in pinned]
+    assert [(destination / entry["patch"]).read_bytes() for entry in manifest] == expected
+    assert b"+merge only\n" in expected[-2]
+    assert b"b.txt" not in expected[-2] and b"side.txt" not in expected[-2]
+    assert expected[-1] == b""
 
 
 def test_review_commits_with_nul_in_ancestor_description(repo: Path) -> None:
