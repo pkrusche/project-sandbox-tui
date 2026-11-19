@@ -422,6 +422,17 @@ class TaskQueue:
             task.base_commit = task.job.base_commit
             queue.history.append(task)
 
+    def discard_workflow_start(self, job: JobRecord, jobs: JobManager) -> None:
+        """Roll back the interactive reservation when terminal handoff fails."""
+        with self.transaction() as queues:
+            jobs.discard(job)
+            queue = queues.get(job.branch)
+            if queue:
+                queue.history = [task for task in queue.history if task.id != job.queue_id]
+                queue.marks = {
+                    key: value for key, value in queue.marks.items() if value != job.queue_id
+                }
+
     def edit(
         self, branch: str, task_id: str, spec: LaunchSpec, *, expected: LaunchSpec | None = None
     ) -> None:

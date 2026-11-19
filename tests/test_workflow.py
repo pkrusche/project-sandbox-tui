@@ -91,6 +91,35 @@ def test_workflow_command_runs_plan_then_four_steps(
     run_app(repo, cfg, scenario)
 
 
+def test_failed_external_planning_launch_preserves_the_queue(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.ui.terminal_command = "definitely-missing-terminal {cmd}"
+    cfg.actions = {"plan": Action("plan"), "check": Action("check")}
+    cfg.workflows = {"spec": Workflow("plan", ["check"])}
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")
+        branch = "feature/x"
+        app.queue.pause(branch, True)
+        pending = app.queue.add(LaunchSpec(branch, "codex", mode="background", prompt_text="work"))
+        await app.run_command(":workflow spec")
+        await wait_until(
+            pilot,
+            lambda: any(
+                "definitely-missing-terminal" in str(n.message) for n in app._notifications
+            ),
+        )
+        app.queue.load()
+        queue = app.queue.get(branch)
+        assert queue.paused and not queue.history
+        assert [task.id for task in queue.tasks] == [pending.id]
+        assert not app.jobs.busy_reason(branch, {})
+
+    run_app(repo, cfg, scenario)
+
+
 def test_blocked_queued_planner_guides_interactive_repair_and_editor(
     repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:

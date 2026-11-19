@@ -2004,7 +2004,10 @@ class SandboxTUI(App[None]):
             launchers.start(launch, cwd=self.repo)
         except (OSError, launchers.LaunchError):
             if job is not None:
-                self.jobs.discard(job)
+                if job.queue_id:
+                    self.queue.discard_workflow_start(job, self.jobs)
+                else:
+                    self.jobs.discard(job)
             raise
         self._record_run(job)
         self.notify(f"{spec.branch}: {launch.message}", timeout=8)
