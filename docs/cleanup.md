@@ -11,7 +11,8 @@ they are kept. `j` `k` move, `space` toggles a row, `a` selects all/none,
 reasons for keeping others.
 
 Candidates come from `jj workspace list`, regardless of name or location. The
-current workspace and `default` are protected. Workspaces with running sessions
+current workspace and the directory holding the jj repository store (usually
+`default`) are protected. Workspaces with running sessions
 or [`:*` tasks](usage.md#running-in-each-workspace) cannot be removed, even by
 force. Normal cleanup also keeps files too large to snapshot and uncommitted
 changes not already included in main.
@@ -33,7 +34,7 @@ The [main bookmark](configuration.md#settings-reference) defines merged work:
 - Fully merged bookmarks without workspaces appear as separate rows.
 
 Unmerged workspaces with ignored files or missing directories are kept. Removal
-holds the job and host-task locks through deletion. Cleanup runs
+holds the job and host-task locks through deletion and verifies the registered workspace identity. Cleanup runs
 `jj workspace forget` and deletes eligible bookmarks;
 tracked remote bookmarks are deleted on the next `jj git push`. Job history and the
 [bookmark history](usage.md#bookmark-history) stay. In the TUI, `u` restores the
@@ -43,4 +44,4 @@ deleted bookmarks; removed workspaces cannot be undone.
 
 Highlight a kept workspace, press `D` and confirm to unregister it and delete
 its directory, including uncommitted, untracked and ignored files. Bookmarks
-stay. Running sessions and `default` cannot be force-deleted.
+stay. The same job, task and repository-directory protections apply.

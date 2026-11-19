@@ -116,14 +116,20 @@ def _merged(repo: Path, main: str | None, ws: _Found) -> bool:
         return False
 
 
-def _dirty(repo: Path, path: Path) -> tuple[str, bool]:
-    """(why ``path`` must be kept, whether it has ignored files) — ("", False) when clean."""
-    # Snapshot before inspecting: never discard unsnapshotted changes.
-    owner = _run(["jj", "root"], path).strip()
-    if Path(owner).resolve() != path.resolve():
-        raise VcsError("not a workspace")
-    if _jj_store(path) != _jj_store(repo):
-        raise VcsError("workspace belongs to another repository")
+def _verify_workspace(repo: Path, path: Path, name: str) -> None:
+    if not (path / ".jj").is_dir() or _jj_store(path) != _jj_store(repo):
+        raise VcsError(f"{path} is not a workspace of this repository")
+    # jj may no longer know a missing workspace's root. A guessed path
+    # can now belong to another workspace of the same repository.
+    current = _jj(
+        path, "workspace", "list", "-T", "if(target.current_working_copy(), stringify(name))"
+    )
+    if current != name:
+        raise VcsError(f"{path} is not the registered workspace {name}")
+
+
+def _dirty(path: Path) -> tuple[str, bool]:
+    """Snapshot before inspecting and report dirty and ignored files."""
     diff, warnings = _run_with_stderr(["jj", "diff", "--summary"], path)
     dirty = "uncommitted changes" if diff.strip() else ""
     if "Refused to snapshot" in warnings:
@@ -196,7 +202,11 @@ def _inspect(
             return remove("directory not found", merged=True)
         return keep(ws.problem)
     try:
-        changes, ignored = _dirty(repo, path)  # snapshots before _merged looks
+        _verify_workspace(repo, path, name)
+    except (VcsError, OSError) as exc:
+        return keep(str(exc), forceable=False)
+    try:
+        changes, ignored = _dirty(path)  # snapshots before _merged looks
         merged = _merged(repo, main, ws)
     except (VcsError, OSError) as exc:
         return keep(str(exc))
@@ -336,8 +346,11 @@ def remove_workspaces(
         if ws.path is not None:
             try:
                 if not dry_run:
+                    owned = ws.path.exists()
+                    if owned:
+                        _verify_workspace(repo, ws.path, ws.name)
                     _run(["jj", "workspace", "forget", "--", ws.name], repo)
-                    if ws.path.exists():
+                    if owned:
                         shutil.rmtree(ws.path)
                 verb = "would remove" if dry_run else "removed"
                 results.append(f"{verb} {ws.name}: {ws.path}")
@@ -441,10 +454,9 @@ def force_remove_workspace(
         if not ws.forceable:
             return f"skipped {ws.describe}"
         try:
-            # Only delete a directory that really is a workspace of this repository.
-            owned = ws.path.is_dir() and _jj_store(ws.path) == _jj_store(repo)
-            if ws.path.exists() and not owned:
-                raise VcsError(f"{ws.path} is not a workspace of this repository")
+            owned = ws.path.exists()
+            if owned:
+                _verify_workspace(repo, ws.path, ws.name)
             _run(["jj", "workspace", "forget", "--", ws.name], repo)
             if owned:
                 shutil.rmtree(ws.path)

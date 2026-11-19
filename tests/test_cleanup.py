@@ -598,3 +598,21 @@ def test_cleanup_holds_task_lock_through_removal(
         assert force_remove_workspace(detect(repo), Config(), ws).startswith("force-removed")
     else:
         assert remove_workspaces(detect(repo), Config(), [ws])[0].startswith("removed")
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_cleanup_keeps_reused_workspace_directory(jj_repo: Path, force: bool) -> None:
+    path = workspace_path(jj_repo, "old", None)
+    path.parent.mkdir()
+    run("jj", "workspace", "add", str(path), "--name", "old", "-r", "main", cwd=jj_repo)
+    selected = _scan(jj_repo)["old"]
+    other = jj_repo.parent / "replacement"
+    run("jj", "workspace", "add", str(other), "--name", "replacement", "-r", "main", cwd=jj_repo)
+    shutil.rmtree(path)
+    other.rename(path)
+    if force:
+        result = force_remove_workspace(detect(jj_repo), Config(), selected)
+    else:
+        [result] = remove_workspaces(detect(jj_repo), Config(), [selected])
+    assert result.startswith("skipped old")
+    assert path.is_dir()
