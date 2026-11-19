@@ -26,7 +26,7 @@ from project_sandbox_tui.config import (
     private_dir,
     write_state,
 )
-from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _now
+from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, SessionSource, _now
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord
 from project_sandbox_tui.vcs import VcsError, detect, main_branch
 
@@ -374,7 +374,7 @@ class TaskQueue:
         self,
         spec: LaunchSpec,
         jobs: JobManager,
-        sessions: dict[str, SessionRecord],
+        sessions: SessionSource,
         commit: Callable[[], str] | None = None,
     ) -> JobRecord:
         """Retain an immediate run without dispatching or editing pending tasks."""
@@ -706,7 +706,7 @@ class TaskQueue:
                         continue
                     job = jobs.start_background(
                         task.spec,
-                        sessions(),
+                        sessions,
                         queue_id=task.id,
                         base_commit=partial(commit, branch) if commit else None,
                         previous_state=self._input_state(queue, task, jobs),

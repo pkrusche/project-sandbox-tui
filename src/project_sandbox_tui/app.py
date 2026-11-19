@@ -1828,12 +1828,6 @@ class SandboxTUI(App[None]):
                 self._pending_select = spec.branch
             if self.branch(spec.branch) is None:
                 raise VcsError(f"{spec.branch} no longer exists")
-            self.sessions = running_by_branch(
-                read_sessions(self.sessions_dir),
-                self.repo,
-                [b.name for b in self.branches],
-                self.worktree_dir,
-            )
             if spec.mode == "background":
                 if self.dry_run:
                     # Preview only this submission; never consume pending real tasks.
@@ -1841,7 +1835,7 @@ class SandboxTUI(App[None]):
                         self.queue.start(
                             spec,
                             self.jobs,
-                            self.sessions,
+                            lambda: self._sessions_now([spec.branch]),
                             lambda: self.backend._description_commit(spec.branch),
                         )
                     ]
@@ -1931,7 +1925,7 @@ class SandboxTUI(App[None]):
                 job = session.enter_context(
                     self.jobs.interactive(
                         spec,
-                        self.sessions,
+                        lambda: self._sessions_now([spec.branch]),
                         queue_id=task.id if task else "",
                         blocked_guidance=blocked_guidance,
                     )
@@ -2003,7 +1997,7 @@ class SandboxTUI(App[None]):
                 job = self.jobs.record_external(
                     spec,
                     argv,
-                    self.sessions,
+                    lambda: self._sessions_now([spec.branch]),
                     queue_id=task.id if task else "",
                     blocked_guidance=blocked_guidance,
                 )
@@ -2474,7 +2468,9 @@ class SandboxTUI(App[None]):
             spec = LaunchSpec(branch=name, agent=agent)
             mode = launchers.effective_mode(self.cfg.ui.terminal_mode())
             if mode != "inline":
-                job = self.jobs.record_external(spec, argv, self._sessions_now([name]), host=True)
+                job = self.jobs.record_external(
+                    spec, argv, lambda: self._sessions_now([name]), host=True
+                )
                 try:
                     launch = launchers.external_launch(
                         mode,
@@ -2497,7 +2493,7 @@ class SandboxTUI(App[None]):
                 return
             with (
                 self.jobs.interactive(
-                    spec, self._sessions_now([name]), argv=argv, host=True
+                    spec, lambda: self._sessions_now([name]), argv=argv, host=True
                 ) as job,
                 self._suspended(),
             ):

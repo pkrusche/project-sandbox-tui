@@ -741,3 +741,20 @@ def test_inline_host_reservation_uses_host_command_and_ignores_sandbox_metadata(
     assert not done.session_id and not done.container_name
     assert not jobs.busy_reason("topic", {})
     assert jobs.refresh({}) == []  # inline runs do not notify
+
+
+def test_launch_reads_sessions_inside_jobs_lock(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    import fcntl
+
+    jobs = JobManager(repo, fake_cfg())
+
+    def sessions() -> dict[str, SessionRecord]:
+        with (jobs.state_dir / "jobs.lock").open("a") as lock, pytest.raises(BlockingIOError):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return {"topic": SessionRecord("sid", "", "", "", "bash", "running", os.getpid(), "")}
+
+    with pytest.raises(BusyError, match="sid"):
+        jobs.start_background(bg("topic", "busy"), sessions)
+    assert not jobs.jobs
