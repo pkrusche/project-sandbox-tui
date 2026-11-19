@@ -17,6 +17,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -47,10 +48,47 @@ def main() -> int:
     repo = Path(args.project)
     workspace = path_for(repo, args.branch, args.worktree_dir) if args.branch else repo
     feedback_root = None
+    review_input = None
     for mount in args.mount:
         parts = dict(item.split("=", 1) for item in mount.split(",") if "=" in item)
         if parts.get("target") == "/run/sbx-feedback":
             feedback_root = Path(parts["source"])
+        if parts.get("target") == "/run/sbx-review":
+            review_input = Path(parts["source"])
+    if review_input and feedback_root:
+        control = Path(os.environ["SBX_FAKE_REVIEW_CONTROL"])
+        request = json.loads((control / "request.json").read_text())
+        entries = json.loads((review_input / "commits.json").read_text())
+        state = feedback_root / "output" / "fake-state.json"
+        state.write_text(json.dumps(request["state"]))
+        subprocess.run(
+            [
+                sys.executable,
+                str(feedback_root / "sbx-report"),
+                "--context-dir",
+                str(feedback_root),
+                "finish",
+                "--outcome",
+                "success",
+                "--summary",
+                "Fake review",
+                "--state-file",
+                str(state),
+            ],
+            check=True,
+        )
+        ready = {
+            "argv": sys.argv[1:],
+            "cwd": os.getcwd(),
+            "pid": os.getpid(),
+            "entries": entries,
+            "patches": [(review_input / entry["patch"]).read_text() for entry in entries],
+        }
+        (control / "ready.tmp").write_text(json.dumps(ready))
+        (control / "ready.tmp").replace(control / "ready.json")
+        while not (control / "release").exists():
+            time.sleep(0.025)
+        return int(request.get("exit", 0))
     context = feedback_root / "context.json" if feedback_root else None
     planning = (
         json.loads(context.read_text()).get("planning_prompt", "")
@@ -85,8 +123,6 @@ def main() -> int:
     record_path.write_text(json.dumps(record))
     print(f"fake project-sandbox: {' '.join(sys.argv[1:])}", flush=True)
     if feedback_root and (match := re.search(r"report:(success|failure|blocked)", prompt)):
-        import subprocess
-
         state_args: list[str] = []
         if "report-state:" in prompt:
             state, _ = json.JSONDecoder().raw_decode(prompt.split("report-state:", 1)[1].lstrip())
