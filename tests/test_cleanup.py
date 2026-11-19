@@ -569,3 +569,32 @@ def test_basename_registered_workspace_belongs_to_its_bookmark(repo: Path) -> No
     JjBackend(repo).add_workspace("feature/x", path)
     [found] = cleanup._jj_workspaces(repo.resolve(), None, {"main", "feature/x"})
     assert (found.name, found.branch) == (path.name, "feature/x")
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_cleanup_holds_task_lock_through_removal(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, force: bool
+) -> None:
+    import fcntl
+
+    from project_sandbox_tui.config import repo_state_dir
+
+    path = _add_workspace(repo, "feature/x")
+    if force:
+        (path / "work.txt").write_text("changed")
+    [ws] = find_workspaces(detect(repo), Config())
+    rmtree = shutil.rmtree
+
+    def check_locked(target: Path) -> None:
+        with (
+            (repo_state_dir(repo) / "tasks.lock").open("a") as lock,
+            pytest.raises(BlockingIOError),
+        ):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        rmtree(target)
+
+    monkeypatch.setattr(shutil, "rmtree", check_locked)
+    if force:
+        assert force_remove_workspace(detect(repo), Config(), ws).startswith("force-removed")
+    else:
+        assert remove_workspaces(detect(repo), Config(), [ws])[0].startswith("removed")

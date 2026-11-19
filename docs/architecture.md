@@ -120,7 +120,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | `@` | history → jobs | Busy check of the working copy (and of the target's workspace before starting a change there), move it |
 | `e` | history | Describe, only if the target is still the commit that was edited |
 | `:*` | jobs, tasks | Create a missing workspace unless a session is starting; start the task |
-| `:&` | jobs, tasks | Start one task in the repository under `@`; warn if a session is running there |
+| `:&` | tasks, jobs | Start one task in the repository under `@`; warn if a session is running there |
 | `o` | jobs | Create a missing workspace unless a session is starting; deploy skills if idle |
 | `x` | tasks, jobs, graph | Signal tasks; signal or forget the run; record a forgotten run's outcome |
 | `W` | tasks; removal: history → graph → jobs → tasks | List without the launch guard; recheck each chosen workspace right before deleting it |

@@ -33,7 +33,7 @@ The [main bookmark](configuration.md#settings-reference) defines merged work:
 - Fully merged bookmarks without workspaces appear as separate rows.
 
 Unmerged workspaces with ignored files or missing directories are kept. Removal
-checks each workspace again just before deleting it, then runs
+holds the job and host-task locks through deletion. Cleanup runs
 `jj workspace forget` and deletes eligible bookmarks;
 tracked remote bookmarks are deleted on the next `jj git push`. Job history and the
 [bookmark history](usage.md#bookmark-history) stay. In the TUI, `u` restores the

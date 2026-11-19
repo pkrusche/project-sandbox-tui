@@ -256,7 +256,11 @@ class _Survey:
 
 
 def _survey(
-    backend: JjBackend, cfg: Config, jobs: JobManager, sessions_dir: Path | None
+    backend: JjBackend,
+    cfg: Config,
+    jobs: JobManager,
+    sessions_dir: Path | None,
+    task_manager: TaskManager,
 ) -> _Survey:
     repo = backend.root.resolve()
     wd = cfg.resolve_path(cfg.project.worktree_dir, repo) if cfg.project.worktree_dir else None
@@ -274,8 +278,6 @@ def _survey(
         if j.running
     }
     # :* tasks only use a workspace's files, so they keep it but don't make it busy.
-    task_manager = TaskManager(jobs.state_dir)
-    task_manager.refresh()  # records of tasks that ended since a TUI last looked
     tasks = {Path(t.cwd).resolve() for t in task_manager.tasks.values() if t.running}
     merged_rows = _merged_bookmarks(repo, main, busy | tasks, jobs, wd) if main else []
     roots = {ws.path.resolve() for ws in found}
@@ -285,7 +287,9 @@ def _survey(
 def _scan(
     backend: JjBackend, cfg: Config, jobs: JobManager, sessions_dir: Path | None
 ) -> list[Workspace]:
-    survey = _survey(backend, cfg, jobs, sessions_dir)
+    tasks = TaskManager(jobs.state_dir)
+    tasks.refresh()
+    survey = _survey(backend, cfg, jobs, sessions_dir, tasks)
     rows = [survey.inspect(ws) for ws in survey.found] + survey.bookmark_rows()
     return sorted(rows, key=lambda ws: (not ws.removable, ws.path is None, ws.name))
 
@@ -350,9 +354,11 @@ def remove_workspaces(
                 results.append(f"kept bookmark {ws.branch} ({exc})")
 
     # Share the launch lock so another TUI cannot start a job during removal.
-    with jobs._locked():
+    tasks = TaskManager(jobs.state_dir)
+    with jobs._locked(), tasks._locked():
         jobs.load()
-        survey = _survey(backend, cfg, jobs, sessions_dir)
+        tasks._refresh_locked()
+        survey = _survey(backend, cfg, jobs, sessions_dir, tasks)
         # Each workspace is inspected right before it is removed, not all of
         # them first: editors and shells take no lock, so files may change
         # while the others are being checked.
@@ -416,9 +422,11 @@ def force_remove_workspace(
     if chosen.path is None:
         return f"skipped bookmark {chosen.name}: not a workspace"
     jobs = JobManager(repo, cfg, state_dir)
-    with jobs._locked():
+    tasks = TaskManager(jobs.state_dir)
+    with jobs._locked(), tasks._locked():
         jobs.load()
-        survey = _survey(backend, cfg, jobs, sessions_dir)
+        tasks._refresh_locked()
+        survey = _survey(backend, cfg, jobs, sessions_dir, tasks)
         found = next(
             (
                 ws
