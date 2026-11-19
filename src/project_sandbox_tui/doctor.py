@@ -257,7 +257,7 @@ def check_feedback(cfg: Config, repo: Path | None, runner: Runner) -> list[Check
                 (repo / path / "SKILL.md").read_text() == template
                 for path in initialization.FEEDBACK_DIRS
             )
-        except OSError:
+        except (OSError, UnicodeError):
             complete = skills = False
         checks.append(
             Check(
