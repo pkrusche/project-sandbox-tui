@@ -528,6 +528,15 @@ def test_tui_dispatches_successor_when_no_manual_tasks_remain(
     run_app(repo, cfg, scenario)
 
 
+@pytest.mark.parametrize("option", ["--state-file", "--checks-file"])
+def test_helper_rejects_explicit_null(reporting_dir: Path, tmp_path: Path, option: str) -> None:
+    data = tmp_path / "null.json"
+    data.write_text("null")
+    args = ["--context-dir", str(reporting_dir), "finish", "--outcome", "success"]
+    assert feedback.main([*args, "--summary", "done", option, str(data)]) == 1
+    assert not (reporting_dir / "output/feedback.json").exists()
+
+
 def test_preview_preserves_real_predecessor_for_policy_and_state(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
