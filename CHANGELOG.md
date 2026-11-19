@@ -14,6 +14,10 @@ All notable changes to this project are documented in this file.
   queue progression, selected state handoff, and bounded retries/action routing
   with durable successor decisions.
 - Reporting guidance in `--init` and read-only feedback diagnostics in `doctor`.
+- Named project workflows can start with interactive or queued planning and
+  advance through configured actions on success. Blocked reports guide users
+  into an interactive session or workspace editor. The project config includes
+  a spec-to-implementation workflow with checks and a structured commit summary.
 - The bundled `sbx-tui-config` skill is copied into each bookmark workspace
   before `I`, `i`, `r`, agent actions and an idle `o` use it, and kept out of jj
   snapshots with in-tree ignore rules or the repository's local Git excludes.

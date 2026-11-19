@@ -20,7 +20,7 @@ from project_sandbox_tui.widgets import KeyHints, PrefixKeys
 
 HINT = (
     "q back · j/k ^d/^u gg/G move · / filter · n add · e edit · l/enter edit/log"
-    " · P details · c commits · dd delete"
+    " · i/o resolve blocker · P details · c commits · dd delete"
     " · J/K reorder · v/V/space select · u undo · ^r redo · p pause/resume · ma mark · 'a jump"
 )
 
@@ -46,6 +46,8 @@ class QueueScreen(Screen[None]):
         Binding("slash", "filter", show=False),
         Binding("n,r", "add", show=False),
         Binding("e,l", "edit", show=False),
+        Binding("i", "resolve('interactive')", show=False),
+        Binding("o", "resolve('editor')", show=False),
         Binding("P", "details", show=False),
         Binding("c", "commits", show=False),
         Binding("d", "d_prefix", show=False),
@@ -66,12 +68,14 @@ class QueueScreen(Screen[None]):
         branch: str,
         edit: Callable[[str, QueuedTask | None], None],
         review: Callable[[str, str], object] | None = None,
+        resolve: Callable[[QueuedTask, str], None] | None = None,
     ) -> None:
         super().__init__()
         self.queue = queue
         self.branch = branch
         self.edit_task = edit
         self.review = review
+        self.resolve = resolve
         self._prefix = PrefixKeys()
         self._mark_prefix = ""
         self.marked: list[str] = []
@@ -136,7 +140,10 @@ class QueueScreen(Screen[None]):
                     Text(task.spec.label()),
                     Text(", ".join(c[:12] for c in task.commits)),
                     Text(
-                        " ".join(task.spec.prompt_text.split()), no_wrap=True, overflow="ellipsis"
+                        (f"[{task.workflow.name}/{task.workflow.action}] " if task.workflow else "")
+                        + " ".join(task.spec.prompt_text.split()),
+                        no_wrap=True,
+                        overflow="ellipsis",
                     ),
                     Text(task.job.reported_outcome if task.job and task.job.feedback_path else "—"),
                 ),
@@ -285,6 +292,13 @@ class QueueScreen(Screen[None]):
             (t for t in self.queue.get(self.branch).entries if t.id == self.selected_id()), None
         )
 
+    def action_resolve(self, mode: str) -> None:
+        task = self.selected_task()
+        if self.resolve and task and task.job and task.job.blocked_summary:
+            self.resolve(task, mode)
+        else:
+            self.notify("Select a finished task that reported blocked")
+
     def action_details(self) -> None:
         task = self.selected_task()
         if task is None:
@@ -297,6 +311,8 @@ class QueueScreen(Screen[None]):
             f"result      {task.result_commit or '—'}",
             "commits     " + ("\n            ".join(task.commits) or "—"),
         ]
+        if task.workflow:
+            lines.insert(1, f"workflow    {task.workflow.name} / {task.workflow.action}")
         if task.job:
             lines += [
                 f"started     {task.job.started_at}",
@@ -305,6 +321,8 @@ class QueueScreen(Screen[None]):
                 f"log         {task.job.log_path}",
             ]
             lines += [f"run         {task.job.run_id}", task.job.feedback_detail()]
+            if task.job.blocked_summary:
+                lines.append("In the queue, press i to work with an agent or o to open the editor.")
             if task.job.feedback_snapshot:
                 lines += [json.dumps(task.job.feedback_snapshot, indent=2, ensure_ascii=True)]
         if task.parent_task or task.decision:

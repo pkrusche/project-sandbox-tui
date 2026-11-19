@@ -350,7 +350,7 @@ as `eval` can execute them even when passed safely.
 `:name args` runs the command with `sh -c` in the repository foreground, with `args`
 appended (`:test -k merge` runs `uv run pytest -k merge`). Names start with a
 letter and use letters, digits, `_` and `-`; built-in commands (`help`, `doctor`,
-`quit`, `q`, `refresh`, `reload`, `host`, `config-profiles`) cannot be redefined.
+`quit`, `q`, `refresh`, `reload`, `host`, `workflow`, `config-profiles`) cannot be redefined.
 Unlike `ui.*_command`, these are shell code: use `SBX_REPO`, `SBX_BOOKMARK` and
 `SBX_WORKSPACE` rather than placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 
@@ -451,3 +451,8 @@ to enabled with capability detection; queue behavior is unchanged until a policy
 is configured. See [agent feedback](feedback.md#queue-policies) for all defaults
 and examples. `runs/<run_id>/` in repository state stores each run's reporting
 context, helper, skill, and raw feedback independently of workspace lifetime.
+
+Use `[workflows.NAME]` to run existing `[actions.NAME]` prompts on the same
+bookmark. Set `first_step_interactive = false` to queue the planning action. See the
+[spec-to-implementation example](feedback.md#project-workflows) for the fields
+and how to resume after a decision.

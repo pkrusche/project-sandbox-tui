@@ -10,6 +10,7 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 - Run agents interactively or in the background with completion notifications.
 - Collect [structured agent outcomes](docs/feedback.md), pass selected task state, and configure bounded task loops.
+- Start [project workflows](docs/feedback.md#project-workflows) with interactive planning and run follow-up agents on the same bookmark.
 - Save agent, model and sandbox options as named [profiles](docs/configuration.md#agent-profiles), selectable in launch forms.
 - [Review changes commit by commit](docs/usage.md#diff-review), with shared seen marks and your place remembered during the TUI session.
 - Merge or rebase tasks from separate jj workspaces with agent assistance.

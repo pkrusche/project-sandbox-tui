@@ -503,6 +503,11 @@ Adding or editing a task, deleting, reordering, and undo/redo automatically paus
 this bookmark's queue. Press `p` to resume when you are done, even if you cancelled
 the editor. A running session continues, and other bookmarks' queues keep running.
 
+`:workflow NAME [TOPIC]` starts a configured workflow. Its first action runs
+interactively or enters this queue, according to `first_step_interactive`.
+Pressing `p` after a stopped background workflow step retries that step. See
+[project workflows](feedback.md#project-workflows).
+
 | Key | Action |
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
@@ -510,6 +515,7 @@ the editor. A running session continues, and other bookmarks' queues keep runnin
 | `n` / `r` | Add a prompt with the launch form; `ctrl+s` queues it |
 | `e` / `l` / `enter` | Edit a pending task (`ctrl+s` saves); open the log of a running or finished task |
 | `P` | Task details, full prompt, run times, log path and full commit IDs |
+| `i` / `o` | Show the selected blocker and open an interactive agent or workspace editor |
 | `c` | Review the commits in the task's recorded revision range |
 | `dd` | Delete selected tasks, or the highlighted task; running tasks must finish first |
 | `J` / `K` | Move selected tasks down/up one position |

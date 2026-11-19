@@ -34,6 +34,7 @@ BUILTINS: dict[str, str] = {
     "doctor": "diagnose comparisons, dependencies, runtime and config",
     "update-models": "refresh model suggestions: :update-models [SOURCE]",
     "host": "run a host agent: :host AGENT [ARGS...]",
+    "workflow": "start a configured workflow: :workflow NAME [TOPIC...]",
     "quit": "quit (asks while runs continue)",
     "refresh": "refresh the bookmark list",
     "reload": "reload configuration",
@@ -84,6 +85,11 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
             raise CommandError(f":{name} cannot run per workspace")
         if background:
             raise CommandError(f":{name} cannot run in the background")
+        if builtin == "workflow":
+            if not args:
+                return Command(line, builtin=builtin)
+            workflow, *topic = args.split(maxsplit=1)
+            return Command(line, builtin=builtin, argv=(workflow,), args=topic[0] if topic else "")
         if builtin in ("host", "update-models"):
             try:
                 argv = tuple(shlex.split(args))

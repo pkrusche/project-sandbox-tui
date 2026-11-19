@@ -41,6 +41,7 @@ from project_sandbox_tui.cleanup import (
     remove_workspaces,
 )
 from project_sandbox_tui.config import (
+    Action,
     AgentProfile,
     Config,
     ConfigError,
@@ -60,7 +61,7 @@ from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
 from project_sandbox_tui.processes import reap_later
-from project_sandbox_tui.queue import QueuedTask, TaskQueue
+from project_sandbox_tui.queue import QueuedTask, TaskQueue, WorkflowRun
 from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
@@ -686,17 +687,7 @@ class SandboxTUI(App[None]):
                 listed
                 and not self.dry_run
                 and any(
-                    not q.paused
-                    and (
-                        q.tasks
-                        or (
-                            self.cfg.feedback.makes_decisions
-                            and q.history
-                            and q.history[-1].job
-                            and not q.history[-1].job.running
-                            and not q.history[-1].decision_done
-                        )
-                    )
+                    not q.paused and (q.tasks or q.needs_decision(self.cfg.feedback))
                     for q in self.queue.queues.values()
                 )
             ):
@@ -1424,6 +1415,12 @@ class SandboxTUI(App[None]):
         name = selected[0] if selected else self._require_branch()  # one mark wins, as for f
         if name is None:
             return
+        guidance = self._blocked_guidance(name) if mode == "interactive" else ""
+        self._open_launch_form(name, mode, guidance)
+
+    def _open_launch_form(
+        self, name: str, mode: Mode, blocked_guidance: str = "", *, fixed_branch: bool = False
+    ) -> None:
         if reason := self._session_target_error(name):
             self.notify(reason, severity="warning")
             return
@@ -1450,18 +1447,57 @@ class SandboxTUI(App[None]):
             if mode == "interactive"
             else "",
             prompt_history=self.prompt_history,
-            branches=[b.name for b in self.branches],
+            branches=[name] if fixed_branch else [b.name for b in self.branches],
             draft=self._drafts.get((name,), ""),
             submit_label="run / queue" if mode == "background" else "launch",
+            blocked_guidance=blocked_guidance,
+            fixed_branch=fixed_branch,
         )
         known_branches = {b.name for b in self.branches}
 
         def chosen(spec: LaunchSpec | None) -> None:
             self._keep_draft((name,), screen.draft, spec)
             start = name if spec is not None and spec.branch not in known_branches else None
-            self._launch_chosen(spec, new_branch_start=start, draft_key=(name,))
+            self._launch_chosen(
+                spec,
+                new_branch_start=start,
+                draft_key=(name,),
+                blocked_guidance=blocked_guidance if spec and spec.branch == name else "",
+            )
 
         self.push_screen(screen, chosen)
+
+    def _blocked_guidance(self, name: str, task: QueuedTask | None = None) -> str:
+        if task is None:
+            queue = self.queue.get(name)
+            if queue.paused and queue.history:
+                latest = queue.history[-1]
+                if latest.job and latest.job.blocked_summary:
+                    task = latest
+        job = task.job if task else self.jobs.jobs.get(name)
+        if not job or not (summary := job.blocked_summary):
+            return ""
+        heading = f"Blocked task on {name}"
+        workflow = task.workflow if task else None
+        if workflow:
+            heading += f" · {workflow.name} / {workflow.action}"
+        state = (job.feedback_snapshot or {}).get("state", {})
+        spec_path = (workflow.state.get("spec_path") if workflow else None) or state.get(
+            "spec_path"
+        )
+        parts = [heading]
+        if isinstance(spec_path, str) and spec_path:
+            parts.append(f"Spec to review · {spec_path}")
+        parts.append(summary)
+        return "\n\n".join(parts)
+
+    def _resolve_blocked_task(self, task: QueuedTask, mode: str) -> None:
+        name = task.spec.branch
+        guidance = self._blocked_guidance(name, task)
+        if mode == "editor":
+            self._open_editor_with_guidance(name, guidance)
+        else:
+            self._open_launch_form(name, "interactive", guidance, fixed_branch=True)
 
     def action_task_queue(self) -> None:
         name = self._require_branch()
@@ -1471,7 +1507,13 @@ class SandboxTUI(App[None]):
             self.notify(reason, severity="warning")
             return
         self.push_screen(
-            QueueScreen(self.queue, name, self._edit_queued_task, self._review_commits)
+            QueueScreen(
+                self.queue,
+                name,
+                self._edit_queued_task,
+                self._review_commits,
+                self._resolve_blocked_task,
+            )
         )
 
     def _edit_queued_task(self, name: str, task: QueuedTask | None) -> None:
@@ -1604,9 +1646,15 @@ class SandboxTUI(App[None]):
 
     def _report_queue_errors(self) -> None:
         for name, queue in self.queue.queues.items():
+            latest = queue.history[-1].job if queue.history else None
+            hint = (
+                "L then i/o on the blocked task to resolve"
+                if latest and latest.blocked_summary
+                else "L to edit or resume"
+            )
             self._state_problem(
                 f"queue:{name}",
-                f"{name}: queue paused: {queue.error} (L to edit or resume)" if queue.error else "",
+                f"{name}: queue paused: {queue.error} ({hint})" if queue.error else "",
             )
 
     def _launch_octopus(self, mode: Mode, chosen: list[str]) -> None:
@@ -1666,6 +1714,7 @@ class SandboxTUI(App[None]):
         *,
         new_branch_start: str | None = None,
         draft_key: tuple[str, ...] = (),
+        blocked_guidance: str = "",
     ) -> None:
         if spec is None:
             return
@@ -1678,7 +1727,11 @@ class SandboxTUI(App[None]):
             return
 
         self.call_after_refresh(
-            self._start_launch, spec, new_branch_start=new_branch_start, draft_key=draft_key
+            self._start_launch,
+            spec,
+            new_branch_start=new_branch_start,
+            draft_key=draft_key,
+            blocked_guidance=blocked_guidance,
         )
 
     @work(group="octopus")  # not exclusive: see _create_branch
@@ -1749,6 +1802,8 @@ class SandboxTUI(App[None]):
         banner: str = "",
         draft_key: tuple[str, ...] = (),
         remember_defaults: bool = True,
+        workflow: WorkflowRun | None = None,
+        blocked_guidance: str = "",
     ) -> None:
         """Start a launch. ``remember_defaults`` False (agent actions) keeps the
         prompt history and the launch form's defaults as they are."""
@@ -1791,7 +1846,7 @@ class SandboxTUI(App[None]):
                         )
                     ]
                 else:
-                    self.queue.add(spec)
+                    self.queue.add(spec, workflow=workflow)
                     started = self._dispatch_queue()
                     self._report_queue_errors()
                 for job in started:
@@ -1800,9 +1855,9 @@ class SandboxTUI(App[None]):
                 if not any(job.spec == spec for job in started):
                     self.notify(f"{spec.branch}: prompt queued (L to edit or pause)")
             elif launchers.effective_mode(self.cfg.ui.terminal_mode()) != "inline":
-                self._launch_external(spec)
+                self._launch_external(spec, workflow, blocked_guidance)
             else:
-                self._launch_interactive(spec, banner)
+                self._launch_interactive(spec, banner, workflow, blocked_guidance)
         except (BusyError, ConfigError, VcsError, ValueError, launchers.LaunchError) as exc:
             self._report_preparation()
             self.notify(str(exc), severity="error", timeout=8)
@@ -1859,8 +1914,30 @@ class SandboxTUI(App[None]):
         if error is not None:
             raise error
 
-    def _launch_interactive(self, spec: LaunchSpec, banner: str = "") -> None:
-        with self.jobs.interactive(spec, self.sessions) as job:
+    def _launch_interactive(
+        self,
+        spec: LaunchSpec,
+        banner: str = "",
+        workflow: WorkflowRun | None = None,
+        blocked_guidance: str = "",
+    ) -> None:
+        with contextlib.ExitStack() as session:
+            reservation = (
+                self.queue.start_workflow(spec, workflow, self.jobs)
+                if workflow
+                else contextlib.nullcontext()
+            )
+            with reservation as task:
+                job = session.enter_context(
+                    self.jobs.interactive(
+                        spec,
+                        self.sessions,
+                        queue_id=task.id if task else "",
+                        blocked_guidance=blocked_guidance,
+                    )
+                )
+                if task:
+                    task.job = job
             self._record_run(job)
             with self._suspended():
                 print(
@@ -1868,6 +1945,14 @@ class SandboxTUI(App[None]):
                     flush=True,
                 )
                 self._print_preparation()
+                if workflow:
+                    print(self._planning_intro(spec, workflow), flush=True)
+                if blocked_guidance and job.feedback_path:
+                    print(
+                        "Ask the agent to read blocked_guidance in "
+                        "/run/sbx-feedback/context.json.\n",
+                        flush=True,
+                    )
                 if banner:  # e.g. what an octopus merge left to resolve; read it first
                     print(banner, flush=True)
                     with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
@@ -1893,21 +1978,53 @@ class SandboxTUI(App[None]):
                             "press Enter to return to sbx-tui ──"
                         )
 
-    def _launch_external(self, spec: LaunchSpec) -> None:
+    @staticmethod
+    def _planning_intro(spec: LaunchSpec, workflow: WorkflowRun) -> str:
+        return (
+            f"Workflow {workflow.name} on {spec.branch}\n"
+            "Ask the planning agent to read /run/sbx-feedback/context.json and follow its "
+            "planning brief. Approve the plan before asking the agent to report success, "
+            "then exit the session to start the next step.\n"
+        )
+
+    def _launch_external(
+        self, spec: LaunchSpec, workflow: WorkflowRun | None = None, blocked_guidance: str = ""
+    ) -> None:
         """Hand the session to tmux / zellij / screen / a custom terminal command."""
         argv = build_argv(self.cfg, self.repo, spec)
-        job = self.jobs.record_external(spec, argv, self.sessions)
+        reservation = (
+            self.queue.start_workflow(spec, workflow, self.jobs)
+            if workflow
+            else contextlib.nullcontext()
+        )
+        job = None
         try:
+            with reservation as task:
+                job = self.jobs.record_external(
+                    spec,
+                    argv,
+                    self.sessions,
+                    queue_id=task.id if task else "",
+                    blocked_guidance=blocked_guidance,
+                )
+                if task:
+                    task.job = job
+            command = job.argv
+            if workflow:
+                command = launchers.host_command(
+                    command, job.summary_path, intro=self._planning_intro(spec, workflow)
+                )
             launch = launchers.external_launch(
                 self.cfg.ui.terminal_mode(),
-                job.argv,
+                command,
                 spec.branch,
                 self.repo,
                 self.cfg.ui.terminal_command,
             )
             launchers.start(launch, cwd=self.repo)
         except (OSError, launchers.LaunchError):
-            self.jobs.discard(job)
+            if job is not None:
+                self.jobs.discard(job)
             raise
         self._record_run(job)
         self.notify(f"{spec.branch}: {launch.message}", timeout=8)
@@ -2267,6 +2384,10 @@ class SandboxTUI(App[None]):
 
     def action_open_editor(self) -> None:
         chosen = self._action_branches()
+        if len(chosen) == 1:
+            name = chosen[0]
+            self._open_editor_with_guidance(name, self._blocked_guidance(name))
+            return
         if len(chosen) <= EDITOR_BATCH:
             for name in chosen:
                 self._open_editor(name)
@@ -2279,6 +2400,19 @@ class SandboxTUI(App[None]):
 
         body = "\n".join(chosen) + "\n\nEach one opens in its own editor."
         self.push_screen(ConfirmScreen(f"open {len(chosen)} workspaces?", body, "open"), decided)
+
+    def _open_editor_with_guidance(self, name: str, guidance: str) -> None:
+        if not guidance:
+            self._open_editor(name)
+            return
+
+        def decided(open_editor: bool | None) -> None:
+            if open_editor:
+                self.call_after_refresh(self._open_editor, name)
+
+        self.push_screen(
+            ConfirmScreen(f"Resolve blocker on {name}", guidance, "open editor"), decided
+        )
 
     def action_open_host_agent(self) -> None:
         self._open_host_agents()
@@ -2796,6 +2930,19 @@ class SandboxTUI(App[None]):
                     ),
                 )
             )
+        if self.cfg.workflows:
+            extra.append(
+                (
+                    "workflows",
+                    tuple(
+                        (
+                            f":workflow {name}",
+                            " → ".join((workflow.planning_action, *workflow.steps)),
+                        )
+                        for name, workflow in self.cfg.workflows.items()
+                    ),
+                )
+            )
         if self.cfg.leader:
             mapped = tuple(
                 (self.cfg.ui.leader + k, f":{line.removeprefix(':')}")
@@ -2923,6 +3070,8 @@ class SandboxTUI(App[None]):
             self.action_config_profiles()
         elif command.builtin == "host":
             self._open_host_agents(command.argv)
+        elif command.builtin == "workflow":
+            self._run_workflow(command)
         else:
             self._run_shell(command)
 
@@ -3039,6 +3188,88 @@ class SandboxTUI(App[None]):
             go,
         )
 
+    def _action_spec(
+        self,
+        action: Action,
+        name: str,
+        last: LastUsed,
+        defaults: LaunchDefaults,
+        *,
+        mode: Mode = "background",
+        extra: str = "",
+    ) -> LaunchSpec:
+        agent = action.agent or defaults.agent
+        return LaunchSpec(
+            branch=name,
+            agent=agent,
+            model=action.model or (defaults.model if agent == defaults.agent else ""),
+            effort=action.effort or defaults.effort,
+            fast=resolve_fast(self.cfg, last, agent),
+            mode=mode,
+            prompt_text=action.render(name, self.main_name() or "", extra),
+            timeout=action.timeout if action.timeout is not None else defaults.timeout,
+        )
+
+    def _run_workflow(self, command: commands.Command) -> None:
+        if not command.argv:
+            names = ", ".join(self.cfg.workflows)
+            self.notify(f"Use :workflow NAME [TOPIC]\nConfigured workflows: {names or 'none'}")
+            return
+        name = command.argv[0]
+        workflow = self.cfg.workflows.get(name)
+        if workflow is None:
+            self.notify(f"Unknown workflow {name!r}; use :workflow to list names", severity="error")
+            return
+        targets = self._action_branches()
+        if not targets:
+            return
+        if len(targets) != 1 or targets[0] == WORKING_COPY:
+            self.notify("Select one bookmark for the workflow", severity="warning")
+            return
+        branch = targets[0]
+        last = LastUsed.load(self.repo)
+        defaults = resolve_launch_defaults(self.cfg, last)
+        spec = self._action_spec(
+            self.cfg.actions[workflow.planning_action],
+            branch,
+            last,
+            defaults,
+            mode="interactive" if workflow.first_step_interactive else "background",
+            extra=command.args,
+        )
+        if workflow.pass_state_keys:
+            keys = ", ".join(workflow.pass_state_keys)
+            spec.prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
+        steps = [
+            (action, self._action_spec(self.cfg.actions[action], branch, last, defaults))
+            for action in workflow.steps
+        ]
+        if workflow.result_state_keys:
+            keys = ", ".join(workflow.result_state_keys)
+            steps[-1][1].prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
+        if self.dry_run or "--dry-run" in self.cfg.sandbox.extra_args:
+            self.push_screen(
+                MessageScreen(
+                    f"Workflow {name} on {branch}",
+                    "\n\n".join(
+                        f"{action} ({stage.mode})\n{stage.prompt_text}"
+                        for action, stage in [(workflow.planning_action, spec), *steps]
+                    ),
+                )
+            )
+            return
+        self._start_launch(
+            spec,
+            remember_defaults=False,
+            workflow=WorkflowRun(
+                name,
+                workflow.planning_action,
+                steps,
+                workflow.pass_state_keys,
+                workflow.result_state_keys,
+            ),
+        )
+
     def _run_action(self, command: commands.Command) -> None:
         """``:NAME`` for an [actions] entry: a background sandbox run on each target."""
         action = self.cfg.actions[command.action]
@@ -3054,22 +3285,9 @@ class SandboxTUI(App[None]):
         if not eligible:
             return
         last = LastUsed.load(self.repo)
-        d = resolve_launch_defaults(self.cfg, last)
-        agent = action.agent or d.agent
-        model = action.model or (d.model if agent == d.agent else "")
-        main = self.main_name() or ""
+        defaults = resolve_launch_defaults(self.cfg, last)
         specs = [
-            LaunchSpec(
-                branch=name,
-                agent=agent,
-                model=model,
-                effort=action.effort or d.effort,
-                fast=resolve_fast(self.cfg, last, agent),
-                mode="background",
-                prompt_text=action.render(name, main, command.args),
-                timeout=action.timeout if action.timeout is not None else d.timeout,
-            )
-            for name in eligible
+            self._action_spec(action, name, last, defaults, extra=command.args) for name in eligible
         ]
 
         def go() -> None:

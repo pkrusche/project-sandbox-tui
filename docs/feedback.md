@@ -191,6 +191,73 @@ previews show the intended mount paths without staging reporting files or probin
 the CLI. Commas and newlines in reporting mount paths are rejected because the
 upstream mount format cannot represent them.
 
+## Project workflows
+
+Use named workflows to run a sequence of actions on one bookmark. Add a workflow
+to your trusted project config (`.project-sandbox-tui.toml`) and define each
+referenced action in `[actions.NAME]`.
+Actions supply the prompts and optional agent, model, effort, and timeout
+settings. Workflow commands support inline and external terminals.
+
+```toml
+[workflows.spec]
+planning_action = "spec-plan"
+first_step_interactive = true
+steps = ["spec-check", "spec-implement", "spec-chores", "spec-commits"]
+pass_state_keys = ["spec_path"]
+result_state_keys = ["commits"]
+```
+
+The [project's example configuration](../.project-sandbox-tui.toml) defines all
+five actions. To use it, select an idle feature bookmark and type
+`:workflow spec Add CSV export`. Type `:workflow` to list the
+configured names. At the start of planning, ask the agent to read
+`/run/sbx-feedback/context.json` and follow its brief. Work together on a plan
+or OpenSpec change saved in the checkout. When you approve it, ask the agent to
+finish reporting with `state.spec_path` set to its workspace-relative path,
+then exit the interactive session.
+
+`first_step_interactive` defaults to `true`. Set it to `false` to submit
+`planning_action` to the bookmark's queue as a background task. It starts when
+the bookmark is free and its queue is active, in order with existing pending
+work. Write the planning action so it can run from the supplied topic and report
+`blocked` with the missing decisions when it needs input. In both modes the
+first action supplies the same `pass_state_keys` for the later steps.
+
+1. **Check the spec.** The first background task checks the acceptance criteria,
+   checklist, and verification plan. If a decision is still needed, it reports
+   `blocked` with the question to resolve.
+2. **Implement the spec.** The next task works through the checklist and reports
+   `blocked` if a decision prevents it from finishing.
+3. **Run chores and verification.** The next task handles related cleanup and runs
+   the required tests and checks, recording their results.
+4. **Prepare commits for review.** The last task organizes the tested changes into
+   spec-aligned commits and reports `state.commits` in review order. Each entry
+   contains `commit_id`, `subject`, `spec_tasks`, and `summary`. Open the queue
+   with `L` and press `P` on that step to read the full report.
+
+Each step needs a clean process exit and a valid final `success` report to
+advance. `pass_state_keys` requires those keys in the planner's final `state`
+and copies them into `previous_state` for every background step. The workflow
+requires the final step to report every key in `result_state_keys`. Both lists
+default to empty. The actions define what the state values mean. Workflow steps
+use their own sequence and handoff rules, and run ahead of ordinary prompts
+queued on the same bookmark once its queue is active. The action sequence and
+launch choices are saved at the start so an in-progress workflow can continue
+after a TUI restart or config reload. Reporting requires `project-sandbox` with
+`--mount` support.
+
+If a step reports `blocked`, open the queue with `L` and select it. Press `i`
+to see the blocker and open an interactive session, or `o` to see it and then
+`y` to open the workspace editor. The guidance includes the agent's question or
+prerequisite and the known spec path. Use `P` for the full report. Record the
+decision or fix in the workspace, then press `p` to retry a stopped background
+step with its original planning context. If the interactive planning step
+stops, resume the queue and start it again with `:workflow`.
+
+Delete the stopped queue entry before resuming to abandon the workflow.
+Dry-run mode shows each action's launch mode and prompt.
+
 ## Initialization and diagnostics
 
 `sbx-tui --init` installs local reporting skills and appends an idempotent,
