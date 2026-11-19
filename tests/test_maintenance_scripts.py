@@ -405,6 +405,19 @@ def test_release_does_not_reuse_checks_for_a_different_commit(
     assert sum(args[0] == "build" for name, args, _ in calls if name == "uv") == 1
 
 
+def test_release_rejects_concurrent_invocation(release_repo: Path) -> None:
+    import fcntl
+
+    fd = os.open(release_repo, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        result = run_release(release_repo)
+    finally:
+        os.close(fd)
+    assert result.returncode and "Another release" in result.stderr
+    assert not (release_repo / ".release-status").exists()
+
+
 def test_release_rejects_empty_jj_merge_working_copy(release_repo: Path) -> None:
     def jj(*args: str) -> None:
         subprocess.run(["jj", *args], cwd=release_repo, check=True, capture_output=True)
