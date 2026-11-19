@@ -319,3 +319,27 @@ def test_workflow_config_requires_existing_actions_and_feedback() -> None:
     del cfg.actions["commits"]
     with pytest.raises(ConfigError, match="unknown action 'commits'"):
         cfg.validate()
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_invalid_rendered_step_leaves_the_queue_usable(
+    repo: Path, fake_cfg: Callable[..., Config], interactive: bool
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    queue = TaskQueue(jobs.state_dir)
+    branch = "feature/x"
+    planner = LaunchSpec(
+        branch, "codex", mode="interactive" if interactive else "background", prompt_text="plan"
+    )
+    empty = LaunchSpec(
+        branch, "codex", mode="background", prompt_text=Action("{main}").render(branch, "")
+    )
+    workflow = WorkflowRun("spec", "plan", [("check", empty)], [], [])
+    with pytest.raises(ValueError, match="invalid workflow step"):
+        if interactive:
+            with queue.start_workflow(planner, workflow, jobs):
+                pytest.fail("invalid workflow reached launch")
+        else:
+            queue.add(planner, workflow=workflow)
+    pending = queue.add(LaunchSpec(branch, "codex", mode="background", prompt_text="work"))
+    assert queue.get(branch).tasks == [pending]

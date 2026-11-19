@@ -53,20 +53,7 @@ class WorkflowRun:
     @classmethod
     def from_dict(cls, raw: dict[str, Any], branch: str) -> WorkflowRun:
         steps = [(name, LaunchSpec.from_dict(spec)) for name, spec in raw["next_steps"]]
-        if len(steps) > 99 or any(
-            not isinstance(name, str)
-            or spec.branch != branch
-            or spec.mode != "background"
-            or not spec.prompt_text.strip()
-            for name, spec in steps
-        ):
-            raise ValueError("invalid workflow step")
-        if not isinstance(raw["state"], dict) or any(
-            not isinstance(raw[key], list) or not all(isinstance(v, str) for v in raw[key])
-            for key in ("pass_state_keys", "result_state_keys")
-        ):
-            raise ValueError("invalid workflow state")
-        return cls(
+        workflow = cls(
             raw["name"],
             raw["action"],
             steps,
@@ -74,6 +61,25 @@ class WorkflowRun:
             raw["result_state_keys"],
             raw["state"],
         )
+        workflow.validate(branch)
+        return workflow
+
+    def validate(self, branch: str) -> None:
+        if not isinstance(self.name, str) or not isinstance(self.action, str):
+            raise ValueError("invalid workflow name or action")
+        if len(self.next_steps) > 99 or any(
+            not isinstance(name, str)
+            or spec.branch != branch
+            or spec.mode != "background"
+            or not spec.prompt_text.strip()
+            for name, spec in self.next_steps
+        ):
+            raise ValueError("invalid workflow step")
+        if not isinstance(self.state, dict) or any(
+            not isinstance(keys, list) or not all(isinstance(v, str) for v in keys)
+            for keys in (self.pass_state_keys, self.result_state_keys)
+        ):
+            raise ValueError("invalid workflow state")
 
 
 _WORKFLOW_STOPPED = "workflow stopped"
@@ -371,6 +377,8 @@ class TaskQueue:
         return QueuedTask(uuid.uuid4().hex, copy.deepcopy(spec))
 
     def add(self, spec: LaunchSpec, *, workflow: WorkflowRun | None = None) -> QueuedTask:
+        if workflow:
+            workflow.validate(spec.branch)
         task = self._new_task(spec)
         task.workflow = workflow
         with self.transaction() as queues:
@@ -400,6 +408,7 @@ class TaskQueue:
         self, spec: LaunchSpec, workflow: WorkflowRun, jobs: JobManager
     ) -> Generator[QueuedTask, None, None]:
         """Register the interactive reservation before handing it a terminal."""
+        workflow.validate(spec.branch)
         if spec.mode != "interactive" or not spec.prompt_text.strip() or not workflow.next_steps:
             raise ValueError(
                 "a workflow needs an interactive plan and at least one background step"
