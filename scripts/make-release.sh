@@ -48,7 +48,8 @@ check_clean() {
     if $JJ; then
         [[ -n "$(jj log -r '@ & empty()' --no-graph -T commit_id)" ]] || die "jj working copy must be empty."
         COMMIT=$(jj log -r '@- & main & main@origin & immutable()' --no-graph -T commit_id)
-        [[ -n "$COMMIT" ]] || die "jj parent must be immutable main, pushed to origin."
+        [[ -n "$COMMIT" && "$(jj log -r '@-' --no-graph -T commit_id)" == "$COMMIT" ]] ||
+            die "jj working copy must have a single parent: immutable main, pushed to origin."
     else
         [[ -z "$(git status --porcelain)" ]] || die "Git working tree must be clean."
         [[ "$(git branch --show-current)" == main ]] || die "Release from main."

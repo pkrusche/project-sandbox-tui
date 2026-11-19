@@ -405,6 +405,19 @@ def test_release_does_not_reuse_checks_for_a_different_commit(
     assert sum(args[0] == "build" for name, args, _ in calls if name == "uv") == 1
 
 
+def test_release_rejects_empty_jj_merge_working_copy(release_repo: Path) -> None:
+    def jj(*args: str) -> None:
+        subprocess.run(["jj", *args], cwd=release_repo, check=True, capture_output=True)
+
+    jj("git", "init", "--colocate")
+    jj("new", "root()", "-m", "side")
+    (release_repo / "side.txt").write_text("not in main")
+    jj("new", "@", "main")
+    result = run_release(release_repo)
+    assert result.returncode and "single parent" in result.stderr
+    assert not (release_repo / ".release-status").exists()
+
+
 def test_e2e_preflight_respects_command_quoting_and_exit_status(tmp_path: Path) -> None:
     import shlex
 
