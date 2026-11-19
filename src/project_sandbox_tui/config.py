@@ -87,6 +87,11 @@ def validate_profile_name(name: str) -> None:
 
 
 @dataclass
+class CommitReview:
+    profile: str = ""
+
+
+@dataclass
 class Network:
     internet_proxy: str = ""  # --internet-proxy URL
     agent_proxy: str = ""  # --agent-proxy URL
@@ -305,6 +310,7 @@ class Config:
     ui: UI = field(default_factory=UI)
     prompts: Prompts = field(default_factory=Prompts)
     feedback: Feedback = field(default_factory=Feedback)
+    commit_review: CommitReview = field(default_factory=CommitReview)
     models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
     commands: dict[str, str] = field(  # :name -> shell command (commands.py)
         default_factory=lambda: dict(DEFAULT_COMMANDS)
@@ -319,6 +325,19 @@ class Config:
     profile_sources: dict[str, tuple[ConfigScope, ...]] = field(default_factory=dict)
 
     # ---------------------------------------------------------- helpers
+
+    def commit_summary_profile(self) -> tuple[str, AgentProfile]:
+        name = self.commit_review.profile
+        if not name:
+            return "commit-summary", AgentProfile(agent="codex", effort="low")
+        profile = self.profiles.get(name)
+        if profile is None:
+            raise ConfigError(
+                f"commit_review.profile {name!r} is missing; select an existing profile"
+            )
+        if profile.agent == "bash":
+            raise ConfigError(f"commit_review.profile {name!r} uses bash; select a model agent")
+        return name, dataclasses.replace(profile, extra_args=list(profile.extra_args))
 
     def sandbox_command(self) -> list[str]:
         try:
@@ -492,6 +511,7 @@ _SECTIONS: dict[str, type[Any]] = {
     "ui": UI,
     "prompts": Prompts,
     "feedback": Feedback,
+    "commit_review": CommitReview,
 }
 
 

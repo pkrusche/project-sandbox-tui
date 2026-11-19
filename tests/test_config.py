@@ -30,6 +30,30 @@ def test_defaults_without_files(tmp_path: Path) -> None:
     assert not cfg.has_image_source()
 
 
+def test_commit_summary_profile() -> None:
+    cfg = c.from_dict({"defaults": {"agent": "claude", "effort": "high"}})
+    assert cfg.commit_summary_profile() == (
+        "commit-summary",
+        c.AgentProfile(agent="codex", effort="low"),
+    )
+    cfg = c.from_dict(
+        {
+            "commit_review": {"profile": "Deep review"},
+            "profiles": {"Deep review": {"agent": "codex", "model": "model", "fast": True}},
+        }
+    )
+    assert cfg.commit_summary_profile() == (
+        "Deep review",
+        c.AgentProfile(agent="codex", model="model", fast=True),
+    )
+    cfg.profiles["Deep review"].agent = "bash"
+    with pytest.raises(c.ConfigError, match="uses bash"):
+        cfg.commit_summary_profile()
+    del cfg.profiles["Deep review"]
+    with pytest.raises(c.ConfigError, match="'Deep review' is missing"):
+        cfg.commit_summary_profile()
+
+
 def test_project_overrides_global(tmp_path: Path) -> None:
     g = write(
         c.global_config_path(),

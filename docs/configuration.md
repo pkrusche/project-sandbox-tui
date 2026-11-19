@@ -129,6 +129,31 @@ created workspace in place for inspection and retry.
 Edit TOML directly or use `config set/unset`. `ctrl+l` reloads both files,
 keeping current settings on error; running sessions retain their launch settings.
 
+## Commit review
+
+```toml
+[commit_review]
+profile = "Deep review"
+```
+
+`profile` selects an existing named agent profile for **Summarize commits**.
+If omitted, the built-in `commit-summary` profile uses Codex with the agent's
+default model, low effort, and fast mode off. This selection leaves the
+remembered profile for other launches unchanged. A missing profile or a Bash
+profile produces a launch error when the action is invoked.
+
+Commit summaries run in a disposable `python:3.12-slim` sandbox with a
+read-only mount for the staged patches and a separate feedback output mount.
+The launch uses the configured runtime, resources, network, credentials, and
+background timeout. Commit summaries always enable run feedback. Shared and
+profile `extra_args` can override `--memory`, `--cpus`, or `--shm-size`.
+Other extra arguments are rejected, except a shared `--dry-run` that previews
+the summary run. Move those options into profiles used for ordinary launches
+if they prevent summaries from starting. Put resource overrides in `extra_args`
+when using a `sandbox.command` prefix such as `uvx project-sandbox`; arguments
+after `project-sandbox` in that command are rejected. Custom launcher scripts
+are trusted host code.
+
 ## Agent profiles
 
 Profiles save an agent setup for reuse in interactive (`i`), background (`r`),
