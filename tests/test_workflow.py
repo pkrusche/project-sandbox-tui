@@ -202,6 +202,10 @@ def test_workflow_persists_progress_and_retries_only_the_blocked_stage(
         with queue.start_workflow(plan, workflow, jobs) as task:
             planner = session.enter_context(jobs.interactive(plan, {}, queue_id=task.id))
             task.job = planner
+        # A planner can exit between refreshing queue history and reserving jobs.lock.
+        # The queue must wait for its decision before yielding a new reservation.
+        with pytest.raises(BusyError), queue.start_workflow(plan, workflow, jobs):
+            pytest.fail("a second planner replaced a workflow awaiting its decision")
         planner_root = Path(planner.feedback_path).parents[1]
         feedback.report(planner_root, "ready", "success", {"spec_path": "plan.md"})
         queue.pause(branch, False)

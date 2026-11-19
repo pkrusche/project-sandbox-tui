@@ -410,7 +410,8 @@ class TaskQueue:
             previous = queue.predecessor
             stopped = previous and previous.decision == _WORKFLOW_STOPPED
             if (
-                queue.needs_decision(jobs.cfg.feedback)
+                (previous and previous.job and previous.job.running)
+                or queue.needs_decision(jobs.cfg.feedback)
                 or (queue.paused and stopped)
                 or any(task.workflow for task in queue.tasks)
             ):
