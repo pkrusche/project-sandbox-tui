@@ -34,6 +34,7 @@ from textual.widgets.data_table import ColumnKey
 
 from project_sandbox_tui import (
     commands,
+    commit_summary,
     doctor,
     initialization,
     launchers,
@@ -547,6 +548,8 @@ class SandboxTUI(App[None]):
         self._reviews: dict[str, tuple[int, int]] = {}
         self._review_keys: dict[tuple[str, str], set[str]] = {}
         self._review_positions: dict[tuple[str, str, str], ReviewPosition] = {}
+        self._pending_summaries: set[tuple[str, ...]] = set()
+        self._commit_assessments: dict[str, commit_summary.Assessment | None] = {}
         self.sessions: dict[str, SessionRecord] = {}
         self.filter_text = ""
         self._prefix = PrefixKeys()  # gg and dd
@@ -627,6 +630,13 @@ class SandboxTUI(App[None]):
         await self.refresh_data()
         self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
         self._review_project_config()
+
+    async def on_unmount(self) -> None:
+        workers = [worker for worker in self.workers if worker.group == "commit-summary"]
+        for worker in workers:
+            if not worker.is_cancelled:
+                worker.cancel()
+        await asyncio.gather(*(worker.wait() for worker in workers), return_exceptions=True)
 
     # ------------------------------------------------------------ data
 
@@ -1364,10 +1374,81 @@ class SandboxTUI(App[None]):
 
         self.push_screen(
             CommitReviewScreen(
-                title, commits, changes, seen, view, position=self._review_positions.get(key)
+                title,
+                commits,
+                changes,
+                seen,
+                view,
+                summarize=self._summarize_commits,
+                assessment=self._commit_assessment,
+                position=self._review_positions.get(key),
             ),
             closed,
         )
+
+    def _commit_assessment(
+        self, commit_ids: tuple[str, ...], commit_id: str
+    ) -> commit_summary.Assessment | str:
+        if commit_ids in self._pending_summaries:
+            return "Pending"
+        if commit_id in self._commit_assessments:
+            return self._commit_assessments[commit_id] or "Unavailable"
+        return ""
+
+    def _refresh_assessments(self) -> None:
+        for screen in self.screen_stack:
+            if isinstance(screen, CommitReviewScreen) and screen.is_mounted:
+                screen.refresh_assessment()
+
+    def _summarize_commits(self, commits: tuple[ReviewCommit, ...]) -> None:
+        commit_ids = tuple(commit.commit for commit in commits)
+        if commit_ids in self._pending_summaries:
+            return
+        try:
+            cfg, spec = commit_summary.resolve_launch(self.cfg, self.repo)
+        except ConfigError as exc:
+            self.notify(f"Could not summarize commits. {exc}", severity="error")
+            return
+        if self.dry_run or "--dry-run" in self.cfg.sandbox.extra_args:
+            span = commit_ids[0][:12]
+            if len(commit_ids) > 1:
+                span += f" → {commit_ids[-1][:12]}"
+            noun = "commit" if len(commits) == 1 else "commits"
+            self.notify(
+                f"Dry run · {spec.profile} ({spec.label()}) · {len(commits)} pinned {noun} · {span}"
+            )
+            return
+        self._pending_summaries.add(commit_ids)
+        self._refresh_assessments()
+        self._run_commit_summary(cfg, spec, commits, commit_ids)
+
+    @work(group="commit-summary")
+    async def _run_commit_summary(
+        self,
+        cfg: Config,
+        spec: LaunchSpec,
+        commits: tuple[ReviewCommit, ...],
+        commit_ids: tuple[str, ...],
+    ) -> None:
+        try:
+            results = await commit_summary.run(cfg, spec, self.backend, commits)
+        except (ConfigError, commit_summary.SummaryError, VcsError, OSError) as exc:
+            for commit_id in commit_ids:
+                self._commit_assessments.setdefault(commit_id, None)
+            self.notify(f"No new commit assessments. {exc}", severity="error")
+        else:
+            for commit_id in commit_ids:
+                self._commit_assessments[commit_id] = results.get(commit_id)
+            missing = len(commit_ids) - len(results)
+            if missing:
+                self.notify(
+                    f"Commit assessments unavailable for {missing} of {len(commit_ids)} commits.",
+                    severity="warning",
+                )
+        finally:
+            self._pending_summaries.discard(commit_ids)
+            if self.is_running:
+                self._refresh_assessments()
 
     @work(exclusive=True, group="diff")
     async def _review_diff(self, base: str, target: str) -> None:

@@ -12,6 +12,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
+from project_sandbox_tui.commit_summary import Assessment
 from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.vcs import FileChange, FileChanges, ReviewCommit
 from project_sandbox_tui.widgets import KeyHints, PrefixKeys
@@ -218,14 +219,16 @@ class CommitReviewScreen(DiffReviewScreen):
 
     DEFAULT_CSS = """
     CommitReviewScreen #review-commit { height: 1; background: $panel; padding: 0 1; }
+    CommitReviewScreen #review-assessment { height: auto; max-height: 6; padding: 0 1; }
     """
 
     BINDINGS = [
         Binding("left_square_bracket", "commit(-1)", show=False),
         Binding("right_square_bracket", "commit(1)", show=False),
+        Binding("s", "summarize_commits", "Summarize commits", show=False),
     ]
 
-    HINTS = "[ / ] previous / next commit · " + DiffReviewScreen.HINTS
+    HINTS = "[ / ] previous / next commit · s Summarize commits · " + DiffReviewScreen.HINTS
 
     def __init__(
         self,
@@ -235,9 +238,14 @@ class CommitReviewScreen(DiffReviewScreen):
         seen: SeenFiles,
         view: Callable[[ReviewCommit, Sequence[FileChange]], None],
         *,
+        summarize: Callable[[tuple[ReviewCommit, ...]], None],
+        assessment: Callable[[tuple[str, ...], str], Assessment | str],
         position: ReviewPosition | None = None,
     ) -> None:
-        self.commits = commits
+        self.commits = tuple(commits)
+        self.commit_ids = tuple(commit.commit for commit in commits)
+        self.summarize = summarize
+        self.assessment = assessment
         self.changes = changes
         self.commit_index = 0
         if position is not None:
@@ -266,6 +274,9 @@ class CommitReviewScreen(DiffReviewScreen):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="review-commit")
+        result = Static("", id="review-assessment", markup=False)
+        result.display = False
+        yield result
         yield from super().compose()
 
     def _title(self) -> None:
@@ -275,6 +286,23 @@ class CommitReviewScreen(DiffReviewScreen):
         title.append(commit.commit[:12], style="cyan")
         title.append(f"  {commit.subject or '(no description set)'}", style="")
         self.query_one("#review-commit", Static).update(title)
+        self.refresh_assessment()
+
+    def action_summarize_commits(self) -> None:
+        self.summarize(self.commits)
+
+    def refresh_assessment(self) -> None:
+        widget = self.query_one("#review-assessment", Static)
+        result = self.assessment(self.commit_ids, self.current_commit.commit)
+        widget.display = bool(result)
+        if isinstance(result, Assessment):
+            harmful = "Y" if result.harmful else "N"
+            display = f"Complexity {result.complexity} · Potentially harmful {harmful}"
+            if result.harmful:
+                display += f" · {result.harm_reason}"
+            widget.update(Text(f"{display}\n{result.summary}"))
+        else:
+            widget.update(Text(result, style="dim"))
 
     def action_commit(self, step: int) -> None:
         index = min(max(self.commit_index + step, 0), len(self.commits) - 1)

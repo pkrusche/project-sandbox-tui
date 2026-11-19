@@ -3351,3 +3351,196 @@ def test_commit_review_empty_commits_and_no_path(
         assert app.screen is app.main
 
     run_app(repo, fake_cfg(), scenario)
+
+
+def test_commit_summary_batch_remains_pinned_during_bookmark_move(
+    repo: Path,
+    tmp_path: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from rich.text import Text
+
+    from project_sandbox_tui.config import AgentProfile
+
+    cfg = fake_cfg()
+    cfg.profiles["ordinary"] = AgentProfile(agent="claude")
+    last = LastUsed(profile="ordinary", agent="claude")
+    last.save(repo)
+    monkeypatch.setenv("SBX_FAKE_REVIEW_CONTROL", str(tmp_path))
+    for name in ("second", "third"):
+        jj(repo, "new", "feature/x", "-m", name)
+        (repo / f"{name}.txt").write_text(f"{name} pinned content\n")
+        jj(repo, "bookmark", "move", "feature/x", "--to", "@")
+    backend = detect(repo)
+    original = backend.review_commits("main", "feature/x")
+    assert len(original) == 3
+    entries: list[dict[str, object]] = [
+        {
+            "commit_id": original[0].commit,
+            "summary": "[bold]Initial content[/bold]",
+            "complexity": "l",
+            "harmful": False,
+        },
+        {
+            "commit_id": original[1].commit,
+            "summary": "Second content",
+            "complexity": "h",
+            "harmful": True,
+            "harm_reason": "Could delete data",
+        },
+    ]
+    ready = tmp_path / "ready.json"
+    release = tmp_path / "release"
+    request = tmp_path / "request.json"
+
+    def prepare(results: list[dict[str, object]], code: int = 0) -> None:
+        ready.unlink(missing_ok=True)
+        release.unlink(missing_ok=True)
+        request.write_text(json.dumps({"state": {"commits": results}, "exit": code}))
+
+    def assessment(screen: CommitReviewScreen) -> Text:
+        return cast(Text, screen.query_one("#review-assessment", Static).render())
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        app.marked = ["feature/x"]
+        viewed: list[list[str]] = []
+        monkeypatch.setattr(app, "_show_diff", lambda title, argv: viewed.append(argv))
+
+        async def open_review() -> CommitReviewScreen:
+            await pilot.press("equals_sign")
+            return await wait_for_screen(app, pilot, CommitReviewScreen)
+
+        async def close_review() -> None:
+            await pilot.press("q")
+            await wait_until(pilot, lambda: app.screen is app.main)
+
+        prepare(entries)
+        screen = await open_review()
+        assert not assessment(screen).plain and not ready.exists()
+        await pilot.press("right_square_bracket", "s", "s")
+        assert assessment(screen).plain == "Pending"
+        await wait_until(pilot, ready.is_file)
+        launch = json.loads(ready.read_text())
+        assert [entry["commit_id"] for entry in launch["entries"]] == [c.commit for c in original]
+        assert launch["patches"] == [backend.review_commit_patch(c).decode() for c in original]
+        assert "--agent=codex" in launch["argv"] and "--effort=low" in launch["argv"]
+        assert "--fast" not in launch["argv"]
+        assert LastUsed.load(repo) == last
+        await pilot.press("enter", "space", "left_square_bracket")
+        assert viewed[-1] == backend.diff_commit_files_command(original[1], ["second.txt"])
+        assert assessment(screen).plain == "Pending"
+        await close_review()
+        screen = await open_review()
+        assert assessment(screen).plain == "Pending"
+        await pilot.press("s")
+        assert json.loads(ready.read_text())["pid"] == launch["pid"]
+        assert len(app._pending_summaries) == 1
+
+        (repo / "third.txt").write_text("replacement content\n")
+        jj(repo, "status")
+        rewritten = backend.review_commits("main", "feature/x")
+        assert rewritten[-1].commit != original[-1].commit
+        release.touch()
+        await wait_until(pilot, lambda: "Initial content" in assessment(screen).plain)
+        assert assessment(screen).plain.endswith("[bold]Initial content[/bold]")
+        assert assessment(screen).plain.startswith("Complexity L · Potentially harmful N")
+        await pilot.press("right_square_bracket")
+        assert (
+            "Complexity H · Potentially harmful Y · Could delete data" in assessment(screen).plain
+        )
+        assert str(screen.query_one(DataTable).get_cell("0", "seen")) == "✓"
+        await pilot.press("right_square_bracket")
+        assert assessment(screen).plain == "Unavailable"
+        await close_review()
+
+        screen = await open_review()
+        assert "Initial content" in assessment(screen).plain
+        await pilot.press("right_square_bracket", "right_square_bracket")
+        assert screen.current_commit == rewritten[-1]
+        assert not assessment(screen).plain
+        await close_review()
+
+        # Task history can reopen the previous pinned range after the bookmark moves.
+        app._review_commits("main", original[-1].commit)
+        screen = await wait_for_screen(app, pilot, CommitReviewScreen)
+        prepare([], code=7)
+        await pilot.press("s")
+        await wait_until(pilot, ready.is_file)
+        release.touch()
+        await wait_until(pilot, lambda: not app._pending_summaries)
+        assert "Initial content" in assessment(screen).plain
+        assert any("No new commit assessments" in str(n.message) for n in app._notifications)
+        await pilot.press("right_square_bracket", "right_square_bracket")
+        assert assessment(screen).plain == "Unavailable"
+
+        prepare([*entries, {**entries[0], "commit_id": original[-1].commit, "summary": "Retried"}])
+        await pilot.press("s")
+        await wait_until(pilot, ready.is_file)
+        release.touch()
+        await wait_until(pilot, lambda: "Retried" in assessment(screen).plain)
+        await close_review()
+
+        app.marked = ["main", "feature/x"]
+        await pilot.press("equals_sign")
+        diff = await wait_for_screen(app, pilot, DiffReviewScreen)
+        assert "Summarize commits" not in diff.HINTS
+        await pilot.press("s")
+        assert not app._pending_summaries
+        await close_review()
+
+        app.marked = ["feature/x"]
+        prepare([])
+        await open_review()
+        await pilot.press("s")
+        await wait_until(pilot, ready.is_file)
+
+    run_app(repo, cfg, scenario)
+    cancelled_workspace = Path(json.loads(ready.read_text())["cwd"])
+    assert not cancelled_workspace.parent.exists()
+
+
+@pytest.mark.parametrize("shared_switch", [False, True])
+def test_commit_summary_dry_run(
+    repo: Path,
+    tmp_path: Path,
+    fake_cfg: Callable[..., Config],
+    monkeypatch: pytest.MonkeyPatch,
+    shared_switch: bool,
+) -> None:
+    import tempfile
+
+    from project_sandbox_tui import commit_summary
+    from project_sandbox_tui.config import AgentProfile
+
+    cfg = fake_cfg()
+    cfg.profiles["review"] = AgentProfile(agent="codex", model="chosen-model", effort="medium")
+    cfg.commit_review.profile = "review"
+    if shared_switch:
+        cfg.sandbox.extra_args = ["--dry-run"]
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    async def unexpected(*_args: object) -> None:
+        pytest.fail("dry run started the summary launcher")
+
+    monkeypatch.setattr(commit_summary, "run", unexpected)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.dry_run = not shared_switch
+        app.marked = ["feature/x"]
+        await pilot.press("equals_sign")
+        screen = await wait_for_screen(app, pilot, CommitReviewScreen)
+        await pilot.press("s")
+        messages = [str(notification.message) for notification in app._notifications]
+        assert any(
+            "Dry run · review (codex/chosen-model/medium) · 1 pinned commit" in message
+            and screen.current_commit.commit[:12] in message
+            for message in messages
+        )
+        assert not app._pending_summaries
+        assert not list(tmp_path.glob("sbx-review-*"))
+
+    run_app(repo, cfg, scenario)

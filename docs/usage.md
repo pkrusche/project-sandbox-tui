@@ -379,6 +379,7 @@ if the file list changes, that row may identify a different file.
 | Key | Action |
 |---|---|
 | `[` / `]` | Previous / next commit |
+| `s` | Summarize commits |
 | `enter` / `l` | View the selected file's diff in this commit |
 | `space` | Mark the file seen (`✓`) or unseen (`●`), then move down |
 | `=` | View unseen files in this commit, or all its files once all are seen |
@@ -395,6 +396,21 @@ stopped by `Ctrl+Z` is closed so the TUI can reclaim the terminal. The review pi
 commit IDs when it opens, so files and diffs stay the same even if a run moves
 the bookmark meanwhile; reopen the review to see later changes.
 
+Press `s` (**Summarize commits**) to send all of the open review's pinned
+patches to one background agent. Opening a review starts no analysis. Keep
+browsing commits and opening file diffs while assessments show **Pending**;
+pressing `s` again during that batch leaves the existing run in progress.
+
+The selected commit shows its summary, complexity (L/M/H for low, medium or
+high context needed to assess the change), and potentially harmful flag (Y/N),
+with a reason for Y. Assessments are advisory and stay available for those
+exact commit IDs until you exit the TUI. A rewritten commit needs a new
+assessment. Missing or invalid results show **Unavailable**. Press `s` again
+after completion to retry or refresh the batch; a failed run keeps prior
+successful assessments and reports the failure in a notification.
+Dry-run mode previews the selected profile and pinned range.
+See [commit review configuration](configuration.md#commit-review).
+
 Seen marks are remembered across bookmarks by commit ID and file change. Marking
 a file seen or unseen applies to every bookmark containing that commit, including
 bookmarks created later. Existing saved marks are shared automatically. Reviewing
@@ -406,9 +422,9 @@ shared by TUI instances.
 
 Selecting two revisions keeps the direct comparison of their tips, using
 `jj diff --from BASE --to TARGET`. This uses the same file table and controls,
-without commit navigation. These marks are shared by file change (contents, type
-and paths) across revisions, independently of per-commit file marks and the
-bookmark list's reviewed count.
+without commit navigation or **Summarize commits**. These marks are shared by
+file change (contents, type and paths) across revisions, independently of
+per-commit file marks and the bookmark list's reviewed count.
 
 ## Log viewer
 

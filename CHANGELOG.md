@@ -8,6 +8,11 @@ All notable changes to this project are documented in this file.
 
 - The log viewer wraps long lines (`w` toggles) and renders transcripts and
   coding agents' stdout as Markdown (`m` shows the raw text).
+- Commit review offers **Summarize commits** (`s`) to assess all pinned commits
+  in one background sandbox run. Each commit shows a summary, complexity and
+  potential harm with a reason. Results remain available for the TUI session;
+  `[commit_review] profile` selects a named profile instead of the built-in
+  Codex profile. See [diff review](docs/usage.md#diff-review).
 - `:init` runs the same setup as `sbx-tui --init` inside the TUI, shows the
   results and reloads configuration.
 - Structured per-run agent feedback: atomic JSON progress/outcome reports, a
