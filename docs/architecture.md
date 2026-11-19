@@ -60,8 +60,8 @@ and container stop commands) get daemon waiters at launch, so their children are
 collected even without another refresh or after their manager is discarded.
 Waiters do not stop live processes or delay quitting the TUI.
 
-Inline sessions use temporary job records to mark workspaces busy across
-instances. Host agents use the same reservations. External host agents report
+Inline sessions reserve their workspace with a running job record and save
+the final status when the terminal returns. Host agents use the same reservations. External host agents report
 their runner PID and exit code in an atomic summary file, so they can be
 tracked without project-sandbox session records. Job records keep only each
 bookmark's latest run and archive replaced or cleared records in bounded history;

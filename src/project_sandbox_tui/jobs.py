@@ -660,8 +660,10 @@ class JobManager:
             )
             self._attach_feedback(job, run_id, feedback_dir)
             self._archive(spec.branch)
-            self.jobs[spec.branch] = job
             self.save(job)
+            # The caller owns the exit code until it returns. Polling can reload
+            # the cached record from disk while the terminal is still active.
+            self.jobs[spec.branch] = JobRecord.from_dict(job.to_dict())
         try:
             yield job
         finally:
@@ -678,6 +680,7 @@ class JobManager:
                     job.feedback_snapshot = current.feedback_snapshot
                     self._collect_feedback(job, final=True)
                     self.save(job)
+                    self.load()
 
     def _prepare(self, spec: LaunchSpec, *, sandbox: bool) -> None:
         """Create the workspace and deploy skills; with the lock held, after the busy check."""

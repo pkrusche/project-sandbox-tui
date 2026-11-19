@@ -139,6 +139,7 @@ def test_interactive_holds_branch(repo: Path, fake_cfg: Callable[..., Config]) -
         assert jobs.busy_reason("main", {})
         assert JobManager(repo, fake_cfg()).busy_reason("main", {})  # visible on disk
         job.exit_code = 0
+        jobs.refresh({})  # a worker may poll before the context manager finishes
     assert not jobs.busy_reason("main", {})
     assert jobs.jobs["main"].status == "completed"
     assert jobs.refresh({}) == []  # interactive runs don't notify
