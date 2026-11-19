@@ -210,6 +210,15 @@ class Action:
         return out
 
 
+@dataclass
+class Workflow:
+    planning_action: str = ""
+    steps: list[str] = field(default_factory=list)
+    pass_state_keys: list[str] = field(default_factory=list)
+    result_state_keys: list[str] = field(default_factory=list)
+    first_step_interactive: bool = True
+
+
 # Where workspace skills may be deployed: one directory directly below one of these.
 SKILL_ROOTS: tuple[str, ...] = (".agents/skills", ".claude/skills")
 CONFIG_SKILL_NAME = "sbx-tui-config"  # the bundled skill (``skills/`` in this package)
@@ -285,6 +294,7 @@ class Config:
     )
     leader: dict[str, str] = field(default_factory=dict)  # keys after ui.leader -> command line
     actions: dict[str, Action] = field(default_factory=dict)  # :name -> sandbox run per target
+    workflows: dict[str, Workflow] = field(default_factory=dict)
     profiles: dict[str, AgentProfile] = field(default_factory=dict)
     workspace_skills: list[WorkspaceSkill] = field(default_factory=list)  # [[workspace_skills]]
     sources: list[Path] = field(default_factory=list)  # files that were loaded
@@ -383,11 +393,30 @@ class Config:
                 )
             if action.timeout is not None and action.timeout < 0:
                 raise ConfigError(f"actions.{name}.timeout must be >= 0")
+        self._validate_workflows()
         self._validate_workspace_skills()
         try:
             commands.validate(self.commands, self.ui.leader, self.leader, self.actions)
         except commands.CommandError as exc:
             raise ConfigError(str(exc)) from exc
+
+    def _validate_workflows(self) -> None:
+        if self.workflows and not self.feedback.enabled:
+            raise ConfigError("workflows require feedback.enabled")
+        for name, workflow in self.workflows.items():
+            where = f"workflows.{name}"
+            if not commands.NAME.fullmatch(name):
+                raise ConfigError(
+                    f"[{where}] name must start with a letter and use letters, digits, _ or -"
+                )
+            if not workflow.planning_action or not 1 <= len(workflow.steps) <= 99:
+                raise ConfigError(f"[{where}] needs a planning_action and 1 to 99 steps")
+            for action in (workflow.planning_action, *workflow.steps):
+                if action not in self.actions:
+                    raise ConfigError(f"[{where}] refers to unknown action {action!r}")
+            for field_name in ("pass_state_keys", "result_state_keys"):
+                if any(not key.strip() for key in getattr(workflow, field_name)):
+                    raise ConfigError(f"[{where}] {field_name} must contain nonempty keys")
 
     def _validate_workspace_skills(self) -> None:
         seen: dict[str, str] = {}
@@ -421,6 +450,7 @@ TABLES: dict[str, str] = {
     "commands": 'must be a table of name = "shell command"',
     "leader": 'must be a table of keys = "command line"',
     "actions": "must be a table of [actions.NAME] tables with a prompt",
+    "workflows": "must be a table of [workflows.NAME] tables",
     "workspace_skills": "must be an array of [[workspace_skills]] tables with source and targets",
 }
 
@@ -540,6 +570,11 @@ def from_dict(data: dict[str, Any]) -> Config:
         raise ConfigError(f"[actions] {TABLES['actions']}")
     for name, table in actions.items():
         cfg.actions[name] = _build_action(name, table)
+    workflows = data.get("workflows", {})
+    if not isinstance(workflows, dict):
+        raise ConfigError(f"[workflows] {TABLES['workflows']}")
+    for name, table in workflows.items():
+        cfg.workflows[name] = _build_section(f"workflows.{name}", Workflow, table)
     profiles = data.get("profiles", {})
     if not isinstance(profiles, dict):
         raise ConfigError(f"[profiles] {TABLES['profiles']}")
