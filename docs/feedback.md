@@ -256,7 +256,9 @@ decision or fix in the workspace, then press `p` to retry a stopped background
 step with its original planning context. If the interactive planning step
 stops, resume the queue and start it again with `:workflow`.
 
-Delete the stopped queue entry before resuming to abandon the workflow.
+Dry-run previews on the same bookmark preserve the stopped step, its blocker
+guidance, and its place for retry. Delete the stopped queue entry before
+resuming to abandon the workflow.
 Dry-run mode shows each action's launch mode and prompt.
 
 ## Initialization and diagnostics

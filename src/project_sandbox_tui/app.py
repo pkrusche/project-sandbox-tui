@@ -1470,10 +1470,9 @@ class SandboxTUI(App[None]):
     def _blocked_guidance(self, name: str, task: QueuedTask | None = None) -> str:
         if task is None:
             queue = self.queue.get(name)
-            if queue.paused and queue.history:
-                latest = queue.history[-1]
-                if latest.job and latest.job.blocked_summary:
-                    task = latest
+            latest = queue.predecessor
+            if queue.paused and latest and latest.job and latest.job.blocked_summary:
+                task = latest
         job = task.job if task else self.jobs.jobs.get(name)
         if not job or not (summary := job.blocked_summary):
             return ""
@@ -1646,10 +1645,10 @@ class SandboxTUI(App[None]):
 
     def _report_queue_errors(self) -> None:
         for name, queue in self.queue.queues.items():
-            latest = queue.history[-1].job if queue.history else None
+            previous = queue.predecessor
             hint = (
                 "L then i/o on the blocked task to resolve"
-                if latest and latest.blocked_summary
+                if previous and previous.job and previous.job.blocked_summary
                 else "L to edit or resume"
             )
             self._state_problem(

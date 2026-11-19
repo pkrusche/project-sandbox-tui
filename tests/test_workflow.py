@@ -11,7 +11,7 @@ import pytest
 from project_sandbox_tui import feedback
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Action, Config, ConfigError, Workflow, from_dict
-from project_sandbox_tui.jobs import JobManager, JobRecord
+from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord
 from project_sandbox_tui.queue import TaskQueue, WorkflowRun
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.dialogs import ConfirmScreen, MessageScreen
@@ -133,11 +133,16 @@ def test_blocked_queued_planner_guides_interactive_repair_and_editor(
         assert "Fake task outcome" in context["blocked_guidance"]
         assert not repair.queue_id and app.queue.get(branch).paused
 
+        preview = LaunchSpec(
+            branch, "codex", mode="background", prompt_text="preview", extra_args=["--dry-run"]
+        )
+        app.queue.start(preview, app.jobs, {})
+        finish(app.jobs, branch)
         await pilot.press("q", "i")
         again = await wait_for_screen(app, pilot, LaunchScreen)
         assert again.blocked_guidance == form.blocked_guidance
         await pilot.press("escape", "L", "p")
-        await wait_until(pilot, lambda: len(app.queue.get(branch).history) == 2)
+        await wait_until(pilot, lambda: len(app.queue.get(branch).history) == 3)
         retry = app.queue.get(branch).history[-1]
         assert retry.parent_task == blocked.id and retry.attempt == 2 and retry.step == 1
 
@@ -188,6 +193,13 @@ def test_workflow_persists_progress_and_retries_only_the_blocked_stage(
     assert stopped.paused and "reported blocked" in stopped.error
     assert [task.id for task in stopped.tasks] == [ordinary.id]
 
+    preview = LaunchSpec(
+        branch, "codex", mode="background", prompt_text="preview", extra_args=["--dry-run"]
+    )
+    queue.start(preview, jobs, {})
+    finish(jobs, branch)
+    with pytest.raises(BusyError), queue.start_workflow(plan, workflow, jobs):
+        pytest.fail("a preview must not hide the stopped workflow")
     queue.pause(branch, False)
     retry = queue.get(branch).tasks[0]
     assert retry.spec == implement and retry.attempt == 2 and retry.step == 2

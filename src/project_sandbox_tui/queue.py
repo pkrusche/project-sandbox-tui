@@ -407,7 +407,8 @@ class TaskQueue:
         with self.transaction() as queues:
             self._refresh(queues, jobs)
             queue = queues.setdefault(spec.branch, BookmarkQueue())
-            stopped = queue.history and queue.history[-1].decision == _WORKFLOW_STOPPED
+            previous = queue.predecessor
+            stopped = previous and previous.decision == _WORKFLOW_STOPPED
             if (
                 queue.needs_decision(jobs.cfg.feedback)
                 or (queue.paused and stopped)
@@ -479,19 +480,21 @@ class TaskQueue:
     def pause(self, branch: str, paused: bool) -> None:
         with self.transaction() as queues:
             queue = queues.setdefault(branch, BookmarkQueue())
-            if not paused and queue.paused and queue.history:
-                task = queue.history[-1]
-                if (
-                    task.workflow
-                    and task.decision == _WORKFLOW_STOPPED
-                    and task.spec.mode == "background"
-                ):
-                    if task.attempt >= 100:
-                        raise ValueError("workflow retry limit reached")
-                    retry = self._new_task(task.spec)
-                    retry.attempt, retry.step = task.attempt + 1, task.step
-                    retry.workflow = task.workflow
-                    self._insert_successor(queue, task, retry, "workflow retry")
+            task = queue.predecessor
+            if (
+                not paused
+                and queue.paused
+                and task
+                and task.workflow
+                and task.decision == _WORKFLOW_STOPPED
+                and task.spec.mode == "background"
+            ):
+                if task.attempt >= 100:
+                    raise ValueError("workflow retry limit reached")
+                retry = self._new_task(task.spec)
+                retry.attempt, retry.step = task.attempt + 1, task.step
+                retry.workflow = task.workflow
+                self._insert_successor(queue, task, retry, "workflow retry")
             queue.paused = paused
             if not paused:
                 queue.error = ""
