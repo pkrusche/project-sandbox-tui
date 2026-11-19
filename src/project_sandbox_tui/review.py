@@ -89,10 +89,10 @@ class SeenFiles:
                 marks = self._parse(read_state_for_update(self.path))
                 self._update(marks, keys, seen)
                 write_state(self.path, {"version": STATE_VERSION, "marks": marks})
+                self.marks = marks
         except OSError:
             self._update(self.marks, keys, seen)
             raise
-        self.marks = marks
 
     def _update(self, marks: list[str], keys: Collection[str], seen: bool) -> None:
         changed = dict.fromkeys(keys)  # ordered, fast membership
