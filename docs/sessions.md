@@ -177,7 +177,7 @@ All background prompt runs appear there, including tasks that start immediately
 and dry-run previews. Pausing lets the current session finish; other bookmarks'
 queues keep running.
 
-Queued tasks start one at a time after the previous session ends, including
+With the default feedback settings, queued tasks start one at a time after the previous session ends, including
 failed, timed-out or cancelled sessions. A launch error or a deleted/protected
 bookmark pauses that queue and displays the reason; fix the issue and press
 `p` to resume. Shell commands (`:&` and `:*`) retain their existing independent

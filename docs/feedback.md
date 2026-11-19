@@ -146,7 +146,8 @@ Resuming with `p` explicitly overrides that pause for the next task; it does not
 replay the decision for the failed task.
 
 `pass_state_keys` selects top-level state keys to copy into the next task's
-context. The first task has empty previous state. Later tasks require a valid
+context. The first real task has empty previous state. Dry-run previews remain in history
+and are skipped when evaluating feedback policies and selecting predecessor state. Later tasks require a valid
 final predecessor report with all requested keys; otherwise dispatch pauses.
 Generated successor tasks use their recorded parent. Missing/deleted parent
 reports cannot silently supply state from a different task.

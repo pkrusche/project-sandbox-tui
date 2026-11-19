@@ -12,7 +12,7 @@ import copy
 import fcntl
 import json
 import uuid
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -168,12 +168,21 @@ class BookmarkQueue:
         """Pending tasks in FIFO order, followed by runs newest first."""
         return self.tasks + list(reversed(self.history))
 
+    def real_runs(self) -> Iterator[QueuedTask]:
+        """Yield retained runs newest first, skipping dry-run previews."""
+        return (
+            task for task in reversed(self.history) if task.job and "--dry-run" not in task.job.argv
+        )
+
+    @property
+    def predecessor(self) -> QueuedTask | None:
+        return next(self.real_runs(), None)
+
     def needs_decision(self, policy: Feedback) -> bool:
-        if not self.history:
-            return False
-        task = self.history[-1]
+        task = self.predecessor
         return bool(
-            (task.workflow or policy.makes_decisions)
+            task
+            and (task.workflow or policy.makes_decisions)
             and task.job
             and not task.job.running
             and not task.decision_done
@@ -587,7 +596,7 @@ class TaskQueue:
         policy = jobs.cfg.feedback
         with self.transaction() as queues:
             if not policy.makes_decisions and not any(
-                queue.history and queue.history[-1].workflow and not queue.history[-1].decision_done
+                (task := queue.predecessor) and task.workflow and not task.decision_done
                 for queue in queues.values()
             ):
                 return
@@ -595,7 +604,8 @@ class TaskQueue:
             for queue in queues.values():
                 if queue.paused or not queue.needs_decision(policy):
                     continue
-                task = queue.history[-1]
+                task = queue.predecessor
+                assert task is not None
                 job = task.job
                 assert job is not None
                 task.decision_done = True
@@ -659,7 +669,7 @@ class TaskQueue:
         if task.parent_task:
             source = next((t for t in queue.history if t.id == task.parent_task), None)
         else:
-            source = next((t for t in reversed(queue.history) if not t.workflow), None)
+            source = next((t for t in queue.real_runs() if not t.workflow), None)
             if not source:
                 return {}
         job = source.job if source else None

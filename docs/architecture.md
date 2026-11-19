@@ -107,7 +107,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 
 | Action | Locks | Done under them |
 |---|---|---|
-| Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, graph, queue → jobs, graph | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
+| Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, queue → jobs, then graph and dispatch when needed | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
 | `i` | jobs, graph | Recheck busy, prepare the workspace, reserve the session and add the run node |
 | `r`, `:NAME` actions | queue; queue → jobs, graph | Save the prompt, launch when idle and add the run node. A new bookmark typed into the form is recorded first, under graph |
 | `L` edits / pause / resume | queue | Reload and atomically save pending tasks, history, marks and pause state |

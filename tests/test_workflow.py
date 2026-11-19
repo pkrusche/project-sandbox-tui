@@ -18,7 +18,7 @@ from project_sandbox_tui.screens.dialogs import ConfirmScreen, MessageScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.queue import QueueScreen
 from tests.test_app import run_app, wait_for_screen, wait_until
-from tests.test_feedback import finish
+from tests.test_feedback import finish, spec
 
 
 @pytest.mark.parametrize("mode", ["inline", "external", "queued"])
@@ -206,6 +206,44 @@ def test_workflow_persists_progress_and_retries_only_the_blocked_stage(
     assert not dispatch(jobs, queue)
     assert queue.get(branch).error.endswith("missing report state: commits")
     assert [task.id for task in queue.get(branch).tasks] == [ordinary.id]
+
+
+def test_fifo_state_survives_a_workflow_and_an_intervening_preview(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.pass_state_keys = ["source"]
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+
+    def dispatch() -> JobRecord:
+        [job] = queue.dispatch(jobs, lambda: {}, lambda _: None)
+        return job
+
+    queue.add(spec('report:success report-state:{"source":"fifo"}'))
+    dispatch()
+    finish(jobs)
+    check = spec("report:success")
+    workflow = WorkflowRun("spec", "plan", [("check", check)], ["source"], [])
+    queue.add(spec('report:success report-state:{"source":"plan"}'), workflow=workflow)
+    ordinary = queue.add(spec("next ordinary task"))
+    dispatch()
+    finish(jobs)
+    preview = spec("preview")
+    preview.extra_args.append("--dry-run")
+    queue.start(preview, jobs, {})
+    finish(jobs)
+
+    stage = dispatch()
+    assert stage.spec == check
+    context = feedback.read_json(Path(stage.feedback_path).parents[1] / "context.json")
+    assert context["previous_state"] == {"source": "plan"}
+    finish(jobs)
+    following = dispatch()
+    assert following.queue_id == ordinary.id
+    context = feedback.read_json(Path(following.feedback_path).parents[1] / "context.json")
+    assert context["previous_state"] == {"source": "fifo"}
+    finish(jobs)
 
 
 def test_workflow_config_requires_existing_actions_and_feedback() -> None:
