@@ -18,6 +18,10 @@ All notable changes to this project are documented in this file.
   advance through configured actions on success. Blocked reports guide users
   into an interactive session or workspace editor. The project config includes
   a spec-to-implementation workflow with checks and a structured commit summary.
+  Each bookmark runs one workflow at a time.
+- `:config-profiles` shows whether a profile comes from the project config, the
+  global config or both, and `ctrl+d` deletes it from the file that defines it
+  after confirmation.
 - The bundled `sbx-tui-config` skill is copied into each bookmark workspace
   before `I`, `i`, `r`, agent actions and an idle `o` use it, and kept out of jj
   snapshots with in-tree ignore rules or the repository's local Git excludes.
@@ -33,6 +37,23 @@ All notable changes to this project are documented in this file.
   `jj workspace add --no-colocate` and registered under their directory name, as
   project-sandbox does, including for slash-named bookmarks. A sandbox start
   reports a workspace registered under another name instead of reusing it.
+- Workspace cleanup protects the directory holding the jj repository store,
+  verifies that a directory is still the selected workspace before deleting it,
+  holds the job and task locks through deletion, and deletes a bookmark only
+  when it was selected and is still merged.
+- `--init` installs guidance under a per-workspace lock and stops at symlinked
+  guidance paths instead of writing through them.
+- `scripts/make-release.sh` runs one release per checkout at a time and requires
+  a jj working copy with a single parent.
+
+### Fixed
+
+- Concurrent TUIs and `sbx-tui config` edits no longer overwrite each other's
+  launch defaults, host commands, or config and profile changes.
+- Durable state files also sync their directory after replacement, so a completed
+  write survives a crash.
+- `scripts/e2e-test.sh` honors quoted `--command` values and failing version
+  probes, and the source distribution includes the smoke-test prerequisites.
 
 ## [0.2.0] - 2026-11-16
 
