@@ -261,8 +261,9 @@ Dry-run mode shows each action's launch mode and prompt.
 ## Initialization and diagnostics
 
 `sbx-tui --init` installs local reporting skills and appends an idempotent,
-marked block to `AGENTS.md`. It preserves existing bytes and requires regular
-guidance files and directories beneath the workspace. Customized/incomplete
+marked block to `AGENTS.md`. Installation takes the workspace's `guidance.lock`
+and requires regular guidance files and directories. A symlink in a destination
+path stops installation. Appending the block preserves the existing file contents. Customized/incomplete
 blocks and customized/older skill files are preserved and reported; reconcile
 blocks manually or remove an installed skill and rerun `--init` to refresh it.
 Launch-time sandbox skill mounts use the bundled version independently of these

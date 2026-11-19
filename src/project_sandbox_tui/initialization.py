@@ -12,6 +12,8 @@ from project_sandbox_tui.config import (
     CONFIG_SKILL_NAME,
     CONFIG_SKILL_TARGETS,
     PROJECT_TEMPLATE,
+    repo_state_dir,
+    state_lock,
 )
 from project_sandbox_tui.feedback_transport import SKILL_NAME as FEEDBACK_SKILL
 
@@ -122,6 +124,11 @@ def ignore_skills(repo: Path) -> bool:
 
 def install_feedback(repo: Path, *, guidance: bool = True, config_skill: bool = False) -> list[str]:
     """Install missing resources while preserving customized guidance across launches."""
+    with state_lock(repo_state_dir(repo) / "guidance.lock"):
+        return _install(repo, guidance=guidance, config_skill=config_skill)
+
+
+def _install(repo: Path, *, guidance: bool, config_skill: bool) -> list[str]:
     messages = []
     template = (
         files("project_sandbox_tui").joinpath("skills", FEEDBACK_SKILL, "SKILL.md").read_text()

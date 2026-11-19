@@ -143,6 +143,8 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
   CLI settings edits and the TUI profile editor share `config.lock` in the
   application state directory while reading, validating and saving both scopes.
   Project edits carry forward the trust status of the exact input they edited.
+- Initialization and host feedback installation share a per-workspace
+  `guidance.lock`. Host installation takes it inside `jobs.lock`.
 
 ## Unsupervised queue dispatch
 
