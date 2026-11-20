@@ -904,8 +904,10 @@ def test_tasks_view(repo: Path, fake_cfg: Callable[..., Config]) -> None:
 def test_task_table_keeps_viewport_on_refresh_and_resize(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
+    from project_sandbox_tui.screens.dialogs import MessageScreen
     from project_sandbox_tui.screens.tasks import TasksScreen
     from project_sandbox_tui.tasks import TaskRecord
+    from project_sandbox_tui.widgets import TABLE_PREVIEW_WIDTH
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         app._refresh_timer.pause()
@@ -913,7 +915,7 @@ def test_task_table_keeps_viewport_on_refresh_and_resize(
         tasks = app.tasks.tasks
         for i in range(24):
             name = f"task-{i:02}"
-            command = "echo " + "x" * (140 if i == 0 else 75)
+            command = "echo " + "x" * (140 if i == 0 else 53)
             tasks[name] = TaskRecord(
                 name,
                 name,
@@ -930,6 +932,12 @@ def test_task_table_keeps_viewport_on_refresh_and_resize(
         await pilot.press("T")
         screen = await wait_for_screen(app, pilot, TasksScreen)
         table = screen.table
+        preview = table.get_cell("task-00", "command")
+        assert preview.cell_len == TABLE_PREVIEW_WIDTH and preview.plain.endswith("…")
+        await pilot.press("s")
+        modal = await wait_for_screen(app, pilot, MessageScreen)
+        assert modal.body == f":{tasks['task-00'].line}"
+        await pilot.press("q")
         await pilot.press("G", "k", "k")
         selected = screen.selected_id()
         assert selected is not None

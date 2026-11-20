@@ -16,13 +16,14 @@ from textual.widgets import DataTable, Input, Static
 from project_sandbox_tui.queue import QueuedTask, TaskQueue
 from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.log import LogScreen
-from project_sandbox_tui.widgets import KeyHints, PrefixKeys
+from project_sandbox_tui.widgets import KeyHints, PrefixKeys, table_preview
 
 HINT = (
     "q back · j/k ^d/^u gg/G move · / filter · n add · e edit · l/enter edit/log"
-    " · i/o resolve blocker · P details · c commits · dd delete"
+    " · s prompt · P details · i/o resolve blocker · c commits · dd delete"
     " · J/K reorder · v/V/space select · u undo · ^r redo · p pause/resume · ma mark · 'a jump"
 )
+OUTCOME_STYLES = {"success": "green", "failure": "red", "blocked": "yellow"}
 
 
 class QueueScreen(Screen[None]):
@@ -48,6 +49,7 @@ class QueueScreen(Screen[None]):
         Binding("e,l", "edit", show=False),
         Binding("i", "resolve('interactive')", show=False),
         Binding("o", "resolve('editor')", show=False),
+        Binding("s", "show_prompt", show=False),
         Binding("P", "details", show=False),
         Binding("c", "commits", show=False),
         Binding("d", "d_prefix", show=False),
@@ -95,8 +97,8 @@ class QueueScreen(Screen[None]):
         return self.query_one(DataTable)
 
     def on_mount(self) -> None:
-        for label in ("", "#", "status", "agent", "commits", "prompt", "reported"):
-            self.table.add_column(label)
+        for label in ("", "#", "flow", "status", "outcome", "agent", "commits", "prompt"):
+            self.table.add_column(label, key=label or "mark")
         self.table.focus()
         self.render_queue()
         self.set_interval(0.5, self.render_queue)
@@ -119,6 +121,26 @@ class QueueScreen(Screen[None]):
             selected += ids[start : end + 1]
         return list(dict.fromkeys(selected)) or ([current] if current else [])
 
+    @staticmethod
+    def _cells(task: QueuedTask, index: int, marked: bool) -> tuple[Text, ...]:
+        workflow = task.workflow
+        flow = ""
+        prompt = " ".join(task.spec.prompt_text.split())
+        if workflow:
+            flow = "→" if workflow.next_steps else "■"
+            prompt = f"[{workflow.name}/{workflow.action}] {prompt}"
+        outcome = task.job.reported_outcome if task.job and task.job.feedback_path else "—"
+        return (
+            Text("+" if marked else ""),
+            Text(str(index) if task.status == "pending" else ""),
+            Text(flow, style="cyan"),
+            Text(task.status),
+            Text(outcome, style=OUTCOME_STYLES.get(outcome, "dim")),
+            Text(task.spec.label()),
+            Text(", ".join(c[:12] for c in task.commits)),
+            table_preview(prompt),
+        )
+
     def render_queue(self) -> None:
         try:
             self.queue.load()
@@ -131,23 +153,7 @@ class QueueScreen(Screen[None]):
         selected = self.selected_id()
         chosen = set(self.selection()) if self.marked or self._visual_anchor else set()
         rows: list[tuple[str, tuple[Text, ...]]] = [
-            (
-                task.id,
-                (
-                    Text("+" if task.id in chosen else ""),
-                    Text(str(index) if task.status == "pending" else ""),
-                    Text(task.status),
-                    Text(task.spec.label()),
-                    Text(", ".join(c[:12] for c in task.commits)),
-                    Text(
-                        (f"[{task.workflow.name}/{task.workflow.action}] " if task.workflow else "")
-                        + " ".join(task.spec.prompt_text.split()),
-                        no_wrap=True,
-                        overflow="ellipsis",
-                    ),
-                    Text(task.job.reported_outcome if task.job and task.job.feedback_path else "—"),
-                ),
-            )
+            (task.id, self._cells(task, index, task.id in chosen))
             for index, task in enumerate(queue.entries, 1)
             if self.filter_text.lower() in task.spec.prompt_text.lower() or task.id in chosen
         ]
@@ -161,6 +167,8 @@ class QueueScreen(Screen[None]):
         self.query_one("#queue-empty", Static).display = not rows
         if rows != self._shown:
             row = self.table.cursor_row
+            for column in self.table.columns.values():
+                column.content_width = column.label.cell_len
             self.table.clear()
             for key, cells in rows:
                 self.table.add_row(*cells, key=key)
@@ -298,6 +306,10 @@ class QueueScreen(Screen[None]):
             self.resolve(task, mode)
         else:
             self.notify("Select a finished task that reported blocked")
+
+    def action_show_prompt(self) -> None:
+        if task := self.selected_task():
+            self.app.push_screen(MessageScreen("Prompt", task.spec.prompt_text))
 
     def action_details(self) -> None:
         task = self.selected_task()

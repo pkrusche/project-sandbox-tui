@@ -29,6 +29,15 @@ GLYPHS = {
     "external": ("◆", "cyan"),
 }
 
+TABLE_PREVIEW_WIDTH = 64
+
+
+def table_preview(value: str) -> Text:
+    """Keep long or multiline row content within a terminal-cell limit."""
+    preview = Text(" ".join(value.splitlines()).expandtabs(), no_wrap=True, overflow="ellipsis")
+    preview.truncate(TABLE_PREVIEW_WIDTH)
+    return preview
+
 
 def human_age(seconds: float) -> str:
     seconds = max(0, int(seconds))

@@ -333,15 +333,16 @@ none.
 `T` lists all [`:&` background commands](#background-commands) and
 [`:*` tasks](#running-in-each-workspace):
 running ones first, then finished ones, newest first. Each row shows the
-outcome, its age (since it ended, or started while running), the bookmark,
-the status with any exit code and the command line. The title counts running
-tasks and the workspaces they run in. The view opens on the highlighted
+bookmark, the process status with any exit code, the age since the task started
+or finished, and up to 64 terminal cells of the command line. The title counts
+running tasks and the workspaces they run in. The view opens on the highlighted
 bookmark's latest task.
 
 | Key | Action |
 |---|---|
 | `j` `k` · `ctrl+d` `ctrl+u` · `gg` `G` | Move · half page · top/bottom |
 | `l` / `enter` | The task's output in the [log viewer](#log-viewer) |
+| `s` | Show the full command line |
 | `P` | Details: command, shell script, directory, times, PID and output file |
 | `x` | Cancel a running task, harder on each press; forget a finished one and its output |
 | `q` / `esc` / `h` / `T` | Back to the list |
@@ -501,13 +502,18 @@ not add to this history.
 
 Press `L` on a bookmark to manage its persistent [unsupervised queue](sessions.md#unsupervised-task-queues).
 The list shows pending tasks in execution order, followed by running and finished
-tasks, newest first. Each row shows its status and the commits it produced.
+tasks, newest first. Each row shows its process status, reported outcome, commits,
+and a prompt preview of up to 64 terminal cells. The outcome column shows `—`
+when the task has no feedback context and `unknown` while a reporting run has
+no valid final outcome.
 Adding or editing a task, deleting, reordering, and undo/redo automatically pause
 this bookmark's queue. Press `p` to resume when you are done, even if you cancelled
 the editor. A running session continues, and other bookmarks' queues keep running.
 
 `:workflow NAME [TOPIC]` starts a configured workflow. Its first action runs
 interactively or enters this queue, according to `first_step_interactive`.
+In the flow column, `→` marks a step with another step to follow and `■` marks
+the final step.
 Pressing `p` after a stopped background workflow step retries that step. See
 [project workflows](feedback.md#project-workflows).
 
@@ -517,6 +523,7 @@ Pressing `p` after a stopped background workflow step retries that step. See
 | `/` | Filter prompts; `enter` keeps the filter, `esc` clears it |
 | `n` / `r` | Add a prompt with the launch form; `ctrl+s` queues it |
 | `e` / `l` / `enter` | Edit a pending task (`ctrl+s` saves); open the log of a running or finished task |
+| `s` | Show the full prompt |
 | `P` | Task details, full prompt, run times, log path and full commit IDs |
 | `i` / `o` | Show the selected blocker and open an interactive agent or workspace editor |
 | `c` | Review the commits in the task's recorded revision range |

@@ -16,9 +16,16 @@ from project_sandbox_tui.jobs import _parse_ts
 from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.tasks import TaskManager, TaskRecord
-from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys, human_age, restore_table_view
+from project_sandbox_tui.widgets import (
+    GLYPHS,
+    KeyHints,
+    PrefixKeys,
+    human_age,
+    restore_table_view,
+    table_preview,
+)
 
-HINT = "q back · j/k ^d/^u gg/G move · l/enter output · P details · x cancel (finished: forget)"
+HINT = "q back · j/k ^d/^u gg/G move · l/enter output · s command · P details · x cancel/forget"
 
 
 def _clock(timestamp: float) -> str:
@@ -56,6 +63,7 @@ class TasksScreen(Screen[None]):
         Binding("G", "bottom", show=False),
         Binding("g", "g_prefix", show=False),
         Binding("l", "open_log", show=False),
+        Binding("s", "show_command", show=False),
         Binding("P", "details", show=False),
         Binding("x", "cancel", show=False),
     ]
@@ -117,7 +125,7 @@ class TasksScreen(Screen[None]):
             Text(age, style="dim"),
             Text(task.bookmark),
             Text(status, style=colour),
-            Text(f":{task.line}", no_wrap=True, overflow="ellipsis"),
+            table_preview(f":{task.line}"),
         )
 
     def _render_rows(self) -> None:
@@ -195,6 +203,10 @@ class TasksScreen(Screen[None]):
         task = self.selected_task()
         if task is not None:
             self.app.push_screen(LogScreen(task))
+
+    def action_show_command(self) -> None:
+        if task := self.selected_task():
+            self.app.push_screen(MessageScreen("Command", f":{task.line}"))
 
     def action_details(self) -> None:
         task = self.selected_task()

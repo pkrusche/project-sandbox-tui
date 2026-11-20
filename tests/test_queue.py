@@ -10,15 +10,18 @@ from typing import Any
 
 import pytest
 from textual.widgets import Input, TextArea
+from textual.widgets.data_table import ColumnKey
 
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Config
 from project_sandbox_tui.jobs import BusyError, JobManager
 from project_sandbox_tui.queue import BookmarkQueue, TaskQueue
 from project_sandbox_tui.sandbox import LaunchSpec
+from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.vcs import VcsError
+from project_sandbox_tui.widgets import TABLE_PREVIEW_WIDTH
 from tests.conftest import wait_for
 from tests.test_app import run_app, wait_for_screen, wait_until
 
@@ -190,6 +193,34 @@ def test_queue_vim_editing(repo: Path, fake_cfg: Callable[..., Config]) -> None:
         await pilot.press("L")
         assert app.screen is app.main
         assert app.queue.get("feature/x").paused
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_queue_previews_long_prompts_and_shows_full_text(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        full_prompt = "First line\n\n  " + "界" * 500 + "\nsuffix"
+        app.queue.pause("feature/x", True)
+        task = app.queue.add(prompt(full_prompt))
+        app.queue.add(prompt("short prompt"))
+        await pilot.press("j", "L")
+        screen = await wait_for_screen(app, pilot, QueueScreen)
+        preview = screen.table.get_cell(task.id, "prompt")
+        assert preview.cell_len == TABLE_PREVIEW_WIDTH
+        assert preview.plain.startswith("First line 界") and preview.plain.endswith("…")
+        assert screen.table.columns[ColumnKey("prompt")].content_width == TABLE_PREVIEW_WIDTH
+        assert str(screen.table.get_cell(task.id, "outcome")) == "—"
+        assert str(screen.table.get_cell(task.id, "flow")) == ""
+
+        await pilot.press("slash", *"suffix", "enter")
+        assert screen.visible_ids() == [task.id]
+        await pilot.press("s")
+        modal = await wait_for_screen(app, pilot, MessageScreen)
+        assert modal.body == full_prompt
+        await pilot.press("q")
+        assert app.screen is screen and screen.selected_id() == task.id
 
     run_app(repo, fake_cfg(), scenario)
 

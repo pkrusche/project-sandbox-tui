@@ -94,7 +94,9 @@ def test_workflow_command_runs_plan_then_four_steps(
                 assert context["previous_state"] == {"spec_path": "plan.md"}
                 assert task.parent_task == history[index - 1].id
         await pilot.press("L")
-        await wait_for_screen(app, pilot, QueueScreen)
+        screen = await wait_for_screen(app, pilot, QueueScreen)
+        assert [str(screen.table.get_cell(t.id, "flow")) for t in history] == ["→"] * 4 + ["■"]
+        assert all(str(screen.table.get_cell(t.id, "outcome")) == "success" for t in history)
         await pilot.press("P")
         details = await wait_for_screen(app, pilot, MessageScreen)
         assert "spec / commits" in details.body and '"subject": "Add CSV"' in details.body
@@ -155,7 +157,9 @@ def test_blocked_queued_planner_guides_interactive_repair_and_editor(
         assert blocked.job and blocked.job.blocked_summary == "Fake task outcome"
 
         await pilot.press("L")
-        await wait_for_screen(app, pilot, QueueScreen)
+        screen = await wait_for_screen(app, pilot, QueueScreen)
+        assert str(screen.table.get_cell(blocked.id, "status")) == "completed"
+        assert str(screen.table.get_cell(blocked.id, "outcome")) == "blocked"
         await pilot.press("o")
         editor = await wait_for_screen(app, pilot, ConfirmScreen)
         assert "plan.md" in editor.body and "Fake task outcome" in editor.body
