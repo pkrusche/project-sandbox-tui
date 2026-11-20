@@ -223,9 +223,9 @@ def test_queue_refresh_preserves_main_comparisons(
 
 def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Config]) -> None:
     from textual.containers import VerticalScroll
-    from textual.widgets import Log
 
     from project_sandbox_tui.jobs import JobRecord
+    from project_sandbox_tui.logview import LiveLog
     from project_sandbox_tui.sandbox import LaunchSpec
     from project_sandbox_tui.screens.oplog import OpLogScreen
 
@@ -282,7 +282,7 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         assert "agent" not in str(details.content)
         await pilot.press("k", "l")  # an earlier run's log
         screen = await wait_for_screen(app, pilot, LogScreen)
-        assert "output of first try" in "\n".join(screen.query_one(Log).lines)
+        assert "output of first try" in "\n".join(screen.query_one(LiveLog).lines)
         await pilot.press("q", "O")
         assert app.screen is app.main
 

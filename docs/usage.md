@@ -418,13 +418,18 @@ bookmark list's reviewed count.
 | `v` | Switch between captured stdout and the agent log |
 | `j` / `k` | Select the next or previous line in the agent event log, or scroll in other views |
 | `enter` | Inspect the selected JSON record |
+| `w` | Toggle line wrapping (on by default) |
+| `m` | Toggle Markdown rendering of the transcript and coding agents' stdout |
 | `ctrl+d` `ctrl+u` · `ctrl+f` `ctrl+b` | Scroll a half page · page |
 | `gg` `G` | Top · bottom |
 | `f` | Toggle follow |
 | `q` / `esc` / `h` | Back to the list |
 
 Running coding agents open on captured stdout when available. This shows the
-Markdown translation as project-sandbox emits it. In the agent event log,
+Markdown translation as project-sandbox emits it. Transcripts (`.md`) and
+coding agents' stdout are rendered as Markdown; press `m` for the raw text.
+Long lines wrap to the window width; press `w` to scroll them horizontally
+instead (rendered Markdown always fits the window). In the agent event log,
 click a line to select it or double-click a JSON record to open the scrollable
 dialog. `q`, `esc`, or `enter` closes the dialog.
 

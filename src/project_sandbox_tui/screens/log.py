@@ -9,18 +9,16 @@ import os
 from pathlib import Path
 from typing import Protocol
 
-from rich.segment import Segment
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.geometry import Region, Size
-from textual.reactive import reactive
+from textual.geometry import Region
 from textual.screen import Screen
-from textual.strip import Strip
-from textual.widgets import Log, Static
+from textual.widgets import Static
 
 from project_sandbox_tui.jobs import JobRecord
+from project_sandbox_tui.logview import LiveLog
 from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.widgets import KeyHints, PrefixKeys
 
@@ -43,28 +41,10 @@ class LogSource(Protocol):
     def output_files(self) -> list[Path]: ...
 
 
-class LiveLog(Log):
-    """Tail widget with a highlighted row when viewing agent records."""
-
-    COMPONENT_CLASSES = {"live-log--cursor"}
-    DEFAULT_CSS = """
-    LiveLog > .live-log--cursor { background: $accent 25%; }
-    """
-
-    cursor_row: reactive[int | None] = reactive(None)
-
-    def render_line(self, y: int) -> Strip:
-        line = super().render_line(y)
-        if self.cursor_row == y + self.scroll_offset.y:
-            style = self.get_component_rich_style("live-log--cursor")
-            return Strip(Segment.apply_style(line, post_style=style), line.cell_length)
-        return line
-
-
 class LogScreen(Screen[None]):
     DEFAULT_CSS = """
     LogScreen #log-title { height: 1; background: $panel; padding: 0 1; }
-    LogScreen Log { height: 1fr; border: none; }
+    LogScreen LiveLog { height: 1fr; border: none; }
     LogScreen #log-hint { height: auto; color: $text-disabled; padding: 0 1; }
     """
 
@@ -74,6 +54,8 @@ class LogScreen(Screen[None]):
         Binding("shift+tab", "next_file(-1)", "previous file", show=False),
         Binding("v", "toggle_output", "switch stdout / agent log", show=False),
         Binding("enter", "inspect_record", "inspect JSON record", show=False),
+        Binding("w", "toggle_wrap", "toggle line wrapping", show=False),
+        Binding("m", "toggle_markdown", "toggle Markdown rendering", show=False),
         Binding("j", "move(1)", show=False),
         Binding("k", "move(-1)", show=False),
         Binding("ctrl+d", "page(0.5)", show=False),
@@ -102,6 +84,8 @@ class LogScreen(Screen[None]):
             )
         self._pos = 0
         self._follow = True
+        self._wrap = True
+        self._render_markdown = True
         self._restoring_view = False
         self._prefix = PrefixKeys()
         self._missing = False
@@ -133,7 +117,7 @@ class LogScreen(Screen[None]):
                 log.scroll_end(animate=False, immediate=True, x_axis=False)
             elif log.cursor_row is not None:
                 log.scroll_to_region(
-                    Region(log.scroll_offset.x, log.cursor_row, 1, 1),
+                    self._line_region(log, log.cursor_row),
                     x_axis=False,
                     animate=False,
                     immediate=True,
@@ -150,9 +134,9 @@ class LogScreen(Screen[None]):
         if offset is None:
             return
         row = offset.y + log.scroll_offset.y
-        if row < log.line_count:
+        if row < log.row_count:
             self._set_follow(False)
-            log.cursor_row = row
+            log.cursor_row = log.line_at(row)
             if event.chain == 2:
                 self.action_inspect_record()
 
@@ -161,7 +145,7 @@ class LogScreen(Screen[None]):
         scrolling (keys, mouse) back to the end resumes it."""
         log = self.query_one(LiveLog)
         # A resize can clamp the viewport or move it to keep the cursor visible.
-        if self._restoring_view or old > log.max_scroll_y:
+        if self._restoring_view or log.adjusting or old > log.max_scroll_y:
             return
         follow = new >= log.max_scroll_y
         if follow != self._follow:
@@ -179,6 +163,25 @@ class LogScreen(Screen[None]):
         return self._owners[self._idx][0] if self._owners else self.job
 
     @property
+    def _markdown_file(self) -> bool:
+        """Transcripts and coding agents' stdout are Markdown."""
+        path, source = self.current, self._source
+        if path is None:
+            return False
+        if path.suffix == ".md":
+            return True
+        return (
+            isinstance(source, JobRecord)
+            and source.spec.agent != "bash"
+            and bool(source.stdout_path)
+            and path == Path(source.stdout_path)
+        )
+
+    @staticmethod
+    def _line_region(log: LiveLog, line: int) -> Region:
+        return Region(log.scroll_offset.x, log.row_of(line), 1, log.rows_of(line))
+
+    @property
     def _raw_log(self) -> bool:
         source = self._source
         return (
@@ -193,8 +196,12 @@ class LogScreen(Screen[None]):
         elif self._follow:
             log.cursor_row = log.line_count - 1
         else:
-            top = min(log.scroll_offset.y, log.line_count - 1)
-            bottom = min(top + max(1, log.scrollable_content_region.height) - 1, log.line_count - 1)
+            y = log.scroll_offset.y
+            top = min(log.line_at(y), log.line_count - 1)
+            height = max(1, log.scrollable_content_region.height)
+            bottom = min(log.line_at(y + height - 1), log.line_count - 1)
+            if log.row_of(bottom) + log.rows_of(bottom) > y + height and bottom > top:
+                bottom -= 1  # keep a partly visible last line from taking the cursor
             row = log.cursor_row if log.cursor_row is not None else top
             log.cursor_row = min(max(row, top), bottom)
 
@@ -215,6 +222,11 @@ class LogScreen(Screen[None]):
         if isinstance(source, JobRecord) and source.feedback_path:
             state += " · " + source.feedback_detail()
         follow = "follow" if self._follow else "paused"
+        log = self.query_one(LiveLog)
+        if log.markdown:
+            follow += " · markdown"
+        elif not log.wrap:
+            follow += " · no wrap"
         title = Text()
         title.append(f"{source.branch if source else ''}  ", style="bold")
         title.append(f"[{self._idx + 1}/{len(self._owners)}] {name}  ", style="")
@@ -231,7 +243,9 @@ class LogScreen(Screen[None]):
         self._decoder.reset()
         path = self.current
         self._missing = path is not None and not path.is_file()
+        log.set_mode(markdown=self._markdown_file and self._render_markdown, wrap=self._wrap)
         movement = "j/k select · enter inspect" if self._raw_log else "j/k scroll"
+        modes = " · w wrap" + (" · m markdown" if self._markdown_file else "")
         source = self._source
         switch = (
             " · v stdout/agent log"
@@ -241,7 +255,7 @@ class LogScreen(Screen[None]):
         self.query_one("#log-hint", Static).update(
             KeyHints(
                 f"q back · tab/shift+tab file{switch} · {movement} · ^d/^u scroll"
-                " · gg/G top/bottom · f follow"
+                f" · gg/G top/bottom · f follow{modes}"
             )
         )
         self._title()
@@ -289,19 +303,13 @@ class LogScreen(Screen[None]):
             self._skip_partial = not newline
         data = self._decoder.decode(chunk)
         log = self.query_one(LiveLog)
-        dropped = 0
-        top = log.scroll_offset.y
         if log.cursor_row is not None and not self._follow:
             # Log.write can evict old rows as new line endings arrive.
             endings = data.count("\n") + data.count("\r") - data.count("\r\n")
-            dropped = max(0, len(log.lines) + endings - MAX_LINES)
+            dropped = max(0, len(log.lines) + endings - MAX_LINES)  # plain text prunes exactly
             log.cursor_row = max(0, log.cursor_row - dropped)
         log.auto_scroll = self._follow
         log.write(data)
-        if log.virtual_size.height != log.line_count:
-            log.virtual_size = Size(log.virtual_size.width, log.line_count)
-        if dropped and top:
-            log.scroll_to(y=max(0, top - dropped), animate=False, immediate=True)
         self._sync_cursor(log)
 
     def _poll(self) -> None:
@@ -348,15 +356,32 @@ class LogScreen(Screen[None]):
         row = min(max(log.cursor_row + lines, 0), log.line_count - 1)
         if row == log.cursor_row:
             return
-        log.scroll_to_region(Region(0, row, 1, 1), x_axis=False, animate=False, immediate=True)
+        log.scroll_to_region(
+            self._line_region(log, row), x_axis=False, animate=False, immediate=True
+        )
         self._set_follow(row == log.line_count - 1)
         log.cursor_row = row
 
     def action_scroll(self, lines: int) -> None:
-        self.query_one(Log).scroll_relative(y=lines, animate=False)
+        self.query_one(LiveLog).scroll_relative(y=lines, animate=False)
 
     def action_page(self, pages: float) -> None:
-        self.action_scroll(round(pages * max(2, self.query_one(Log).size.height)))
+        self.action_scroll(round(pages * max(2, self.query_one(LiveLog).size.height)))
+
+    def action_toggle_wrap(self) -> None:
+        self._wrap = not self._wrap
+        self._apply_mode()
+
+    def action_toggle_markdown(self) -> None:
+        if self._markdown_file:
+            self._render_markdown = not self._render_markdown
+            self._apply_mode()
+
+    def _apply_mode(self) -> None:
+        log = self.query_one(LiveLog)
+        log.set_mode(markdown=self._markdown_file and self._render_markdown, wrap=self._wrap)
+        self._title()
+        self.call_after_refresh(self._restore_view)
 
     def action_bottom(self) -> None:
         self._set_follow(True)

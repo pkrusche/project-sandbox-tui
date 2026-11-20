@@ -24,6 +24,7 @@ require a `.jj/` directory.
 | `review.py` | Diff review: repository-wide per-commit and direct-comparison file marks |
 | `opgraph.py` | Bookmark history graph, op log, undo stack and jj-style graph layout |
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
+| `logview.py` | Log tail widget: wrapped rows, incremental Markdown blocks, line cursor |
 | `screens/agent.py`, `screens/profiles.py` | Shared agent controls and the project profile editor |
 | `screens/workflow.py` | Per-step profile picker shown before a workflow starts |
 

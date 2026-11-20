@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- The log viewer wraps long lines (`w` toggles) and renders transcripts and
+  coding agents' stdout as Markdown (`m` shows the raw text).
 - `:init` runs the same setup as `sbx-tui --init` inside the TUI, shows the
   results and reloads configuration.
 - Structured per-run agent feedback: atomic JSON progress/outcome reports, a
