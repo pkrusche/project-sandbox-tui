@@ -13,13 +13,15 @@ import fcntl
 import json
 import uuid
 from collections.abc import Callable, Generator, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from project_sandbox_tui import feedback
 from project_sandbox_tui.config import (
+    HOST_STEP_PREFIX,
+    HUMAN_REVIEW,
     STATE_VERSION,
     ConfigError,
     Feedback,
@@ -27,32 +29,44 @@ from project_sandbox_tui.config import (
     write_state,
 )
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, SessionSource, _now
+from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord
-from project_sandbox_tui.vcs import VcsError, detect, main_branch
+from project_sandbox_tui.tasks import TaskManager, TaskRecord
+from project_sandbox_tui.vcs import VcsError, commit_revset, detect, main_branch
+
+type WorkflowStep = tuple[str, LaunchSpec | str | None]
 
 
 @dataclass
 class WorkflowRun:
     name: str
     action: str
-    next_steps: list[tuple[str, LaunchSpec]]
+    next_steps: list[WorkflowStep]
     pass_state_keys: list[str]
     result_state_keys: list[str]
     state: dict[str, Any] = field(default_factory=dict)
+    review_base: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "action": self.action,
-            "next_steps": [(name, spec.to_dict()) for name, spec in self.next_steps],
+            "next_steps": [
+                (name, spec.to_dict() if isinstance(spec, LaunchSpec) else spec)
+                for name, spec in self.next_steps
+            ],
             "pass_state_keys": self.pass_state_keys,
             "result_state_keys": self.result_state_keys,
             "state": self.state,
+            "review_base": self.review_base,
         }
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any], branch: str) -> WorkflowRun:
-        steps = [(name, LaunchSpec.from_dict(spec)) for name, spec in raw["next_steps"]]
+    def from_dict(cls, raw: dict[str, Any], branch: str, *, human_review: bool) -> WorkflowRun:
+        steps = [
+            (name, LaunchSpec.from_dict(spec) if isinstance(spec, dict) else spec)
+            for name, spec in raw["next_steps"]
+        ]
         workflow = cls(
             raw["name"],
             raw["action"],
@@ -60,21 +74,38 @@ class WorkflowRun:
             raw["pass_state_keys"],
             raw["result_state_keys"],
             raw["state"],
+            raw.get("review_base", ""),
         )
-        workflow.validate(branch)
+        workflow.validate(branch, human_review=human_review)
         return workflow
 
-    def validate(self, branch: str) -> None:
+    def validate(self, branch: str, *, human_review: bool = False) -> None:
         if not isinstance(self.name, str) or not isinstance(self.action, str):
             raise ValueError("invalid workflow name or action")
-        if len(self.next_steps) > 99 or any(
-            not isinstance(name, str)
-            or spec.branch != branch
-            or spec.mode != "background"
-            or not spec.prompt_text.strip()
-            for name, spec in self.next_steps
-        ):
+        if len(self.next_steps) > 99:
             raise ValueError("invalid workflow step")
+        if human_review or any(spec is None for _, spec in self.next_steps):
+            base = self.review_base
+            if (
+                not isinstance(base, str)
+                or len(base) not in (40, 64)
+                or any(char not in "0123456789abcdef" for char in base)
+            ):
+                raise ValueError("human review needs a pinned main commit")
+        after_review = human_review
+        for name, spec in self.next_steps:
+            if isinstance(spec, LaunchSpec):
+                valid = (
+                    spec.branch == branch and spec.mode == "background" and spec.prompt_text.strip()
+                )
+            elif spec is None:
+                valid = name == HUMAN_REVIEW
+            else:
+                valid = isinstance(spec, str) and spec.strip() and after_review
+                valid = valid and isinstance(name, str) and name.startswith(HOST_STEP_PREFIX)
+            if not isinstance(name, str) or not valid:
+                raise ValueError("invalid workflow step")
+            after_review = spec is None
         if not isinstance(self.state, dict) or any(
             not isinstance(keys, list) or not all(isinstance(v, str) for v in keys)
             for keys in (self.pass_state_keys, self.result_state_keys)
@@ -83,16 +114,17 @@ class WorkflowRun:
 
 
 _WORKFLOW_STOPPED = "workflow stopped"
+_WORKFLOW_TERMINATED = "workflow terminated"
 WORKFLOW_BUSY = (
     "{branch}: a workflow is already in progress; let it finish, "
-    "or delete its queued or stopped step to abandon it"
+    "or press X on its active step in the queue to terminate it"
 )
 
 
 @dataclass
 class QueuedTask:
     id: str
-    spec: LaunchSpec
+    spec: LaunchSpec | None
     job: JobRecord | None = None
     base_commit: str = ""
     result_commit: str = ""
@@ -105,15 +137,43 @@ class QueuedTask:
     successor_id: str = ""
     decision: str = ""
     workflow: WorkflowRun | None = None
+    bookmark: str = ""  # for stages without an agent launch spec
+    host_task: TaskRecord | None = None
+
+    @property
+    def branch(self) -> str:
+        return self.spec.branch if self.spec else self.bookmark
+
+    @property
+    def human_review(self) -> bool:
+        return self.spec is None and self.host_task is None
+
+    @property
+    def terminated(self) -> bool:
+        return self.decision == _WORKFLOW_TERMINATED
+
+    @property
+    def description(self) -> str:
+        if self.spec:
+            return self.spec.prompt_text
+        if self.host_task:
+            return self.host_task.script
+        return "Mark the entire bookmark diff as reviewed"
 
     @property
     def status(self) -> str:
-        return self.job.status if self.job else "pending"
+        if run := self.job or self.host_task:
+            return run.status
+        if self.terminated:
+            return "terminated"
+        if self.human_review:
+            return "reviewed" if self.decision_done else "awaiting review"
+        return "pending"
 
     def to_dict(self) -> dict[str, Any]:
         data = {
             "id": self.id,
-            "spec": self.spec.to_dict(),
+            "spec": self.spec.to_dict() if self.spec else None,
             "job": self.job.to_dict() if self.job else None,
             "base_commit": self.base_commit,
             "result_commit": self.result_commit,
@@ -127,13 +187,17 @@ class QueuedTask:
         }
         if self.workflow:
             data["workflow"] = self.workflow.to_dict()
+        if self.spec is None:
+            data["bookmark"] = self.bookmark
+        if self.host_task:
+            data["host_task"] = asdict(self.host_task)
         return data
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> QueuedTask:
         task = cls(
             str(raw["id"]),
-            LaunchSpec.from_dict(raw["spec"]),
+            LaunchSpec.from_dict(raw["spec"]) if raw["spec"] is not None else None,
             JobRecord.from_dict(raw["job"]) if raw.get("job") else None,
             str(raw.get("base_commit", "")),
             str(raw.get("result_commit", "")),
@@ -145,8 +209,13 @@ class QueuedTask:
             str(raw.get("successor_id", "")),
             str(raw.get("decision", "")),
         )
+        task.bookmark = str(raw.get("bookmark", ""))
+        if "host_task" in raw:
+            task.host_task = TaskRecord.from_dict(raw["host_task"])
         if "workflow" in raw:
-            task.workflow = WorkflowRun.from_dict(raw["workflow"], task.spec.branch)
+            task.workflow = WorkflowRun.from_dict(
+                raw["workflow"], task.branch, human_review=task.human_review
+            )
         if (
             type(task.attempt) is not int
             or not 1 <= task.attempt <= 100
@@ -154,12 +223,28 @@ class QueuedTask:
             or not 1 <= task.step <= 100
             or not task.id
             or any(c not in "0123456789abcdef" for c in task.id)
-            or (task.spec.mode != "background" and (not task.workflow or not task.job))
-            or not task.spec.prompt_text.strip()
-            or (task.job and (task.job.queue_id != task.id or task.job.branch != task.spec.branch))
+            or not task.branch
+            or (task.job and (task.job.queue_id != task.id or task.job.branch != task.branch))
             or not all(isinstance(c, str) for c in task.commits)
         ):
             raise ValueError("invalid queued task")
+        if task.spec:
+            if (
+                not task.spec.prompt_text.strip()
+                or (task.spec.mode != "background" and (not task.workflow or not task.job))
+                or task.host_task
+            ):
+                raise ValueError("invalid queued agent task")
+        elif (
+            not task.workflow
+            or task.job
+            or (
+                task.host_task.bookmark != task.branch
+                if task.host_task
+                else task.workflow.action != HUMAN_REVIEW
+            )
+        ):
+            raise ValueError("invalid queued workflow task")
         return task
 
 
@@ -181,7 +266,9 @@ class BookmarkQueue:
     def real_runs(self) -> Iterator[QueuedTask]:
         """Yield retained runs newest first, skipping dry-run previews."""
         return (
-            task for task in reversed(self.history) if task.job and "--dry-run" not in task.job.argv
+            task
+            for task in reversed(self.history)
+            if (task.job and "--dry-run" not in task.job.argv) or task.spec is None
         )
 
     @property
@@ -191,13 +278,20 @@ class BookmarkQueue:
     def workflow_in_progress(self) -> bool:
         """A workflow step is pending, running, awaiting its decision, or stopped while paused."""
         task = self.predecessor
-        return any(t.workflow for t in self.tasks) or bool(
-            task
-            and task.workflow
+        return any(t.workflow for t in self.tasks) or bool(task and self.active_workflow(task))
+
+    def active_workflow(self, task: QueuedTask) -> bool:
+        return bool(
+            task.workflow
             and (
-                (task.job and task.job.running)
-                or not task.decision_done
-                or (self.paused and task.decision == _WORKFLOW_STOPPED)
+                task in self.tasks
+                or (
+                    task is self.predecessor
+                    and (
+                        not task.decision_done
+                        or (self.paused and task.decision == _WORKFLOW_STOPPED)
+                    )
+                )
             )
         )
 
@@ -206,8 +300,8 @@ class BookmarkQueue:
         return bool(
             task
             and (task.workflow or policy.makes_decisions)
-            and task.job
-            and not task.job.running
+            and (task.job or task.host_task)
+            and task.status != "running"
             and not task.decision_done
         )
 
@@ -246,12 +340,13 @@ class BookmarkQueue:
 
 
 class TaskQueue:
-    def __init__(self, state_dir: Path) -> None:
+    def __init__(self, state_dir: Path, host_tasks: TaskManager | None = None) -> None:
         self.state_dir = state_dir
         self.path = state_dir / "queue.json"
         self.tasks_dir = state_dir / "queue-tasks"
         self.journal = state_dir / "queue-transaction.json"
         self.queues: dict[str, BookmarkQueue] = {}
+        self.host_tasks = host_tasks if host_tasks is not None else TaskManager(state_dir)
 
     def load(self) -> None:
         with self._locked():
@@ -298,7 +393,7 @@ class TaskQueue:
         live_ids: set[str] = set()
         for name, queue in queues.items():
             for snapshot in [queue.entries, *queue.undo, *queue.redo]:
-                if any(t.spec.branch != name for t in snapshot):
+                if any(t.branch != name for t in snapshot):
                     raise ValueError("queued task belongs to another bookmark")
                 if len({t.id for t in snapshot}) != len(snapshot):
                     raise ValueError("duplicate queued task id")
@@ -318,6 +413,9 @@ class TaskQueue:
                 if old and old.job and task.job:
                     old.job.__dict__.update(task.job.__dict__)
                     task.job = old.job
+                if old and old.host_task and task.host_task:
+                    old.host_task.__dict__.update(task.host_task.__dict__)
+                    task.host_task = old.host_task
         self.queues = queues
 
     def get(self, branch: str) -> BookmarkQueue:
@@ -429,16 +527,14 @@ class TaskQueue:
         """Register the interactive reservation before handing it a terminal."""
         workflow.validate(spec.branch)
         if spec.mode != "interactive" or not spec.prompt_text.strip() or not workflow.next_steps:
-            raise ValueError(
-                "a workflow needs an interactive plan and at least one background step"
-            )
+            raise ValueError("a workflow needs an interactive plan and at least one follow-up step")
         with self.transaction() as queues:
             self._refresh(queues, jobs)
             queue = queues.setdefault(spec.branch, BookmarkQueue())
             previous = queue.predecessor
             if queue.workflow_in_progress():
                 raise BusyError(WORKFLOW_BUSY.format(branch=spec.branch))
-            if (previous and previous.job and previous.job.running) or queue.needs_decision(
+            if (previous and previous.status == "running") or queue.needs_decision(
                 jobs.cfg.feedback
             ):
                 raise BusyError(f"{spec.branch}: finish or resume the current queue first")
@@ -468,7 +564,7 @@ class TaskQueue:
         with self.transaction() as queues:
             queue = queues.setdefault(branch, BookmarkQueue())
             task = next((t for t in queue.tasks if t.id == task_id), None)
-            if task is None:
+            if task is None or task.spec is None:
                 raise ValueError("task already started or was deleted")
             if expected is not None and task.spec != expected:
                 raise ValueError(
@@ -487,6 +583,26 @@ class TaskQueue:
                 queue.tasks = [t for t in queue.tasks if t.id not in ids]
             queue.history = [t for t in queue.history if t.id not in ids]
             queue.marks = {k: v for k, v in queue.marks.items() if v not in ids}
+
+    def terminate_workflow(self, branch: str, task_id: str) -> None:
+        """Drop continuation of the active workflow, including from undo and retry."""
+        with self.transaction() as queues:
+            queue = queues.get(branch, BookmarkQueue())
+            task = next((t for t in queue.entries if t.id == task_id), None)
+            if not task or not queue.active_workflow(task):
+                raise ValueError("select the active workflow step to terminate it")
+            if task.human_review and (host := self.host_tasks.workflow_task(task.id)):
+                # Recover a host launch that won the queue lock but could not
+                # commit its records. Termination still tracks that process.
+                self._finish_review(queue, task, host.review_base, host.review_target, host)
+                task = queue.history[-1]
+            if task in queue.tasks:
+                queue.consume(task.id)
+                queue.history.append(task)
+            if task.decision == _WORKFLOW_STOPPED:
+                queue.paused, queue.error = False, ""
+            task.decision = _WORKFLOW_TERMINATED
+            task.decision_done = True
 
     def move(self, branch: str, ids: list[str], step: int) -> None:
         with self.transaction() as queues:
@@ -525,13 +641,27 @@ class TaskQueue:
                 and task
                 and task.workflow
                 and task.decision == _WORKFLOW_STOPPED
-                and task.spec.mode == "background"
+                and (task.host_task or (task.spec and task.spec.mode == "background"))
             ):
                 if task.attempt >= 100:
                     raise ValueError("workflow retry limit reached")
-                retry = self._new_task(task.spec)
-                retry.attempt, retry.step = task.attempt + 1, task.step
-                retry.workflow = task.workflow
+                if task.host_task:
+                    workflow = replace(
+                        task.workflow,
+                        action=HUMAN_REVIEW,
+                        next_steps=[
+                            (task.workflow.action, task.host_task.script),
+                            *task.workflow.next_steps,
+                        ],
+                    )
+                    retry = QueuedTask(uuid.uuid4().hex, None, workflow=workflow, bookmark=branch)
+                    retry.step = task.step - 1
+                else:
+                    assert task.spec is not None
+                    retry = self._new_task(task.spec)
+                    retry.step = task.step
+                    retry.workflow = task.workflow
+                retry.attempt = task.attempt + 1
                 self._insert_successor(queue, task, retry, "workflow retry")
             queue.paused = paused
             if not paused:
@@ -551,6 +681,16 @@ class TaskQueue:
         """Retain the exact run and its pinned commits, independently of job pruning."""
         with self.transaction() as queues:
             self._refresh(queues, jobs, outcome)
+        self._acknowledge_hosts()
+
+    def _acknowledge_hosts(self) -> None:
+        # Keep a host record until the queue has durably copied its result.
+        for queue in self.queues.values():
+            for task in queue.history:
+                if task.host_task and not task.host_task.running:
+                    record = self.host_tasks.tasks.get(task.host_task.id)
+                    if record and not record.notified:
+                        self.host_tasks.mark_notified(record)
 
     def _refresh(
         self,
@@ -558,6 +698,21 @@ class TaskQueue:
         jobs: JobManager,
         outcome: Callable[[QueuedTask], tuple[str, list[str]] | None] | None = None,
     ) -> None:
+        running_hosts = [
+            task
+            for queue in queues.values()
+            for task in queue.history
+            if task.host_task and task.host_task.running
+        ]
+        if running_hosts:
+            self.host_tasks.refresh()
+            for task in running_hosts:
+                assert task.host_task is not None
+                if host := self.host_tasks.tasks.get(task.host_task.id):
+                    task.host_task = copy.deepcopy(host)
+                else:
+                    task.host_task.status = "orphaned"
+                    task.host_task.ended_at = _now()
         with jobs._locked():
             jobs.load()
             for branch, queue in queues.items():
@@ -607,30 +762,51 @@ class TaskQueue:
         report_state = (job.feedback_snapshot or {}).get("state", {})
         planning = task.step == 1
         keys = workflow.pass_state_keys if planning else []
-        if not workflow.next_steps:
-            keys = workflow.result_state_keys
+        if not any(isinstance(spec, LaunchSpec) for _, spec in workflow.next_steps):
+            keys = [*keys, *workflow.result_state_keys]
         missing = [key for key in keys if key not in report_state]
         if not job.reported_success or missing:
             detail = f"{job.status}; {job.feedback_detail()}"
             if job.reported_success:
                 detail = "missing report state: " + ", ".join(missing)
-            queue.paused = True
-            queue.error = f"{workflow.name} / {workflow.action}: {detail}"
-            task.decision = _WORKFLOW_STOPPED
+            self._stop_workflow(queue, task, detail)
             return
+        if planning:
+            task.workflow = replace(
+                workflow, state={key: report_state[key] for key in workflow.pass_state_keys}
+            )
+        self._advance_workflow(queue, task)
+
+    @staticmethod
+    def _stop_workflow(queue: BookmarkQueue, task: QueuedTask, detail: str) -> None:
+        workflow = task.workflow
+        assert workflow is not None
+        queue.paused = True
+        queue.error = f"{workflow.name} / {workflow.action}: {detail}"
+        task.decision = _WORKFLOW_STOPPED
+
+    def _advance_workflow(
+        self, queue: BookmarkQueue, task: QueuedTask, host: TaskRecord | None = None
+    ) -> None:
+        workflow = task.workflow
+        assert workflow is not None
         if not workflow.next_steps:
             task.decision = "workflow complete"
             return
         (name, spec), *remaining = workflow.next_steps
-        successor = self._new_task(spec)
+        if isinstance(spec, LaunchSpec):
+            successor = self._new_task(spec)
+        else:
+            successor = QueuedTask(
+                uuid.uuid4().hex, None, bookmark=task.branch, host_task=copy.deepcopy(host)
+            )
         successor.step = task.step + 1
-        successor.workflow = replace(
-            workflow,
-            action=name,
-            next_steps=remaining,
-            state={key: report_state[key] for key in keys} if planning else workflow.state,
-        )
+        successor.workflow = replace(workflow, action=name, next_steps=remaining)
         self._insert_successor(queue, task, successor, f"workflow step {name}")
+        if host:
+            successor.attempt = task.attempt
+            queue.consume(successor.id)
+            queue.history.append(successor)
 
     def _decide(self, jobs: JobManager) -> None:
         """Commit successors before launching them; never replay a decision."""
@@ -648,9 +824,18 @@ class TaskQueue:
                     continue
                 task = queue.predecessor
                 assert task is not None
-                job = task.job
-                assert job is not None
                 task.decision_done = True
+                if host := task.host_task:
+                    if host.exit_code == 0:
+                        self._advance_workflow(queue, task)
+                    else:
+                        detail = host.status
+                        if host.exit_code is not None:
+                            detail += f" (exit {host.exit_code})"
+                        self._stop_workflow(queue, task, detail)
+                    continue
+                job = task.job
+                assert job is not None and task.spec is not None
                 if task.workflow:
                     self._decide_workflow(queue, task, job)
                     continue
@@ -728,6 +913,59 @@ class TaskQueue:
         feedback.encode(selected)
         return selected
 
+    def _dispatch_review(
+        self, queue: BookmarkQueue, task: QueuedTask, jobs: JobManager, sessions: SessionSource
+    ) -> None:
+        workflow = task.workflow
+        assert workflow is not None
+        name, script = workflow.next_steps[0] if workflow.next_steps else ("", None)
+        if isinstance(script, str) and (host := self.host_tasks.workflow_task(task.id)):
+            self._finish_review(queue, task, host.review_base, host.review_target, host)
+            return
+        host = None
+        # Review and spawn under one launch lock. An agent cannot start in
+        # between, and the host sees a fresh checkout of the exact reviewed tip.
+        with jobs._locked():
+            jobs.load()
+            if jobs._busy_reason(task.branch, sessions):
+                return
+            backend = detect(jobs.repo)
+            base = workflow.review_base
+            target = backend._bookmark_commit(task.branch, snapshot=True)
+            keys = backend.review_file_keys(base, target)
+            if not keys <= SeenFiles.for_repo(jobs.repo).seen():
+                return
+            if isinstance(script, str):
+                if backend._jj(
+                    "log",
+                    "--no-graph",
+                    "-r",
+                    f"{commit_revset(target)} & conflicts()",
+                    "-T",
+                    "commit_id",
+                ):
+                    raise ValueError(
+                        "resolve the reviewed bookmark's conflicts before running host commands"
+                    )
+                host = self.host_tasks.start_workflow(
+                    task.id, task.branch, name, script, jobs.repo, base, target
+                )
+        self._finish_review(queue, task, base, target, host)
+
+    def _finish_review(
+        self,
+        queue: BookmarkQueue,
+        task: QueuedTask,
+        base: str,
+        target: str,
+        host: TaskRecord | None,
+    ) -> None:
+        task.base_commit, task.result_commit = base, target
+        queue.consume(task.id)
+        queue.history.append(task)
+        task.decision_done = True
+        self._advance_workflow(queue, task, host)
+
     def dispatch(
         self,
         jobs: JobManager,
@@ -749,7 +987,7 @@ class TaskQueue:
                 if queue.paused or not queue.tasks:
                     continue
                 task = queue.tasks[0]
-                if queue.history and queue.history[-1].job and queue.history[-1].job.running:
+                if (previous := queue.predecessor) and previous.status == "running":
                     continue
                 # Another instance can finalize a predecessor after _decide's
                 # transaction. Defer until its policy decision is durable.
@@ -758,6 +996,9 @@ class TaskQueue:
                 try:
                     if error := valid(branch):
                         queue.paused, queue.error = True, error
+                        continue
+                    if task.spec is None:
+                        self._dispatch_review(queue, task, jobs, sessions)
                         continue
                     job = jobs.start_background(
                         task.spec,
@@ -777,4 +1018,5 @@ class TaskQueue:
                 task.base_commit = job.base_commit
                 queue.history.append(task)
                 started.append(job)
+        self._acknowledge_hosts()
         return started

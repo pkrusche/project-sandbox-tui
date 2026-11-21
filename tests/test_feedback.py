@@ -337,7 +337,7 @@ def test_branch_action_and_concurrent_dispatch(repo: Path, fake_cfg: Callable[..
     finish(jobs)
     queue.dispatch(jobs, lambda: {}, lambda _: None)
     assert queue.get("topic").paused and "step limit" in queue.get("topic").error
-    assert queue.get("topic").history[-1].spec.prompt_text.strip() == "report:success review topic"
+    assert queue.get("topic").history[-1].description.strip() == "report:success review topic"
 
 
 def test_init_preserves_user_guidance_and_skill_edits(tmp_path: Path) -> None:

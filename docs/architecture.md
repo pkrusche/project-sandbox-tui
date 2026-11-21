@@ -194,6 +194,14 @@ It never attributes a later job's tip to an earlier task. Completed tasks remain
 until deleted; pending-task undo cannot restore or rerun them. Queue editors pause
 dispatch persistently, including across TUI instances, until explicitly resumed.
 
+A workflow's review step checks the current bookmark's per-commit marks under
+`queue.lock` → `jobs.lock`. When a host command follows, dispatch keeps the
+launch lock through checkout and spawn, taking `tasks.lock` to save the host
+record. The review step's ID identifies that record so dispatch can adopt it if
+the queue write fails. Host commands use their own temporary jj workspaces at
+the reviewed commits. Termination is a queue transaction that consumes a
+pending step or closes the active step's decision.
+
 ## Limitations
 
 - Inline sessions, diffs and shell commands suspend the event loop;

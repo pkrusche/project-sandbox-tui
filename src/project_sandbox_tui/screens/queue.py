@@ -60,6 +60,7 @@ class QueueScreen(Screen[None]):
         Binding("u", "undo", show=False),
         Binding("ctrl+r", "redo", show=False),
         Binding("p", "pause", show=False),
+        Binding("X", "terminate_workflow", show=False),
         Binding("m", "mark_prefix", show=False),
         Binding("apostrophe,backtick", "jump_prefix", show=False),
     ]
@@ -71,6 +72,7 @@ class QueueScreen(Screen[None]):
         edit: Callable[[str, QueuedTask | None], None],
         review: Callable[[str, str], object] | None = None,
         resolve: Callable[[QueuedTask, str], None] | None = None,
+        review_bookmark: Callable[[str, str], None] | None = None,
     ) -> None:
         super().__init__()
         self.queue = queue
@@ -78,6 +80,7 @@ class QueueScreen(Screen[None]):
         self.edit_task = edit
         self.review = review
         self.resolve = resolve
+        self.review_bookmark = review_bookmark
         self._prefix = PrefixKeys()
         self._mark_prefix = ""
         self.marked: list[str] = []
@@ -125,18 +128,20 @@ class QueueScreen(Screen[None]):
     def _cells(task: QueuedTask, index: int, marked: bool) -> tuple[Text, ...]:
         workflow = task.workflow
         flow = ""
-        prompt = " ".join(task.spec.prompt_text.split())
+        prompt = " ".join(task.description.split())
         if workflow:
             flow = "→" if workflow.next_steps else "■"
+            if task.terminated:
+                flow = "×"
             prompt = f"[{workflow.name}/{workflow.action}] {prompt}"
         outcome = task.job.reported_outcome if task.job and task.job.feedback_path else "—"
         return (
             Text("+" if marked else ""),
-            Text(str(index) if task.status == "pending" else ""),
+            Text(str(index) if task.status in {"pending", "awaiting review"} else ""),
             Text(flow, style="cyan"),
             Text(task.status),
             Text(outcome, style=OUTCOME_STYLES.get(outcome, "dim")),
-            Text(task.spec.label()),
+            Text(task.spec.label() if task.spec else "host" if task.host_task else "—"),
             Text(", ".join(c[:12] for c in task.commits)),
             table_preview(prompt),
         )
@@ -155,7 +160,7 @@ class QueueScreen(Screen[None]):
         rows: list[tuple[str, tuple[Text, ...]]] = [
             (task.id, self._cells(task, index, task.id in chosen))
             for index, task in enumerate(queue.entries, 1)
-            if self.filter_text.lower() in task.spec.prompt_text.lower() or task.id in chosen
+            if self.filter_text.lower() in task.description.lower() or task.id in chosen
         ]
         state = "paused" if queue.paused else "active"
         title = f" {self.branch} · {len(queue.tasks)} queued · {state}"
@@ -164,6 +169,10 @@ class QueueScreen(Screen[None]):
         if queue.error:
             title += f" · {queue.error}"
         self.query_one("#queue-title", Static).update(Text(title))
+        hint = HINT
+        if queue.workflow_in_progress():
+            hint += " · enter review diff · X terminate workflow"
+        self.query_one("#queue-hint", Static).update(KeyHints(hint))
         self.query_one("#queue-empty", Static).display = not rows
         if rows != self._shown:
             row = self.table.cursor_row
@@ -287,12 +296,18 @@ class QueueScreen(Screen[None]):
     def action_add(self) -> None:
         self.edit_task(self.branch, None)
 
+    def action_terminate_workflow(self) -> None:
+        if task := self.selected_task():
+            self.change(lambda: self.queue.terminate_workflow(self.branch, task.id), pause=False)
+
     def action_edit(self) -> None:
         task = self.selected_task()
         if task:
-            if task.job:
-                self.app.push_screen(LogScreen(task.job))
-            else:
+            if run := task.job or task.host_task:
+                self.app.push_screen(LogScreen(run))
+            elif task.human_review and task.workflow and self.review_bookmark:
+                self.review_bookmark(self.branch, task.workflow.review_base)
+            elif task.status == "pending":
                 self.edit_task(self.branch, task)
 
     def selected_task(self) -> QueuedTask | None:
@@ -309,7 +324,8 @@ class QueueScreen(Screen[None]):
 
     def action_show_prompt(self) -> None:
         if task := self.selected_task():
-            self.app.push_screen(MessageScreen("Prompt", task.spec.prompt_text))
+            title = "Prompt" if task.spec else "Host command" if task.host_task else "Human review"
+            self.app.push_screen(MessageScreen(title, task.description))
 
     def action_details(self) -> None:
         task = self.selected_task()
@@ -318,20 +334,24 @@ class QueueScreen(Screen[None]):
         lines = [
             f"task        {task.id}",
             f"status      {task.status}",
-            f"agent       {task.spec.label()}",
+            f"agent       {task.spec.label() if task.spec else '—'}",
             f"base        {task.base_commit or '—'}",
             f"result      {task.result_commit or '—'}",
             "commits     " + ("\n            ".join(task.commits) or "—"),
         ]
         if task.workflow:
             lines.insert(1, f"workflow    {task.workflow.name} / {task.workflow.action}")
-        if task.job:
+        if run := task.job or task.host_task:
+            log_path = (
+                task.job.log_path if task.job else task.host_task.out_path if task.host_task else ""
+            )
             lines += [
-                f"started     {task.job.started_at}",
-                f"ended       {task.job.ended_at or '—'}",
-                f"exit code   {task.job.exit_code}",
-                f"log         {task.job.log_path}",
+                f"started     {run.started_at}",
+                f"ended       {run.ended_at or '—'}",
+                f"exit code   {run.exit_code}",
+                f"log         {log_path}",
             ]
+        if task.job:
             lines += [f"run         {task.job.run_id}", task.job.feedback_detail()]
             if task.job.blocked_summary:
                 lines.append("In the queue, press i to work with an agent or o to open the editor.")
@@ -344,7 +364,7 @@ class QueueScreen(Screen[None]):
                 f"decision    {task.decision or '—'}",
                 f"successor   {task.successor_id or '—'}",
             ]
-        lines += ["", task.spec.prompt_text]
+        lines += ["", task.description]
         self.app.push_screen(MessageScreen(f"{self.branch} task", "\n".join(lines)))
 
     def action_commits(self) -> None:

@@ -27,12 +27,13 @@ from project_sandbox_tui.widgets import CycleField, KeyHints
 
 @dataclass
 class Stage:
-    """One workflow stage: its action, how it runs, and the choice it starts with."""
+    """A workflow stage with profile controls for agent actions."""
 
     name: str  # the action name
-    action: Action
+    action: Action | None
     mode: str  # shown next to the name, e.g. "interactive" or "queued"
-    initial: StepChoice
+    initial: StepChoice | None
+    detail: str = ""
 
 
 def stage_choices(cfg: Config, action: Action) -> list[StepChoice]:
@@ -52,7 +53,7 @@ def describe(cfg: Config, last: LastUsed, action: Action, choice: StepChoice) ->
 
 
 class WorkflowProfilesScreen(ModalScreen[list[StepChoice] | None]):
-    """Dismisses with one choice per stage, or None when cancelled."""
+    """Dismisses with one choice per agent action, or None when cancelled."""
 
     DEFAULT_CSS = """
     WorkflowProfilesScreen { align: center middle; }
@@ -76,7 +77,9 @@ class WorkflowProfilesScreen(ModalScreen[list[StepChoice] | None]):
     def __init__(self, title: str, cfg: Config, last: LastUsed, stages: list[Stage]) -> None:
         super().__init__()
         self.title_text, self.cfg, self.last, self.stages = title, cfg, last, stages
-        self.options = [stage_choices(cfg, stage.action) for stage in stages]
+        self.options = [
+            stage_choices(cfg, stage.action) if stage.action else [] for stage in stages
+        ]
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -84,6 +87,10 @@ class WorkflowProfilesScreen(ModalScreen[list[StepChoice] | None]):
             for index, stage in enumerate(self.stages):
                 options = self.options[index]
                 yield Static(Text(f"{index + 1}. {stage.name} · {stage.mode}"), classes="stage")
+                if stage.action is None:
+                    if stage.detail:
+                        yield Static(Text(stage.detail), classes="stage-hint")
+                    continue
                 field = CycleField(
                     "profile", [choice.label() for choice in options], id=f"stage-{index}"
                 )
@@ -110,7 +117,8 @@ class WorkflowProfilesScreen(ModalScreen[list[StepChoice] | None]):
     def choices(self) -> list[StepChoice]:
         return [
             self.options[index][self.query_one(f"#stage-{index}", CycleField).index]
-            for index in range(len(self.stages))
+            for index, stage in enumerate(self.stages)
+            if stage.action
         ]
 
     @on(CycleField.Changed)
@@ -121,7 +129,9 @@ class WorkflowProfilesScreen(ModalScreen[list[StepChoice] | None]):
         index = int(field_id.removeprefix("stage-"))
         choice = self.options[index][event.field.index]
         hint = self.query_one(f"#stage-hint-{index}", Static)
-        hint.update(describe(self.cfg, self.last, self.stages[index].action, choice))
+        action = self.stages[index].action
+        assert action is not None
+        hint.update(describe(self.cfg, self.last, action, choice))
 
     @on(Button.Pressed, "#start")
     def action_start(self) -> None:

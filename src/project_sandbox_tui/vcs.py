@@ -209,6 +209,11 @@ def revset_symbol(name: str) -> str:
     return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def commit_revset(commit: str) -> str:
+    """Resolve a pinned ID independently of bookmark and tag names."""
+    return f"commit_id({json.dumps(commit)})"
+
+
 _JJ_WORKING_COPY_TEMPLATE = (
     'change_id.shortest(8) ++ "\\x00" ++ description.first_line() ++ "\\x00" ++ '
     'committer.timestamp().format("%s") ++ "\\x00" ++ commit_id ++ "\\n"'
@@ -432,12 +437,13 @@ class JjBackend:
             self.root,
         )
 
-    def add_workspace(self, name: str, path: Path) -> None:
+    def add_workspace(self, name: str, path: Path, *, pinned: bool = False) -> None:
         """Create a workspace at ``path`` on a new change on top of bookmark ``name``.
 
         Like project-sandbox's own workspaces, it is registered under the
         directory's basename (``feature-x-1a2b3c`` for ``feature/x``), which
         project-sandbox uses to reuse and remove it, and has no Git worktree.
+        A pinned commit ID receives a full checkout regardless of sparse patterns.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         _run(
@@ -448,13 +454,17 @@ class JjBackend:
                 "workspace",
                 "add",
                 "--no-colocate",
+                *(["--sparse-patterns=full"] if pinned else []),
                 f"--name={path.name}",
-                f"--revision={revset_symbol(name)}",
+                "--revision=" + (commit_revset(name) if pinned else revset_symbol(name)),
                 "--",
                 str(path),
             ],
             self.root,
         )
+
+    def forget_workspace(self, name: str) -> None:
+        self._jj("workspace", "forget", name)
 
     def workspace_names(self) -> dict[Path, str] | None:
         """Registered workspace roots (resolved) → names; None if jj cannot list roots."""
@@ -599,25 +609,30 @@ class JjBackend:
         return [*self.diff_command(base, target), " | ".join(map(_file_pattern, paths)) or "none()"]
 
     def review_commits(
-        self, base: str, target: str, *, snapshot: bool = True
+        self, base: str, target: str, *, snapshot: bool = True, base_is_commit: bool = False
     ) -> list[ReviewCommit]:
         """Commits reachable from target but not base, parents before children.
 
         Pin both tips after snapshotting once, including edits to the working copy.
-        Refresh counts can skip the snapshot when they already have pinned tips.
+        Callers with two full commit IDs can skip the snapshot.
         """
         if snapshot:
             _run(["jj", "--no-pager", "--color=never", "status"], self.root)
-        base_commit, target_commit = (
-            self._jj("log", "--no-graph", "-r", revset_symbol(name), "-T", "commit_id").strip()
-            for name in (base, target)
-        )
+            if base_is_commit:
+                target = self._bookmark_commit(target)
+            else:
+                base, target = (
+                    self._jj(
+                        "log", "--no-graph", "-r", revset_symbol(name), "-T", "commit_id"
+                    ).strip()
+                    for name in (base, target)
+                )
         out = self._jj(
             "log",
             "--no-graph",
             "--reversed",
             "-r",
-            f"{base_commit}..{target_commit}",
+            f"{commit_revset(base)}..{commit_revset(target)}",
             "-T",
             # Descriptions can themselves contain NULs; encode them before framing.
             'commit_id ++ "\\x00" ++ json(description.first_line()) ++ "\\x00"',
@@ -633,17 +648,19 @@ class JjBackend:
             "jj",
             "diff",
             "-r",
-            commit.commit,
+            commit_revset(commit.commit),
             " | ".join(map(_file_pattern, paths)) or "none()",
         ]
 
     def changed_files_for_commit(self, commit: ReviewCommit) -> FileChanges:
         """Files in a pinned commit, with independent seen keys for each commit and file."""
-        return self._changed_files("", commit.commit, ("-r", commit.commit), f"{commit.key}:file:")
+        return self._changed_files(
+            "", commit.commit, ("-r", commit_revset(commit.commit)), f"{commit.key}:file:"
+        )
 
     def review_commit_patch(self, commit: ReviewCommit) -> bytes:
         """Plain patch against the same automatically merged parents as file review."""
-        return self._jj_bytes("diff", "-r", commit.commit, "--git")
+        return self._jj_bytes("diff", "-r", commit_revset(commit.commit), "--git")
 
     def review_file_keys(self, base: str, target: str) -> set[str]:
         """Review identities between pinned commit IDs, in one metadata-only query.
@@ -653,7 +670,12 @@ class JjBackend:
         full diff to preserve their existing content-based identities.
         """
         fields = self._jj_bytes(
-            "log", "--no-graph", "-r", f"{base}..{target}", "-T", _JJ_REVIEW_KEYS_TEMPLATE
+            "log",
+            "--no-graph",
+            "-r",
+            f"{commit_revset(base)}..{commit_revset(target)}",
+            "-T",
+            _JJ_REVIEW_KEYS_TEMPLATE,
         ).split(b"\0")[:-1]
         keys: set[str] = set()
         offset = 0

@@ -39,6 +39,9 @@ All notable changes to this project are documented in this file.
   into an interactive session or workspace editor. The project config includes
   a spec-to-implementation workflow with checks and a structured commit summary.
   Each bookmark runs one workflow at a time.
+- Workflow steps can wait for human review or run a named host command after
+  review. The prompt queue opens the bookmark diff, shows host command logs,
+  and supports terminating the current workflow with `X`.
 - Agent actions accept `profile = "NAME"` to run with a saved agent profile,
   including its CLI args; it cannot be combined with the action's own `agent`,
   `model` or `effort`. Actions that set neither now use the profile the `i` / `r`

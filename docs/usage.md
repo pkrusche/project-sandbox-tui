@@ -577,7 +577,10 @@ the editor. A running session continues, and other bookmarks' queues keep runnin
 interactively or enters this queue, according to `first_step_interactive`.
 In the flow column, `→` marks a step with another step to follow and `■` marks
 the final step.
-Pressing `p` after a stopped background workflow step retries that step. See
+An **awaiting review** step waits for all file changes in the bookmark's review
+to be marked. Press `enter` on that step to open the diff review. Press `p`
+after a stopped background step to retry it, or `X` on the active step to end
+the workflow after any current process finishes. See
 [project workflows](feedback.md#project-workflows).
 
 | Key | Action |
@@ -597,5 +600,6 @@ Pressing `p` after a stopped background workflow step retries that step. See
 | `m` then a letter | Save a named mark on the highlighted task |
 | `'` or `backtick`, then a letter | Jump to a named mark, clearing the filter |
 | `p` | Pause / resume this bookmark's queue without stopping a running session |
+| `X` | Terminate the active workflow and prevent further steps in that run |
 | `q` / `h` / `L` | Return to the bookmark list |
 | `esc` | Clear filter or selection; otherwise return to the bookmark list |

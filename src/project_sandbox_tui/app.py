@@ -52,6 +52,8 @@ from project_sandbox_tui.cleanup import (
     remove_workspaces,
 )
 from project_sandbox_tui.config import (
+    HOST_STEP_PREFIX,
+    HUMAN_REVIEW,
     Action,
     AgentProfile,
     Config,
@@ -75,7 +77,13 @@ from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
 from project_sandbox_tui.opgraph import NODE, OpGraph, UndoEntry, UndoItem, draw, toposort
 from project_sandbox_tui.processes import reap_later
-from project_sandbox_tui.queue import WORKFLOW_BUSY, QueuedTask, TaskQueue, WorkflowRun
+from project_sandbox_tui.queue import (
+    WORKFLOW_BUSY,
+    QueuedTask,
+    TaskQueue,
+    WorkflowRun,
+    WorkflowStep,
+)
 from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
@@ -547,7 +555,7 @@ class SandboxTUI(App[None]):
         self.workspaces = WorkspacePreparer(repo, backend)
         self.jobs.prepare = self._prepare_workspace
         self.tasks = TaskManager(self.jobs.state_dir)  # background host commands
-        self.queue = TaskQueue(self.jobs.state_dir)
+        self.queue = TaskQueue(self.jobs.state_dir, self.tasks)
         self.sessions_dir = sessions_dir
         self.branches: list[Branch] = []
         self._reviews: dict[str, tuple[int, int]] = {}
@@ -844,7 +852,7 @@ class SandboxTUI(App[None]):
             self.bell()
 
     def _announce_task(self, task: TaskRecord) -> None:
-        if not self.tasks.mark_notified(task):
+        if task.workflow_repo or not self.tasks.mark_notified(task):
             return
         status = task.status
         if task.exit_code is not None and status != "completed":
@@ -1347,10 +1355,18 @@ class SandboxTUI(App[None]):
             self._review_diff(base, target)
 
     @work(exclusive=True, group="diff")
-    async def _review_commits(self, base: str, target: str) -> None:
+    async def _review_commits(
+        self, base: str, target: str, *, snapshot: bool = True, base_is_commit: bool = False
+    ) -> None:
         """Review files separately in each of the bookmark's pinned commits."""
         try:
-            commits = await asyncio.to_thread(self.backend.review_commits, base, target)
+            commits = await asyncio.to_thread(
+                self.backend.review_commits,
+                base,
+                target,
+                snapshot=snapshot,
+                base_is_commit=base_is_commit,
+            )
             changes = await asyncio.to_thread(
                 lambda: [self.backend.changed_files_for_commit(commit) for commit in commits]
             )
@@ -1360,8 +1376,10 @@ class SandboxTUI(App[None]):
         if not commits:
             self.notify(f"no commits to review from {base} to {target}")
             return
-        seen = await asyncio.to_thread(SeenFiles.for_repo, self.repo)
-        title = f"{base} → {target}"
+        seen = await asyncio.to_thread(
+            SeenFiles.for_repo, self.repo, review_size=sum(len(change.files) for change in changes)
+        )
+        title = f"{base[:12] if base_is_commit or not snapshot else base} → {target}"
 
         def view(commit: ReviewCommit, files: Sequence[FileChange]) -> None:
             shown = files[0].display if len(files) == 1 else f"{len(files)} files"
@@ -1591,7 +1609,7 @@ class SandboxTUI(App[None]):
         return "\n\n".join(parts)
 
     def _resolve_blocked_task(self, task: QueuedTask, mode: str) -> None:
-        name = task.spec.branch
+        name = task.branch
         guidance = self._blocked_guidance(name, task)
         if mode == "editor":
             self._open_editor_with_guidance(name, guidance)
@@ -1610,17 +1628,21 @@ class SandboxTUI(App[None]):
                 self.queue,
                 name,
                 self._edit_queued_task,
-                self._review_commits,
+                lambda base, tip: self._review_commits(base, tip, snapshot=False),
                 self._resolve_blocked_task,
+                self._review_workflow_bookmark,
             )
         )
+
+    def _review_workflow_bookmark(self, branch: str, base: str) -> None:
+        self._review_commits(base, branch, base_is_commit=True)
 
     def _edit_queued_task(self, name: str, task: QueuedTask | None) -> None:
         try:
             self.queue.pause(name, True)
             if task:
                 task = next((t for t in self.queue.get(name).tasks if t.id == task.id), None)
-                if task is None:
+                if task is None or task.spec is None:
                     raise ValueError("task already started or was deleted")
         except (OSError, ValueError) as exc:
             self.notify(str(exc), severity="error")
@@ -1628,30 +1650,34 @@ class SandboxTUI(App[None]):
         self.notify(f"{name}: queue paused for editing; press p in the prompt queue to resume")
         last = LastUsed.load(self.repo)
         defaults = resolve_launch_defaults(self.cfg, last)
-        if task:
-            spec = task.spec
+        if saved_spec := task.spec if task else None:
             # Edit the saved settings, even if the named profile has changed.
             last = LastUsed(
-                agent=spec.agent,
+                agent=saved_spec.agent,
                 profile="",
-                extra_args=list(spec.extra_args),
-                model_by_agent={spec.agent: spec.model},
-                fast_by_agent={spec.agent: spec.fast},
-                gateway_by_agent={spec.agent: spec.gateway},
+                extra_args=list(saved_spec.extra_args),
+                model_by_agent={saved_spec.agent: saved_spec.model},
+                fast_by_agent={saved_spec.agent: saved_spec.fast},
+                gateway_by_agent={saved_spec.agent: saved_spec.gateway},
             )
             defaults = LaunchDefaults(
-                spec.agent, spec.model, spec.effort, spec.timeout, spec.fast, spec.gateway
+                saved_spec.agent,
+                saved_spec.model,
+                saved_spec.effort,
+                saved_spec.timeout,
+                saved_spec.fast,
+                saved_spec.gateway,
             )
 
         def save(spec: LaunchSpec) -> str | None:
             try:
-                if task:
+                if task and saved_spec:
                     spec.operation, spec.inputs, spec.base = (
-                        task.spec.operation,
-                        list(task.spec.inputs),
-                        task.spec.base,
+                        saved_spec.operation,
+                        list(saved_spec.inputs),
+                        saved_spec.base,
                     )
-                    self.queue.edit(name, task.id, spec, expected=task.spec)
+                    self.queue.edit(name, task.id, spec, expected=saved_spec)
                 else:
                     self.queue.add(spec)
             except (OSError, ValueError) as exc:
@@ -1666,7 +1692,7 @@ class SandboxTUI(App[None]):
             last,
             defaults,
             self._form_preview,
-            task.spec.prompt_text if task else "",
+            saved_spec.prompt_text if saved_spec else "",
             prompt_history=self.prompt_history,
             branches=[name],
             fixed_branch=True,
@@ -1704,8 +1730,7 @@ class SandboxTUI(App[None]):
             (
                 n
                 for n in self.graph.state.nodes.values()
-                if n.kind == "run"
-                and (n.bookmark, n.job) == (task.spec.branch, task.job.started_at)
+                if n.kind == "run" and (n.bookmark, n.job) == (task.branch, task.job.started_at)
             ),
             None,
         )
@@ -1713,11 +1738,11 @@ class SandboxTUI(App[None]):
         if not result:
             # Queue refresh holds jobs.lock. A fresh tip is safe only while
             # this is still the current run; another TUI cannot launch yet.
-            current = self.jobs.jobs.get(task.spec.branch)
+            current = self.jobs.jobs.get(task.branch)
             if current is None or current.queue_id != task.id or current.running:
                 return None
             try:
-                result = self.backend._description_commit(task.spec.branch)
+                result = self.backend._description_commit(task.branch)
             except VcsError:
                 return None  # bookmark removed; a graph outcome may arrive later
         commits = (
@@ -3393,9 +3418,27 @@ class SandboxTUI(App[None]):
         if self.queue.get(branch).workflow_in_progress():
             self.notify(WORKFLOW_BUSY.format(branch=branch), severity="error", timeout=8)
             return
+        review_base = ""
+        if HUMAN_REVIEW in workflow.steps:
+            main = self.branch(self.main_name() or "")
+            if main is None or not main.commit:
+                self.notify(
+                    "human review needs a local, unambiguous main bookmark", severity="error"
+                )
+                return
+            review_base = main.commit
         last = LastUsed.load(self.repo)
         stages: list[Stage] = []
         for index, action in enumerate((workflow.planning_action, *workflow.steps)):
+            if index and action == HUMAN_REVIEW:
+                stages.append(Stage("Human review", None, "bookmark diff", None))
+                continue
+            if index and action.startswith(HOST_STEP_PREFIX):
+                command_name = action.removeprefix(HOST_STEP_PREFIX)
+                stages.append(
+                    Stage(command_name, None, "host command", None, self.cfg.commands[command_name])
+                )
+                continue
             choice, warning = initial_choice(self.cfg, last, action, self.cfg.actions[action])
             if warning:
                 self.notify(f"{warning}; using {choice.label()}", severity="warning")
@@ -3406,7 +3449,9 @@ class SandboxTUI(App[None]):
 
         def chosen(choices: list[StepChoice] | None) -> None:
             if choices is not None:
-                self._start_workflow(name, workflow, branch, last, choices, command.args)
+                self._start_workflow(
+                    name, workflow, branch, last, choices, command.args, review_base
+                )
 
         self.push_screen(
             WorkflowProfilesScreen(f"workflow {name} on {branch}", self.cfg, last, stages),
@@ -3421,6 +3466,7 @@ class SandboxTUI(App[None]):
         last: LastUsed,
         choices: list[StepChoice],
         topic: str,
+        review_base: str,
     ) -> None:
         """Start ``workflow`` with one chosen profile per stage, planning first."""
         spec = self._action_spec(
@@ -3434,30 +3480,44 @@ class SandboxTUI(App[None]):
         if workflow.pass_state_keys:
             keys = ", ".join(workflow.pass_state_keys)
             spec.prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
-        steps = [
-            (action, self._action_spec(self.cfg.actions[action], branch, last, choice))
-            for action, choice in zip(workflow.steps, choices[1:], strict=True)
-        ]
+        agent_choices = iter(choices[1:])
+        steps: list[WorkflowStep] = []
+        last_agent = spec
+        for action in workflow.steps:
+            if action == HUMAN_REVIEW:
+                steps.append((action, None))
+            elif action.startswith(HOST_STEP_PREFIX):
+                steps.append((action, self.cfg.commands[action.removeprefix(HOST_STEP_PREFIX)]))
+            else:
+                last_agent = self._action_spec(
+                    self.cfg.actions[action], branch, last, next(agent_choices)
+                )
+                steps.append((action, last_agent))
         if workflow.result_state_keys:
             keys = ", ".join(workflow.result_state_keys)
-            steps[-1][1].prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
+            last_agent.prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
         if self.dry_run or "--dry-run" in self.cfg.sandbox.extra_args:
 
             def chosen_label(stage: LaunchSpec, choice: StepChoice) -> str:
                 # A profile deleted while the picker was open resolves as Custom.
                 return stage.profile or ("action settings" if choice.kind == "action" else "custom")
 
-            stages = [(workflow.planning_action, spec), *steps]
-            self.push_screen(
-                MessageScreen(
-                    f"Workflow {name} on {branch}",
-                    "\n\n".join(
-                        f"{action} ({stage.mode}) · profile {chosen_label(stage, choice)}"
-                        f" · {stage.label()}\n{stage.prompt_text}"
-                        for (action, stage), choice in zip(stages, choices, strict=True)
-                    ),
-                )
-            )
+            agent_choices = iter(choices)
+            preview = []
+            for action, stage in [(workflow.planning_action, spec), *steps]:
+                if isinstance(stage, LaunchSpec):
+                    profile = chosen_label(stage, next(agent_choices))
+                    preview.append(
+                        f"{action} ({stage.mode}) · profile {profile} · {stage.label()}\n"
+                        f"{stage.prompt_text}"
+                    )
+                elif isinstance(stage, str):
+                    preview.append(
+                        f"{action.removeprefix(HOST_STEP_PREFIX)} (host command)\n{stage}"
+                    )
+                else:
+                    preview.append("Human review (entire bookmark diff)")
+            self.push_screen(MessageScreen(f"Workflow {name} on {branch}", "\n\n".join(preview)))
             return
         self._start_launch(
             spec,
@@ -3468,6 +3528,7 @@ class SandboxTUI(App[None]):
                 steps,
                 workflow.pass_state_keys,
                 workflow.result_state_keys,
+                review_base=review_base,
             ),
         )
 

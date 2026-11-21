@@ -245,6 +245,10 @@ class Action:
         return out
 
 
+HUMAN_REVIEW = "human-review"
+HOST_STEP_PREFIX = "host:"
+
+
 @dataclass
 class Workflow:
     planning_action: str = ""
@@ -483,9 +487,24 @@ class Config:
                 )
             if not workflow.planning_action or not 1 <= len(workflow.steps) <= 99:
                 raise ConfigError(f"[{where}] needs a planning_action and 1 to 99 steps")
-            for action in (workflow.planning_action, *workflow.steps):
-                if action not in self.actions:
-                    raise ConfigError(f"[{where}] refers to unknown action {action!r}")
+            if workflow.planning_action not in self.actions:
+                raise ConfigError(
+                    f"[{where}] refers to unknown action {workflow.planning_action!r}"
+                )
+            steps: list[str] = []
+            for step in workflow.steps:
+                if step.startswith(HOST_STEP_PREFIX):
+                    command = step.removeprefix(HOST_STEP_PREFIX)
+                    if command not in self.commands:
+                        raise ConfigError(f"[{where}] refers to unknown host command {command!r}")
+                    if not steps or steps[-1] != HUMAN_REVIEW:
+                        steps.append(HUMAN_REVIEW)
+                elif step != HUMAN_REVIEW and step not in self.actions:
+                    raise ConfigError(f"[{where}] refers to unknown action {step!r}")
+                steps.append(step)
+            if len(steps) > 99:
+                raise ConfigError(f"[{where}] allows at most 99 steps including human reviews")
+            workflow.steps = steps
             for field_name in ("pass_state_keys", "result_state_keys"):
                 if any(not key.strip() for key in getattr(workflow, field_name)):
                     raise ConfigError(f"[{where}] {field_name} must contain nonempty keys")

@@ -534,7 +534,8 @@ sbx-tui config set --project actions.deep-review.profile 'Deep review'
 | `<repo>-<hash>/diff_review.json` | File changes marked seen in the [diff review](usage.md#diff-review) |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/queue.json`, `<repo>-<hash>/queue.lock` | Prompt task IDs and order, pause state, pending-task undo/redo and named marks |
-| `<repo>-<hash>/queue-tasks/` | One JSON file per pending, running or completed prompt task, including its run, log paths and commit links |
+| `<repo>-<hash>/queue-tasks/` | Records for pending, running and completed prompt tasks and workflow steps |
+| `<repo>-<hash>/workflow-workspaces/` | Temporary jj workspaces for reviewed host commands |
 | `<repo>-<hash>/queue-transaction.json` | Temporary recovery journal for updates spanning task records and the queue index |
 | `<repo>-<hash>/jobs/`, `<repo>-<hash>/jobs.lock` | Job records and cross-instance lock |
 | `<repo>-<hash>/jobs/history/<bookmark>-<hash>/` | [Replaced and cleared job records](sessions.md#one-sandbox-per-bookmark), the last 50 per bookmark |
@@ -560,7 +561,7 @@ is configured. See [agent feedback](feedback.md#queue-policies) for all defaults
 and examples. `runs/<run_id>/` in repository state stores each run's reporting
 context, helper, skill, and raw feedback independently of workspace lifetime.
 
-Use `[workflows.NAME]` to run existing `[actions.NAME]` prompts on the same
-bookmark. Set `first_step_interactive = false` to queue the planning action. See the
-[spec-to-implementation example](feedback.md#project-workflows) for the fields
-and how to resume after a decision.
+Use `[workflows.NAME]` to run `[actions.NAME]` prompts, `human-review` stages,
+and `host:NAME` commands on the same bookmark. Set `first_step_interactive = false`
+to queue the planning action. See [project workflows](feedback.md#project-workflows)
+for the configuration and task controls.
