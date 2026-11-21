@@ -120,21 +120,21 @@ def test_unknown_global_key_is_still_an_error(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("[defaults]\nagent = 'gpt'\nagnet = 'x'\n", "defaults.agent"),
+        ("[defaults]\nagent = 'claude code'\nagnet = 'x'\n", "defaults.agent"),
         ("[defaults]\neffort = 'extreme'\n", "defaults.effort"),
         ("[defaults]\nfast = 'true'\n", "defaults.fast must be true or false"),
         ("[ui]\nbell = 'yes'\n", "ui.bell must be true or false"),
         ("[network]\nca_certs = '/x.pem'\n", "list of strings"),
         ("[project]\nbase_image = 'a'\nbuild = 'python-uv'\n", "only one of"),
         ("[project]\nbuild = 'go'\n", "project.build"),
-        ("[models]\ngpt = ['x']\n", "unknown agent"),
+        ("[models]\nGPT = ['x']\n", "models.GPT"),
         ("ui = []\n", "must be a table"),
         ("models = []\n", "must be a table"),
         ("[defaults]\nmodel = 1\n", "must be a string"),
         ("[defaults]\ntimeout = true\n", "must be an integer"),
         ("[defaults]\ntimeout = -1\n", "must be >= 0"),
         ("[sandbox]\ncpus = 1.5\n", "must be an integer"),
-        ("[sandbox]\nruntime = 'unknown'\n", "sandbox.runtime"),
+        ("[sandbox]\nruntime = 'Docker Desktop'\n", "sandbox.runtime"),
         ("[ui]\nrefresh_seconds = true\n", "must be a number"),
         ("[ui]\nrefresh_seconds = 0\n", "must be finite and > 0"),
         ("[network]\nca_certs = ['valid', 1]\n", "list of strings"),
@@ -163,7 +163,7 @@ def test_unknown_global_key_is_still_an_error(tmp_path: Path) -> None:
         ("actions = 1\n", r"must be a table of \[actions.NAME\]"),
         ("[actions]\nreview = 'x'\n", "must be a table, e.g."),
         ("[actions.review]\nagent = 'claude'\n", "needs a prompt"),
-        ("[actions.review]\nprompt = 'x'\nagent = 'gpt'\n", "actions.review.agent"),
+        ("[actions.review]\nprompt = 'x'\nagent = 'g p t'\n", "actions.review.agent"),
         ("[actions.review]\nprompt = 'x'\neffort = 'huge'\n", "actions.review.effort"),
         ("[actions.review]\nprompt = 'x'\ntimeout = -1\n", "actions.review.timeout"),
         ("[actions.review]\nprompt = 'x'\ntimeout = '1'\n", "must be an integer"),
@@ -412,7 +412,7 @@ def test_last_used_ignores_invalid_fields_without_losing_valid_ones(
         c.repo_state_dir(tmp_path) / "last_used.json",
         json.dumps(
             {
-                "agent": "unknown",
+                "agent": "not an agent",
                 "effort": "extreme",
                 "timeout": timeout,
                 "model_by_agent": {"codex": "custom", "claude": 42},
@@ -600,3 +600,54 @@ def test_resolve_action_settings() -> None:
         cfg, last, c.Action("p", effort="low"), c.ACTION_SETTINGS
     )
     assert (same_agent.agent, same_agent.model, same_agent.effort) == ("pi", "pi-model", "low")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[profiles.cp]\nagent = 'copilot'\n",
+        "[defaults]\nagent = 'newagent'\n",
+        "[sandbox]\nruntime = 'chroot'\n",
+        "[sandbox]\nruntime = 'colima'\n",
+        "[models]\ncopilot = ['gpt-5-mini']\n",
+    ],
+)
+def test_newer_launcher_agents_and_runtimes_load(tmp_path: Path, text: str) -> None:
+    """Support is checked by doctor and before launch, not when loading."""
+    write(tmp_path / c.PROJECT_CONFIG_NAME, text)
+    candidate(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        ("[profiles.local]\nagent = 'pi'\ngateway = true\n", "profiles.local.gateway"),
+        ("[defaults]\ngateway = true\n", "defaults.gateway"),
+    ],
+)
+def test_gateway_needs_agent_proxy(tmp_path: Path, text: str, key: str) -> None:
+    write(tmp_path / c.PROJECT_CONFIG_NAME, text)
+    with pytest.raises(c.ConfigError, match=rf"{key}.*needs network.agent_proxy"):
+        candidate(tmp_path)
+
+
+def test_project_profile_uses_gateway_defined_globally(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    write(c.global_config_path(), "[network]\nagent_proxy = 'http://127.0.0.1:4000/v1'\n")
+    write(repo / c.PROJECT_CONFIG_NAME, "[profiles.local]\nagent = 'pi'\ngateway = true\n")
+    cfg = candidate(repo)
+    assert cfg.profiles["local"].gateway
+
+
+def test_gateway_resolution_and_memory(tmp_path: Path) -> None:
+    cfg = c.Config()
+    cfg.defaults.gateway = True
+    assert not c.resolve_gateway(cfg, c.LastUsed(), "pi")  # no gateway configured
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    assert c.resolve_gateway(cfg, c.LastUsed(), "pi")
+    assert not c.resolve_gateway(cfg, c.LastUsed(), "claude")
+    c.remember(tmp_path, "pi", "gpt-5-mini", "", None, gateway=False)
+    c.remember(tmp_path, "claude", "", "", None, gateway=True)  # not a gateway agent
+    last = c.LastUsed.load(tmp_path)
+    assert last.gateway_by_agent == {"pi": False}
+    assert not c.resolve_gateway(cfg, last, "pi")

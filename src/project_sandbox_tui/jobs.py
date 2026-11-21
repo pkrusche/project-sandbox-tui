@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui import feedback, feedback_transport
+from project_sandbox_tui import capabilities, feedback, feedback_transport
 from project_sandbox_tui.config import Config, ConfigError, private_dir, repo_state_dir
 from project_sandbox_tui.processes import reap_later
 from project_sandbox_tui.sandbox import (
@@ -433,6 +433,13 @@ class JobManager:
             stdout=Path(f"{base}.out"),
         )
 
+    def _mount_supported(self, command: tuple[str, ...]) -> bool:
+        """``--mount`` support from a fresh capability snapshot, probing only without one."""
+        caps = capabilities.cached(command, self.repo)
+        if caps.help_ok and capabilities.is_fresh(caps, command):
+            return caps.mount
+        return feedback_transport.supported(list(command), cwd=self.repo)
+
     def _prepare_feedback(
         self,
         spec: LaunchSpec,
@@ -455,7 +462,7 @@ class JobManager:
             return run_id, root
         command = tuple(self.cfg.sandbox_command()) if not host else ()
         if not host and (self._feedback_supported is None or command != self._feedback_command):
-            self._feedback_supported = feedback_transport.supported(list(command), cwd=self.repo)
+            self._feedback_supported = self._mount_supported(command)
             self._feedback_command = command
         if not host and not self._feedback_supported:
             if require_feedback or self.cfg.feedback.requires_reporting:
@@ -687,8 +694,26 @@ class JobManager:
 
     def _prepare(self, spec: LaunchSpec, *, sandbox: bool) -> None:
         """Create the workspace and deploy skills; with the lock held, after the busy check."""
+        if sandbox:
+            self._check_supported(spec)
         if self.prepare is not None:
             self.prepare(self.cfg, spec, sandbox)
+
+    def _check_supported(self, spec: LaunchSpec) -> None:
+        """Refuse settings the launcher rejects, using the cached capability snapshot."""
+        try:
+            command = tuple(self.cfg.sandbox_command())
+        except ConfigError:
+            return  # build_argv reports the broken command
+        problems = capabilities.gateway_problems(spec.agent, spec.model, spec.gateway)
+        problems += capabilities.launch_problems(
+            capabilities.cached(command, self.repo),
+            agent=spec.agent,
+            extra_args=[*self.cfg.sandbox.extra_args, *spec.extra_args],
+            runtime=self.cfg.sandbox.runtime,
+        )
+        if problems:
+            raise ConfigError("; ".join(problems))
 
     def _read_record(self, branch: str) -> JobRecord | None:
         try:

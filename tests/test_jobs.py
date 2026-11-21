@@ -8,6 +8,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime, tzinfo
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -589,8 +590,16 @@ def test_now_always_has_microseconds(monkeypatch: pytest.MonkeyPatch) -> None:
     assert jobs_module._now() == "2026-01-02T03:04:05.000000Z"
 
 
+def _no_feedback() -> Config:
+    """Keep argv exact: the default command may resolve to a real project-sandbox
+    (a runtime dependency) whose --mount support adds feedback mounts."""
+    cfg = Config()
+    cfg.feedback.enabled = False
+    return cfg
+
+
 def test_replaced_and_forgotten_records_move_to_history(tmp_path: Path) -> None:
-    jobs = JobManager(tmp_path, Config())
+    jobs = JobManager(tmp_path, _no_feedback())
     first = jobs.record_external(LaunchSpec("topic", "codex"), ["first"])
     first.status, first.session_id = "completed", "session-1"
     jobs.save(first)
@@ -639,7 +648,7 @@ def test_failed_archive_leaves_no_temporary_file(
 
 
 def test_discarded_launch_stays_out_of_history(tmp_path: Path) -> None:
-    jobs = JobManager(tmp_path, Config())
+    jobs = JobManager(tmp_path, _no_feedback())
     first = jobs.record_external(LaunchSpec("topic", "codex"), ["first"])
     first.status = "completed"
     jobs.save(first)
@@ -759,3 +768,128 @@ def test_launch_reads_sessions_inside_jobs_lock(
     with pytest.raises(BusyError, match="sid"):
         jobs.start_background(bg("topic", "busy"), sessions)
     assert not jobs.jobs
+
+
+def test_mount_support_comes_from_fresh_capability_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC
+    from datetime import datetime as real_datetime
+
+    from project_sandbox_tui import capabilities, feedback_transport
+
+    probes: list[list[str]] = []
+
+    def probe(command: list[str], *, cwd: Path | None = None) -> bool:
+        probes.append(command)
+        return False
+
+    monkeypatch.setattr(feedback_transport, "supported", probe)
+    jobs = JobManager(tmp_path, Config())
+    command = ("project-sandbox",)
+    assert jobs._mount_supported(command) is False  # no cache: probe once
+    assert len(probes) == 1
+    snapshot = capabilities.Capabilities(
+        command=command,
+        version="0.4.1",
+        discovered_at=real_datetime.now(UTC),
+        source="probe",
+        help_ok=True,
+        mount=True,
+    )
+    capabilities.save(snapshot, capabilities.cache_path(tmp_path))
+    assert jobs._mount_supported(command) is True  # fresh cache: no --help
+    assert len(probes) == 1
+
+
+def _probed(cfg: Config, repo: Path, **fields: Any) -> None:
+    """Cache a discovered snapshot for the fake launcher."""
+    from datetime import UTC
+    from datetime import datetime as real_datetime
+
+    from project_sandbox_tui import capabilities
+
+    snapshot = capabilities.Capabilities(
+        command=tuple(cfg.sandbox_command()),
+        version="0.4.1",
+        discovered_at=real_datetime.now(UTC),
+        source=fields.pop("source", "probe"),
+        agents=fields.pop("agents", ("claude", "codex", "bash")),
+        vcs_modes=fields.pop("vcs_modes", ("full", "read-only", "hidden")),
+        runtimes=fields.pop(
+            "runtimes",
+            {name: capabilities.RuntimeStatus("usable") for name in ("auto", "docker")},
+        ),
+        runtime_source="doctor",
+        **fields,
+    )
+    capabilities.save(snapshot, capabilities.cache_path(repo))
+
+
+@pytest.mark.parametrize(
+    ("spec_args", "agent", "message"),
+    [
+        ([], "copilot", "agent 'copilot' is not supported"),
+        (["--vcs-access=none"], "claude", "--vcs-access=none is not supported"),
+        (["--runtime", "podman"], "claude", "runtime 'podman' is not supported"),
+    ],
+)
+def test_launch_refused_for_unsupported_settings(
+    repo: Path, fake_cfg: Callable[..., Config], spec_args: list[str], agent: str, message: str
+) -> None:
+    from project_sandbox_tui.config import ConfigError
+
+    cfg = fake_cfg()
+    _probed(cfg, repo)
+    jobs = JobManager(repo, cfg)
+    spec = LaunchSpec("main", agent, mode="background", prompt_text="x", extra_args=spec_args)
+    with pytest.raises(ConfigError, match=message):
+        jobs.start_background(spec, {})
+    assert "main" not in jobs.jobs  # nothing was started or recorded
+
+
+def test_launch_allowed_when_supported_last_flag_wins(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.sandbox.extra_args = ["--vcs-access=none"]  # overridden by the launch's own switch
+    _probed(cfg, repo)
+    jobs = JobManager(repo, cfg)
+    spec = LaunchSpec(
+        "main", "claude", mode="background", prompt_text="x", extra_args=["--vcs-access", "hidden"]
+    )
+    job = jobs.start_background(spec, {})
+    assert job.status == "running"
+    at = job.argv.index("--vcs-access", job.argv.index("--vcs-access=none"))
+    assert job.argv[at + 1] == "hidden"
+
+
+def test_fallback_snapshot_never_blocks(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    cfg = fake_cfg()
+    _probed(cfg, repo, source="fallback", agents=("claude",))
+    jobs = JobManager(repo, cfg)
+    job = jobs.start_background(
+        LaunchSpec("main", "newagent", mode="background", prompt_text="x"), {}
+    )
+    assert job.spec.agent == "newagent"
+
+
+@pytest.mark.parametrize(
+    ("agent", "model", "message"),
+    [
+        ("claude", "opus", "supports only pi, opencode, bash"),
+        ("opencode", "", "requires a model"),
+    ],
+)
+def test_gateway_launch_refused_without_discovery(
+    repo: Path, fake_cfg: Callable[..., Config], agent: str, model: str, message: str
+) -> None:
+    from project_sandbox_tui.config import ConfigError
+
+    cfg = fake_cfg()
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    jobs = JobManager(repo, cfg)
+    spec = LaunchSpec("main", agent, model, mode="background", prompt_text="x", gateway=True)
+    with pytest.raises(ConfigError, match=message):
+        jobs.start_background(spec, {})
+    assert "main" not in jobs.jobs

@@ -61,8 +61,6 @@ def test_interactive_argv(tmp_path: Path) -> None:
         "--model=opus",
         "--effort=high",
         "--internet-proxy=http://proxy:3128",
-        "--agent-proxy=http://agent:4000",
-        "--agent-proxy-key-env=PROXY_KEY",
         f"--ca-cert={repo / 'certs/root.pem'}",
         "--extra-domain=pypi.org",
         "--allow-github",
@@ -297,3 +295,55 @@ def test_runtime_auto_selection(
     monkeypatch.setattr(sandbox.platform, "system", lambda: system)
     monkeypatch.setattr(sandbox.shutil, "which", lambda cmd: cmd if cmd in available else None)
     assert sandbox.runtime_cli("auto") == expected
+
+
+def test_old_records_without_gateway_load() -> None:
+    spec = LaunchSpec.from_dict({"branch": "b", "agent": "pi"})
+    assert spec.gateway is False
+    gateway = LaunchSpec("b", "pi", gateway=True)
+    assert LaunchSpec.from_dict(gateway.to_dict()) == gateway
+    assert gateway.label() == "pi/gateway"
+
+
+def _gateway_argv(tmp_path: Path, agent: str, model: str, *, gateway: bool) -> list[str]:
+    cfg = make_cfg()
+    spec = LaunchSpec(branch="b", agent=agent, model=model, gateway=gateway)
+    return build_argv(cfg, tmp_path / "repo", spec)
+
+
+def test_claude_with_gateway_configured_gets_no_gateway_flags(tmp_path: Path) -> None:
+    argv = _gateway_argv(tmp_path, "claude", "opus", gateway=False)
+    assert not [a for a in argv if a.startswith("--agent-proxy")]
+
+
+def test_pi_from_two_profiles(tmp_path: Path) -> None:
+    through = _gateway_argv(tmp_path, "pi", "gpt-5-mini", gateway=True)
+    assert "--agent-proxy=http://agent:4000" in through
+    assert "--agent-proxy-key-env=PROXY_KEY" in through
+    assert "--model=gpt-5-mini" in through  # Pi adds the provider prefix itself
+    direct = _gateway_argv(tmp_path, "pi", "sonnet", gateway=False)
+    assert not [a for a in direct if a.startswith("--agent-proxy")]
+
+
+@pytest.mark.parametrize("model", ["gpt-5-mini", "agent-proxy/gpt-5-mini"])
+def test_opencode_gateway_model_gets_provider_prefix(tmp_path: Path, model: str) -> None:
+    argv = _gateway_argv(tmp_path, "opencode", model, gateway=True)
+    assert "--model=agent-proxy/gpt-5-mini" in argv
+
+
+def test_opencode_without_gateway_keeps_model(tmp_path: Path) -> None:
+    argv = _gateway_argv(tmp_path, "opencode", "openai/gpt-5.4-mini", gateway=False)
+    assert "--model=openai/gpt-5.4-mini" in argv
+
+
+def test_bash_gateway_passes_model(tmp_path: Path) -> None:
+    assert "--model=gpt-5-mini" in _gateway_argv(tmp_path, "bash", "gpt-5-mini", gateway=True)
+    plain = _gateway_argv(tmp_path, "bash", "gpt-5-mini", gateway=False)
+    assert not [a for a in plain if a.startswith("--model")]
+
+
+def test_gateway_launch_without_agent_proxy_is_an_error(tmp_path: Path) -> None:
+    cfg = make_cfg()
+    cfg.network.agent_proxy = ""
+    with pytest.raises(ConfigError, match="network.agent_proxy"):
+        build_argv(cfg, tmp_path, LaunchSpec(branch="b", agent="pi", model="m", gateway=True))

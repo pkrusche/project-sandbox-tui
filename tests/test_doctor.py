@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from project_sandbox_tui import doctor
-from project_sandbox_tui.config import Config
+from project_sandbox_tui import capabilities, doctor
+from project_sandbox_tui import models as models_mod
+from project_sandbox_tui.config import Action, AgentProfile, Config
 
 
 def runner(responses: Mapping[str, tuple[int, str] | None]) -> doctor.Runner:
@@ -135,7 +139,7 @@ def test_probe_timeout_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import Mock
 
     probe = Mock(side_effect=subprocess.TimeoutExpired(["jj", "--version"], 30))
-    monkeypatch.setattr(doctor.subprocess, "run", probe)
+    monkeypatch.setattr(capabilities.subprocess, "run", probe)  # doctor.run lives there
     check = doctor.check_jj(doctor.run)
     assert check.status == "fail" and "timed out after 30s" in check.detail
 
@@ -180,3 +184,227 @@ def test_unknown_action_profiles_warn(
     ProjectTrust.check(repo).trust(repo)
     checks = by_name(doctor.run_checks(repo, runner=runner(HEALTHY), which=lambda c: f"/bin/{c}"))
     assert "action profiles" not in checks
+
+
+# ---------------------------------------------------------------- capabilities
+
+
+FIXTURES = Path(__file__).with_name("fixtures")
+REAL_HELP = (FIXTURES / "project-sandbox-0.4.1-help.txt").read_text()
+REAL_DOCTOR = (FIXTURES / "project-sandbox-0.4.1-doctor.json").read_text()
+DISCOVERING = {
+    "jj --version": (0, "jj 0.46.0"),
+    "project-sandbox --version": (0, "project-sandbox 0.4.1"),
+    "project-sandbox --help": (0, REAL_HELP),
+    "project-sandbox doctor --json": (0, REAL_DOCTOR),
+}
+
+
+def caps(**fields: Any) -> capabilities.Capabilities:
+    base = capabilities.Capabilities(
+        command=("project-sandbox",),
+        version=capabilities.installed_version(),
+        discovered_at=datetime.now(UTC),
+        source="probe",
+        agents=("claude", "codex", "opencode", "pi", "copilot", "bash"),
+        vcs_modes=("full", "read-only", "hidden"),
+        runtimes={
+            "auto": capabilities.RuntimeStatus("usable", "selects docker"),
+            "docker": capabilities.RuntimeStatus("usable", "29; daemon reachable"),
+            "podman": capabilities.RuntimeStatus(
+                "unavailable", "not ready", "podman machine start"
+            ),
+        },
+        runtime_source="doctor",
+        auto_selects="docker",
+        help_ok=True,
+        mount=True,
+    )
+    return dataclasses.replace(base, **fields)
+
+
+@pytest.fixture
+def home(tmp_path: Path) -> Path:
+    """A host home with Claude configured and nothing else."""
+    path = tmp_path / "home"
+    (path / ".claude").mkdir(parents=True)
+    return path
+
+
+def problems(checks: list[doctor.Check]) -> dict[str, doctor.Check]:
+    return {c.name: c for c in checks if c.status != "ok" or c.hint}
+
+
+def test_discovered_capabilities_are_reported(repo: Path) -> None:
+    checks = by_name(
+        doctor.run_checks(repo, runner=runner(DISCOVERING), which=lambda c: f"/bin/{c}")
+    )
+    assert checks["launcher capabilities"].status == "ok"
+    assert {"agent claude", "agent copilot", "agent bash"} <= set(checks)
+    assert checks["vcs access"].detail == "full, read-only, hidden"
+    assert "docker usable" in checks["runtimes"].detail
+    assert "auto selects docker" in checks["runtimes"].detail
+    assert "container runtime" not in checks  # runtime status came from doctor --json
+    cached = capabilities.cached(["project-sandbox"], repo)
+    assert cached.discovered  # doctor saved the snapshot for the TUI
+
+
+def test_failed_discovery_warns_and_uses_builtin_lists(repo: Path) -> None:
+    responses = {**HEALTHY, "project-sandbox --help": (2, "boom")}
+    checks = by_name(doctor.run_checks(repo, runner=runner(responses), which=lambda c: f"/bin/{c}"))
+    assert checks["launcher capabilities"].status == "warn"
+    assert "built-in lists" in checks["launcher capabilities"].detail
+    assert "container runtime" in checks  # fallback runtime probe
+
+
+def test_help_runs_once(repo: Path) -> None:
+    calls: list[str] = []
+    answer = runner(DISCOVERING)
+
+    def counting(argv: list[str], timeout: float) -> tuple[int, str]:
+        calls.append(" ".join(argv))
+        return answer(argv, timeout)
+
+    doctor.run_checks(repo, runner=counting, which=lambda c: f"/bin/{c}")
+    assert calls.count("project-sandbox --help") == 1
+
+
+def test_doctor_probe_timeout_still_reports_other_checks(repo: Path) -> None:
+    responses = {
+        **DISCOVERING,
+        "project-sandbox doctor --json": (124, "timed out after 60s"),
+        "docker info": (0, "Server Version: 27"),
+    }
+    checks = doctor.run_checks(repo, runner=runner(responses), which=lambda c: f"/bin/{c}")
+    named = by_name(checks)
+    warnings = [c for c in checks if c.name == "launcher capabilities" and c.status == "warn"]
+    assert any("timed out" in c.detail for c in warnings)
+    assert named["container runtime"].status == "ok"  # check_runtime fallback
+    assert "comparisons to main" in named and "agent claude" in named
+
+
+def test_several_problems_reported_with_keys(home: Path) -> None:
+    cfg = Config()
+    cfg.profiles = {
+        "review": AgentProfile(agent="claude", extra_args=["--vcs-access=none"]),
+        "old": AgentProfile(agent="gpt"),
+    }
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert found["profiles.review.extra_args"].status == "fail"
+    assert "full, read-only, hidden" in found["profiles.review.extra_args"].detail
+    assert found["profiles.old.agent"].status == "fail"
+    assert "not supported" in found["profiles.old.agent"].detail
+
+
+def test_agent_unavailable_on_host(home: Path) -> None:
+    cfg = Config()
+    cfg.defaults.agent = "codex"
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert found["defaults.agent"].status == "fail"
+    assert ".codex" in found["defaults.agent"].detail
+
+
+def test_in_sandbox_login_makes_agent_available(home: Path) -> None:
+    cfg = Config()
+    cfg.profiles = {"c": AgentProfile(agent="codex", extra_args=["--no-forward-credentials"])}
+    assert "profiles.c.agent" not in problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    cfg.profiles = {"c": AgentProfile(agent="codex")}
+    cfg.sandbox.no_forward_credentials = True
+    assert "profiles.c.agent" not in problems(doctor.check_agent_selections(cfg, caps(), home=home))
+
+
+def test_gateway_profile_without_model(home: Path) -> None:
+    cfg = Config()
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    cfg.profiles = {"local": AgentProfile(agent="opencode", gateway=True)}
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert found["profiles.local.model"].status == "fail"
+    assert "requires a model" in found["profiles.local.model"].detail
+
+
+def test_gateway_with_unsupported_agent(home: Path) -> None:
+    cfg = Config()
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    cfg.profiles = {"c": AgentProfile(agent="claude", model="opus", gateway=True)}
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert found["profiles.c.gateway"].status == "fail"
+
+
+def test_pi_unavailable_unless_it_uses_the_gateway(home: Path) -> None:
+    cfg = Config()
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    cfg.profiles = {
+        "direct": AgentProfile(agent="pi", model="sonnet"),
+        "via": AgentProfile(agent="pi", model="gpt-5-mini", gateway=True),
+    }
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert found["profiles.direct.agent"].status == "fail"
+    assert "gateway = true" in found["profiles.direct.agent"].hint
+    assert "profiles.via.agent" not in found
+    assert "agent gateway" not in found  # used by a profile
+
+
+def test_unused_gateway_is_reported(home: Path) -> None:
+    cfg = Config()
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert "no default or profile uses it" in found["agent gateway"].detail
+    assert found["agent gateway"].status == "ok"
+
+
+def test_configured_runtime_not_ready(home: Path) -> None:
+    cfg = Config()
+    cfg.sandbox.runtime = "podman"
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    check = found["sandbox.runtime"]
+    assert (check.status, check.hint) == ("fail", "podman machine start")
+    assert "not ready" in check.detail
+
+
+def test_unknown_runtime_value(home: Path) -> None:
+    cfg = Config()
+    cfg.sandbox.runtime = "lxc"
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert "not supported" in found["sandbox.runtime"].detail
+
+
+def test_unknown_codex_model_warns_but_gateway_models_do_not(home: Path) -> None:
+    store = models_mod.Store(agents={"codex": [models_mod.ModelInfo("gpt-5.5")]})
+    cfg = Config()
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    cfg.profiles = {
+        "cx": AgentProfile(
+            agent="codex", model="gpt-9-imaginary", extra_args=["--no-forward-credentials"]
+        ),
+        "known": AgentProfile(
+            agent="codex", model="gpt-5.5", extra_args=["--no-forward-credentials"]
+        ),
+        "pi": AgentProfile(agent="pi", model="anything-goes", gateway=True),
+    }
+    found = problems(doctor.check_agent_selections(cfg, caps(), store, home=home))
+    assert found["profiles.cx.model"].status == "warn"
+    assert ":update-models" in found["profiles.cx.model"].hint
+    assert "profiles.known.model" not in found and "profiles.pi.model" not in found
+
+
+def test_fast_on_unsupported_agent_warns(home: Path) -> None:
+    cfg = Config()
+    cfg.actions = {"go": Action(prompt="x", agent="bash")}
+    cfg.profiles = {"p": AgentProfile(agent="bash", fast=True)}
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert found["profiles.p.fast"].status == "warn"
+
+
+def test_selections_include_actions_and_commit_review(home: Path) -> None:
+    cfg = Config()
+    cfg.actions = {"go": Action(prompt="x", agent="gpt")}
+    found = problems(doctor.check_agent_selections(cfg, caps(agents=("claude", "bash")), home=home))
+    assert found["actions.go.agent"].status == "fail"
+    assert "commit review (built-in profile).agent" in found  # built-in codex profile
+
+
+def test_fallback_snapshot_reports_nothing_unsupported(home: Path) -> None:
+    cfg = Config()
+    cfg.defaults.agent = "newagent"
+    found = problems(doctor.check_agent_selections(cfg, capabilities.fallback(), home=home))
+    assert "defaults.agent" not in found  # unknown support and availability never fail

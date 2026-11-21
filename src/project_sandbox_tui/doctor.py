@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,8 +11,19 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Literal
 
-from project_sandbox_tui import initialization, launchers, notify
-from project_sandbox_tui.config import Config, ConfigError, ProjectTrust, _load, load
+from project_sandbox_tui import capabilities, initialization, launchers, notify
+from project_sandbox_tui import models as models_mod
+from project_sandbox_tui.capabilities import Capabilities
+from project_sandbox_tui.config import (
+    FAST_AGENTS,
+    GATEWAY_AGENTS,
+    AgentProfile,
+    Config,
+    ConfigError,
+    ProjectTrust,
+    _load,
+    load,
+)
 from project_sandbox_tui.sandbox import runtime_cli
 from project_sandbox_tui.vcs import Branch, VcsError, detect, main_branch
 
@@ -39,17 +49,8 @@ class Check:
 
 
 # Injected by tests: run argv, return (exit code, combined output); OSError if missing.
-Runner = Callable[[list[str], float], tuple[int, str]]
-
-
-def run(argv: list[str], timeout: float) -> tuple[int, str]:
-    try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL
-        )
-    except subprocess.TimeoutExpired:
-        return 124, f"timed out after {timeout:.0f}s"
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+Runner = capabilities.Runner
+run = capabilities.run
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:
@@ -243,15 +244,20 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
     return checks
 
 
-def check_feedback(cfg: Config, repo: Path | None, runner: Runner) -> list[Check]:
+def check_feedback(
+    cfg: Config, repo: Path | None, runner: Runner, caps: Capabilities | None = None
+) -> list[Check]:
     if not cfg.feedback.enabled:
         return [Check("run feedback", "ok", "disabled")]
     required = cfg.feedback.requires_reporting or bool(cfg.workflows)
-    try:
-        code, help_text = runner([*cfg.sandbox_command(), "--help"], 10)
-        supported = code == 0 and re.search(r"(?<!\S)--mount(?:\s|=)", help_text) is not None
-    except OSError:
-        supported = False
+    if caps is not None and caps.help_ok:
+        supported = caps.mount  # the discovery probe already read --help
+    else:
+        try:
+            code, help_text = runner([*cfg.sandbox_command(), "--help"], 10)
+            supported = code == 0 and re.search(r"(?<!\S)--mount(?:\s|=)", help_text) is not None
+        except OSError:
+            supported = False
     checks = [
         Check(
             "run feedback",
@@ -288,6 +294,208 @@ def check_feedback(cfg: Config, repo: Path | None, runner: Runner) -> list[Check
     return checks
 
 
+# ---------------------------------------------------------------- capabilities
+
+
+def check_capabilities(cfg: Config, caps: Capabilities, home: Path | None = None) -> list[Check]:
+    """What the launcher supports and which agents this host can run."""
+    who = capabilities.launcher_name(caps)
+    checks: list[Check] = []
+    if not caps.discovered:
+        checks.append(
+            Check(
+                "launcher capabilities",
+                "warn",
+                "could not be discovered; using built-in lists"
+                + (f" ({'; '.join(caps.problems)})" if caps.problems else ""),
+                "check sandbox.command; agent checks below use the built-in lists",
+            )
+        )
+    else:
+        checks.append(Check("launcher capabilities", "ok", f"from {who}"))
+        for problem in caps.problems:
+            checks.append(Check("launcher capabilities", "warn", problem))
+    gateway = bool(cfg.network.agent_proxy)
+    for agent in caps.agents:
+        result = capabilities.agent_sources(agent, caps, gateway_configured=gateway, home=home)
+        checks.append(
+            Check(
+                f"agent {agent}",
+                "warn" if result.available is False else "ok",
+                result.describe()
+                if result.available is not False
+                else f"unavailable: {result.reason}",
+            )
+        )
+    checks.append(
+        Check(
+            "vcs access",
+            "ok",
+            ", ".join(caps.vcs_modes) if caps.vcs_modes else f"{who} has no --vcs-access option",
+        )
+    )
+    shown = []
+    for name, runtime in caps.runtimes.items():
+        if name == "auto":
+            continue
+        mark = {"usable": "usable", "unavailable": "unavailable", "unknown": "status unknown"}
+        detail = f" ({runtime.detail})" if runtime.detail else ""
+        shown.append(f"{name} {mark[runtime.status]}{detail}")
+    if caps.auto_selects:
+        shown.append(f"auto selects {caps.auto_selects}")
+    usable = any(rt.status == "usable" for rt in caps.runtimes.values())
+    checks.append(
+        Check(
+            "runtimes",
+            "ok" if usable or caps.runtime_source != "doctor" else "warn",
+            "; ".join(shown) or "none reported",
+            ""
+            if caps.runtime_source == "doctor"
+            else "status unknown: `doctor --json` unavailable",
+        )
+    )
+    return checks
+
+
+def _selections(cfg: Config) -> list[tuple[str, AgentProfile]]:
+    """Every configured agent selection, keyed by its config table."""
+    d = cfg.defaults
+    out: list[tuple[str, AgentProfile]] = [
+        (
+            "defaults",
+            AgentProfile(
+                agent=d.agent,
+                model=d.model,
+                effort=d.effort,
+                fast=d.fast,
+                gateway=d.gateway and d.agent in GATEWAY_AGENTS,
+            ),
+        )
+    ]
+    out += [(f"profiles.{name}", profile) for name, profile in cfg.profiles.items()]
+    out += [
+        (f"actions.{name}", AgentProfile(agent=action.agent, model=action.model))
+        for name, action in cfg.actions.items()
+        if action.agent
+    ]
+    if not cfg.commit_review.profile:
+        name, profile = cfg.commit_summary_profile()
+        out.append(("commit review (built-in profile)", profile))
+    return out
+
+
+def _model_listed(
+    cfg: Config, agent: str, model: str, store: models_mod.Store | None
+) -> bool | None:
+    """Whether a Claude/Codex model appears in the suggestions; None = no list to check."""
+    if agent not in ("claude", "codex") or not model:
+        return None
+    if store is None and (agent == "claude" or not models_mod.codex_cache_models()):
+        return None  # only aliases or nothing: an unknown full ID proves nothing
+    names = models_mod.suggestions(agent, cfg.models.get(agent), store)
+    return model in names if names else None
+
+
+def check_agent_selections(
+    cfg: Config,
+    caps: Capabilities,
+    store: models_mod.Store | None = None,
+    home: Path | None = None,
+) -> list[Check]:
+    """Configured selections the launcher would reject (fail) or that look wrong (warn)."""
+    checks: list[Check] = []
+    selections = _selections(cfg)
+    who = capabilities.launcher_name(caps)
+    for key, profile in selections:
+        agent = profile.agent
+        extra = [*cfg.sandbox.extra_args, *profile.extra_args]
+        if cfg.sandbox.no_forward_credentials:
+            extra.append("--no-forward-credentials")
+        if caps.discovered and agent not in caps.agents:
+            checks.append(
+                Check(
+                    f"{key}.agent",
+                    "fail",
+                    f"{agent!r} is not supported by {who}",
+                    f"choose one of {', '.join(caps.agents)}",
+                )
+            )
+        else:
+            result = capabilities.launch_availability(
+                agent, caps, gateway=profile.gateway, extra_args=extra, home=home
+            )
+            if result.available is False:
+                hint = (
+                    "set gateway = true to use the agent gateway"
+                    if agent in GATEWAY_AGENTS and cfg.network.agent_proxy
+                    else "log in on the host, or add --no-forward-credentials to log in "
+                    "inside the sandbox"
+                )
+                checks.append(
+                    Check(f"{key}.agent", "fail", f"{agent} unavailable: {result.reason}", hint)
+                )
+        for problem in capabilities.gateway_problems(agent, profile.model, profile.gateway):
+            field = "gateway" if agent not in GATEWAY_AGENTS else "model"
+            checks.append(Check(f"{key}.{field}", "fail", problem))
+        problems = capabilities.launch_problems(
+            caps, agent=agent, extra_args=extra, runtime=cfg.sandbox.runtime
+        )
+        for problem in problems:
+            if problem.startswith("agent "):
+                continue  # reported above
+            if (
+                problem.startswith("runtime ")
+                and capabilities.flag_value(extra, "--runtime") is None
+            ):
+                continue  # sandbox.runtime is checked once, below
+            checks.append(Check(f"{key}.extra_args", "fail", problem))
+        runtime = capabilities.flag_value(profile.extra_args, "--runtime")
+        if runtime and (status := caps.runtimes.get(runtime)) and status.status == "unavailable":
+            checks.append(
+                Check(
+                    f"{key}.extra_args", "fail", f"runtime {runtime}: {status.detail}", status.hint
+                )
+            )
+        if profile.fast and agent not in FAST_AGENTS:
+            checks.append(
+                Check(f"{key}.fast", "warn", f"fast mode is only for {', '.join(FAST_AGENTS)}")
+            )
+        if _model_listed(cfg, agent, profile.model, store) is False:
+            checks.append(
+                Check(
+                    f"{key}.model",
+                    "warn",
+                    f"{profile.model!r} is not in the {agent} model list",
+                    "run :update-models, or add it under [models] if it is correct",
+                )
+            )
+    runtime = cfg.sandbox.runtime
+    status = caps.runtimes.get(runtime)
+    if caps.runtime_source != "fallback" and caps.discovered and status is None:
+        checks.append(
+            Check(
+                "sandbox.runtime",
+                "fail",
+                f"{runtime!r} is not supported by {who}",
+                f"choose one of {', '.join(caps.runtimes)}",
+            )
+        )
+    elif status is not None and status.status == "unavailable":
+        checks.append(Check("sandbox.runtime", "fail", f"{runtime}: {status.detail}", status.hint))
+    if cfg.network.agent_proxy and not any(p.gateway for _key, p in selections):
+        checks.append(
+            Check(
+                "agent gateway",
+                "ok",
+                "network.agent_proxy is configured but no default or profile uses it",
+                "set gateway = true on a pi, opencode or bash profile, or defaults.gateway",
+            )
+        )
+    if not checks:
+        checks.append(Check("agent selections", "ok", f"{len(selections)} checked"))
+    return checks
+
+
 def run_checks(
     path: Path,
     global_path: Path | None = None,
@@ -305,9 +513,19 @@ def run_checks(
     except ConfigError as exc:
         checks.append(Check("config", "fail", str(exc), "sbx-tui config list"))
         cfg = Config()
-    checks += [check_project_sandbox(cfg, runner), check_runtime(cfg, runner, which)]
+    checks.append(check_project_sandbox(cfg, runner))
+    try:
+        command = cfg.sandbox_command()
+    except ConfigError:
+        caps = capabilities.fallback()
+    else:  # doctor always probes fresh, and saves the result for the TUI
+        caps = capabilities.refresh(command, repo, runner, force=True)
+    if caps.runtime_source != "doctor":
+        checks.append(check_runtime(cfg, runner, which))
+    checks += check_capabilities(cfg, caps)
+    checks += check_agent_selections(cfg, caps, models_mod.load_store())
     checks += check_config(cfg, repo)
-    checks += check_feedback(cfg, repo, runner)
+    checks += check_feedback(cfg, repo, runner, caps)
     if repo is not None:
         try:
             branches = detect(repo).list_branches(compare_to_main=cfg.project.main_branch)

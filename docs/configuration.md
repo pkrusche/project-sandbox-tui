@@ -198,11 +198,22 @@ extra_args = ["--memory=16g"]
 
 | Field | Meaning | Default when omitted |
 |---|---|---|
-| `agent` | `claude`, `codex`, `opencode`, `pi` or `bash` | `claude` |
+| `agent` | An agent the launcher supports, such as `claude`, `codex`, `opencode`, `pi`, `copilot` or `bash` | `claude` |
 | `model` | Model name; blank uses the agent's default | `""` |
 | `effort` | Blank, `low`, `medium`, `high`, `xhigh` or `max` | `""` |
 | `fast` | Fast mode for Codex or Claude; requires project-sandbox ≥ 0.3.1 | `false` |
+| `gateway` | Launch through the [agent gateway](#agent-gateway) (`pi`, `opencode` or `bash`) | `false` |
 | `extra_args` | Additional project-sandbox arguments, as an array of strings | `[]` |
+
+Agent and runtime names are checked for form when the configuration loads
+(lowercase letters, digits and dashes), not against a fixed list. Which agents,
+`--vcs-access` modes and runtimes are supported comes from the configured
+`sandbox.command`: its `--help` and `doctor --json` output (project-sandbox 0.4.1
+supports the `copilot` agent and the `colima` and `chroot` runtimes). `sbx-tui doctor`
+reports unsupported settings. A launch is refused before the launcher runs when
+discovered capabilities show that its agent, `--vcs-access` mode or `--runtime`
+is unsupported. When discovery fails, launches are never blocked and the
+launcher reports any error itself.
 
 A named profile supplies these fields directly. After merging global and project
 config, omitted fields use the defaults in the table rather than `[defaults]` or
@@ -247,6 +258,46 @@ remains available. Deleting a global entry affects all projects using that file.
 You can also remove the whole `[profiles.NAME]` table manually and reload with
 `ctrl+l`.
 
+### Agent gateway
+
+`network.agent_proxy` (and optionally `network.agent_proxy_key_env`) defines an
+authenticated model gateway such as [agentgateway](https://agentgateway.dev).
+A launch uses it only when it opts in with `gateway = true`, from a profile, the
+launch form's **gateway** field, or `defaults.gateway`. Only `pi`, `opencode` and
+`bash` can use the gateway. Other agents never receive `--agent-proxy`, so one
+setup can combine, for example, Claude with forwarded host credentials and Pi
+through the gateway:
+
+```toml
+[network]
+agent_proxy = "http://127.0.0.1:4000/v1"
+
+[models]
+pi = ["gpt-5-mini", "claude-sonnet-5-5"]   # suggestions; IDs from the gateway's /v1/models
+
+[profiles."Pi via gateway"]
+agent = "pi"
+model = "gpt-5-mini"
+gateway = true
+
+[profiles.Claude]
+agent = "claude"                          # host credentials; no gateway flags
+```
+
+A gateway launch needs a model, which must be one the gateway lists:
+project-sandbox checks this against the gateway's `/models` before the session
+starts. Use the plain model ID for every agent. For OpenCode, sbx-tui passes
+`agent-proxy/<id>`, the provider name project-sandbox generates. `defaults.gateway`
+is the starting value of the launch form's gateway field for `pi`, `opencode` and
+`bash`, and the field is remembered per agent like fast mode. A profile or
+`defaults.gateway` set to `true` without `network.agent_proxy` is a configuration
+error. A profile with `gateway = true` and another agent is reported by `sbx-tui
+doctor`, and its launches are refused.
+
+Before this change, `network.agent_proxy` was added to every launch, which made
+Claude and Codex launches fail. Existing configurations now need `gateway = true`
+on the profiles (or `defaults.gateway`) that should use the gateway.
+
 ## From the command line
 
 ```sh
@@ -290,15 +341,16 @@ see [agent profiles](#agent-profiles).
 
 ```toml
 [defaults]
-agent = "claude"        # claude | codex | opencode | pi | bash
+agent = "claude"        # claude | codex | opencode | pi | copilot | bash
 model = ""              # "" = the agent's own default
 effort = ""             # "" or low | medium | high | xhigh | max
 fast = false            # Codex / Claude only; requires project-sandbox >= 0.3.1
+gateway = false         # pi / opencode / bash through network.agent_proxy
 timeout = 0             # seconds for unsupervised runs, 0 = none
 
 [network]
 internet_proxy = ""                            # --internet-proxy
-agent_proxy = ""                               # --agent-proxy
+agent_proxy = ""                               # --agent-proxy, for launches with gateway = true
 agent_proxy_key_env = ""
 ca_certs = []                                  # --ca-cert …
 extra_domains = []                             # --extra-domain …
@@ -307,7 +359,7 @@ no_firewall = false
 
 [sandbox]
 command = "project-sandbox"   # or "uvx project-sandbox"
-runtime = "auto"              # auto | apple-container | docker | podman
+runtime = "auto"              # auto | apple-container | docker | podman | colima | chroot
 memory = ""                   # e.g. "16g"
 cpus = 0
 no_forward_credentials = false

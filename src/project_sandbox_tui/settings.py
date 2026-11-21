@@ -23,7 +23,6 @@ import tomlkit.items
 from project_sandbox_tui.config import (
     _SECTIONS,
     ACTION_KEYS,
-    AGENTS,
     AgentProfile,
     Config,
     ConfigError,
@@ -37,6 +36,7 @@ from project_sandbox_tui.config import (
     project_config_path,
     state_home,
     state_lock,
+    valid_name,
     validate_profile_name,
 )
 
@@ -63,7 +63,7 @@ def parse_key(text: str) -> Key:
     """``section.key``, ``models.<agent>``, ``commands.<name>``, ``leader.<keys>``
     or a field of a named action, profile or workflow."""
     section, _, name = text.partition(".")
-    if section == "models" and name in AGENTS:
+    if section == "models" and valid_name(name):
         return Key(section, name, [])
     if section in ("commands", "leader") and name:
         return Key(section, name, "")

@@ -26,6 +26,9 @@ classifiers = [
 dependencies = [
     "textual>=6.0,<9",  # TextArea.suggestion (prompt history completion)
     "tomlkit>=0.13,<0.16",  # sbx-tui config set/unset: edit TOML, keeping comments
+    # The sandbox launcher; also importable for agent/runtime discovery. 0.x
+    # minors change CLI flags, so the upper bound is the next minor.
+    "project-sandbox>=0.4.1,<0.5",
 ]
 
 [project.urls]
@@ -34,8 +37,8 @@ Documentation = "https://github.com/pkrusche/project-sandbox-tui/tree/main/docs"
 Issues = "https://github.com/pkrusche/project-sandbox-tui/issues"
 Source = "https://github.com/pkrusche/project-sandbox-tui"
 
-# project-sandbox itself is a separate tool: `uv tool install project-sandbox`,
-# or point `sandbox.command` at e.g. "uvx project-sandbox".
+# project-sandbox is installed alongside sbx-tui, but `sandbox.command` still
+# selects the launcher that runs sessions (default: `project-sandbox` on PATH).
 
 [project.scripts]
 sbx-tui = "project_sandbox_tui.cli:main"

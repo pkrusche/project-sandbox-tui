@@ -85,8 +85,71 @@ network restrictions, see the [project-sandbox usage guide](https://github.com/p
 [runtimes](https://github.com/pkrusche/project-sandbox/blob/main/docs/runtimes.md),
 and [security guide](https://github.com/pkrusche/project-sandbox/blob/main/docs/security.md).
 
-Use `[profiles.NAME]` to save `agent`, `model`, `effort`, `fast`, and profile-only
-CLI flags. After global and project fields are merged, omitted profile fields use
+### Check what the sandbox supports
+
+Profile agents run inside the sandbox. They are not the agent you are running as
+during setup, which runs on the host. A profile may name any agent the configured
+launcher supports, even one that is not installed on the host. Run
+`sbx-tui doctor` to see:
+
+- `agent NAME`: each agent `sandbox.command` supports and how it can run here:
+  `host credentials` (forwarded from the host), `token login` (copilot),
+  `no credentials needed` (bash), or `unavailable` with the reason;
+- `vcs access`: the `--vcs-access` modes for profile `extra_args` (for example
+  `--vcs-access=read-only` for a review profile);
+- `runtimes`: which isolation runtimes are usable and what `auto` selects.
+
+When doctor warns that capabilities could not be discovered, read the launcher's
+`--help` yourself. Combine sources freely, for example Claude with host
+credentials for implementation and Pi through the agent gateway for cheap checks.
+An unavailable agent can still run with `--no-forward-credentials` in its
+profile's `extra_args`: the user logs in inside the sandbox each time.
+
+### Use the agent gateway
+
+Only `pi`, `opencode` and `bash` can use the gateway. Set the gateway once in
+`[network]`, then opt profiles in with `gateway = true`; other profiles never
+use it:
+
+```sh
+sbx-tui config set --global network.agent_proxy http://127.0.0.1:4000/v1
+sbx-tui config set --project profiles.pi-gateway.agent pi
+sbx-tui config set --project profiles.pi-gateway.gateway true
+```
+
+A gateway profile needs a model the gateway serves. List them from the host
+before proposing models. Read the key the way project-sandbox does
+(`pass show agentgateway-api-key`, else the variable named by
+`network.agent_proxy_key_env`, default `AGENTGATEWAY_API_KEY`). Never print the
+key or pass it as a command-line argument; send it from a private header file:
+
+```sh
+hdr=$(mktemp) && chmod 600 "$hdr"
+key=$(pass show agentgateway-api-key 2>/dev/null | head -n1)
+[ -n "$key" ] || key=${AGENTGATEWAY_API_KEY:-}
+printf 'Authorization: Bearer %s\n' "$key" > "$hdr"; unset key
+curl -sS -H @"$hdr" "<agent_proxy>/models" | python3 -c \
+  'import json,sys; print("\n".join(m["id"] for m in json.load(sys.stdin)["data"]))'
+rm -f "$hdr"
+```
+
+Here `<agent_proxy>` is the configured `network.agent_proxy` (it ends in `/v1`).
+Propose models from that list and save the chosen plain IDs as suggestions, then
+set the profile's model:
+
+```sh
+sbx-tui config set --project models.pi '["gpt-5-mini", "claude-sonnet-5-5"]'
+sbx-tui config set --project profiles.pi-gateway.model gpt-5-mini
+```
+
+Use plain IDs for OpenCode too: sbx-tui adds the `agent-proxy/` provider prefix
+that OpenCode needs. If the gateway cannot be reached, tell the user, ask for
+model IDs by hand, and still never print the key.
+
+### Save profiles
+
+Use `[profiles.NAME]` to save `agent`, `model`, `effort`, `fast`, `gateway`, and
+profile-only CLI flags. After global and project fields are merged, omitted profile fields use
 built-in profile defaults. A project `extra_args` array replaces the global array
 for that same profile. Set the prompt and timeout in the background launch form.
 

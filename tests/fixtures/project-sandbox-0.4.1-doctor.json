@@ -1,0 +1,84 @@
+{
+  "ok": true,
+  "version": "0.4.1",
+  "platform": "linux",
+  "checks": [
+    {
+      "section": "host",
+      "name": "python",
+      "status": "ok",
+      "detail": "3.13.5",
+      "hint": null
+    },
+    {
+      "section": "runtimes",
+      "name": "apple-container",
+      "status": "info",
+      "detail": "macOS only",
+      "hint": null
+    },
+    {
+      "section": "runtimes",
+      "name": "docker",
+      "status": "ok",
+      "detail": "29.9.3; daemon reachable",
+      "hint": null
+    },
+    {
+      "section": "runtimes",
+      "name": "podman",
+      "status": "ok",
+      "detail": "5.4.2; rootless, ready",
+      "hint": null
+    },
+    {
+      "section": "runtimes",
+      "name": "chroot",
+      "status": "ok",
+      "detail": "unprivileged user namespaces available",
+      "hint": null
+    },
+    {
+      "section": "runtimes",
+      "name": "auto",
+      "status": "ok",
+      "detail": "selects docker",
+      "hint": null
+    },
+    {
+      "section": "vcs",
+      "name": "git",
+      "status": "ok",
+      "detail": "2.47.3",
+      "hint": null
+    },
+    {
+      "section": "vcs",
+      "name": "git identity",
+      "status": "ok",
+      "detail": "global user.name and user.email set",
+      "hint": null
+    },
+    {
+      "section": "vcs",
+      "name": "jj",
+      "status": "ok",
+      "detail": "0.46.0; supports --no-colocate",
+      "hint": null
+    },
+    {
+      "section": "egress",
+      "name": "docker sidecar",
+      "status": "info",
+      "detail": "not running (the first --egress sidecar launch starts it)",
+      "hint": null
+    },
+    {
+      "section": "egress",
+      "name": "podman sidecar",
+      "status": "info",
+      "detail": "not running (the first --egress sidecar launch starts it)",
+      "hint": null
+    }
+  ]
+}

@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Launcher capability discovery: supported agents and `--vcs-access` modes from
+  the configured `sandbox.command`'s `--help`, and runtime status from its
+  `doctor --json`. Results are cached per repository, and launches with settings
+  the launcher does not support are refused before it runs.
+- `project-sandbox` (>=0.4.1, <0.5) is now a package dependency, installed
+  alongside sbx-tui. `sandbox.command` still selects the launcher used for runs.
 - The log viewer wraps long lines (`w` toggles) and renders transcripts and
   coding agents' stdout as Markdown (`m` shows the raw text).
 - Commit review offers **Summarize commits** (`s`) to assess all pinned commits
@@ -52,6 +58,17 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **BREAKING (agent gateway):** `network.agent_proxy` is used only by launches
+  that opt in with `gateway = true` (profiles, the launch form or
+  `defaults.gateway`), and only for `pi`, `opencode` and `bash`. Claude and Codex
+  launches no longer receive `--agent-proxy`, which made them fail. Gateway
+  launches always pass `--model` (including bash), and OpenCode models get the
+  `agent-proxy/` prefix. Add `gateway = true` to profiles that used the gateway.
+  See [agent gateway](docs/configuration.md#agent-gateway).
+- **Config validation:** agent names (`defaults`, profiles, actions, `[models]`)
+  and `sandbox.runtime` are checked for form, not against a fixed list, so
+  `copilot`, `colima` and `chroot` load. `sbx-tui doctor` reports unsupported
+  values.
 - New workspaces are created before sandbox launches with
   `jj workspace add --no-colocate` and registered under their directory name, as
   project-sandbox does, including for slash-named bookmarks. A sandbox start

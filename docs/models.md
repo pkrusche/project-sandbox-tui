@@ -5,8 +5,15 @@ agent and model controls. The same controls are available when creating or
 editing an [agent profile](configuration.md#agent-profiles) with
 `:config-profiles`. A named profile uses its saved model.
 
-Cycle models with `h`/`l` or `←`/`→`. Except for `bash`, **custom (enter model
-name)** then `tab` lets you type a name. Blank uses the agent default.
+Cycle models with `h`/`l` or `←`/`→`. Except for `bash` without the agent
+gateway, **custom (enter model name)** then `tab` lets you type a name. Blank uses
+the agent default.
+
+For agents that use the [agent gateway](configuration.md#agent-gateway) (`pi`,
+`opencode` and `bash` with **gateway** on), list the gateway's plain model IDs
+under `[models]`, for example `pi = ["gpt-5-mini"]`. sbx-tui does not query the
+gateway; the bundled `sbx-tui-config` skill shows the setup agent how to list
+them. A gateway launch needs a model.
 
 Suggestion order:
 

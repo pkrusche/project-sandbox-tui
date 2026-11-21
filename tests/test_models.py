@@ -646,3 +646,12 @@ def test_launch_form_accepts_free_text_model(repo: Path, fake_cfg: Any, agent: s
         assert "--model" not in str(form.query_one("#preview", Static).render())
 
     run_form(repo, cfg, check)
+
+
+def test_configured_gateway_models_come_first(tmp_path: Path) -> None:
+    """[models] suggestions work for gateway agents, which have no other source."""
+    assert m.suggestions("pi", ["gpt-5-mini", "claude-sonnet-5-5"], None) == [
+        "gpt-5-mini",
+        "claude-sonnet-5-5",
+    ]
+    assert m.suggestions("opencode", ["gpt-5-mini"], None) == ["gpt-5-mini"]

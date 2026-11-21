@@ -985,3 +985,36 @@ def test_task_table_keeps_viewport_on_refresh_and_resize(
         assert table.scroll_x == table.scroll_target_x == table.max_scroll_x
 
     run_app(repo, fake_cfg(), scenario, size=(80, 12))
+
+
+def test_doctor_shows_capability_sections(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixtures = Path(__file__).with_name("fixtures")
+    help_text = (fixtures / "project-sandbox-0.4.1-help.txt").read_text()
+    doctor_json = (fixtures / "project-sandbox-0.4.1-doctor.json").read_text()
+    cfg = fake_cfg()
+    cfg.sandbox.command = "project-sandbox"
+
+    def fake_run(argv: list[str], timeout: float) -> tuple[int, str]:
+        line = " ".join(argv)
+        if line == "project-sandbox --help":
+            return 0, help_text
+        if line == "project-sandbox doctor --json":
+            return 0, doctor_json
+        if line.endswith("--version"):
+            return 0, f"{argv[0]} 0.46.0" if argv[0] == "jj" else "project-sandbox 0.4.1"
+        return 1, "not available in this test"
+
+    monkeypatch.setattr(doctor, "run", fake_run)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await type_line(pilot, "doctor")
+        await pilot.press("enter")
+        report = await wait_for_screen(app, pilot, MessageScreen)
+        await wait_until(pilot, lambda: "problem" in report.body or "all good" in report.body)
+        for section in ("launcher capabilities", "agent copilot", "vcs access", "runtimes"):
+            assert section in report.body
+        assert "auto selects docker" in report.body
+
+    run_app(repo, cfg, scenario)

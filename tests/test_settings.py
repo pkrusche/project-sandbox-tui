@@ -53,7 +53,7 @@ def test_parse_invalid_value(key: str, value: str, message: str) -> None:
         s.parse_value(s.parse_key(key), value)
 
 
-@pytest.mark.parametrize("key", ["nope.x", "ui.nope", "models.gpt", "ui", "commands", "leader."])
+@pytest.mark.parametrize("key", ["nope.x", "ui.nope", "models.GPT", "ui", "commands", "leader."])
 def test_parse_invalid_key(key: str) -> None:
     with pytest.raises(config.ConfigError, match="unknown key"):
         s.parse_key(key)

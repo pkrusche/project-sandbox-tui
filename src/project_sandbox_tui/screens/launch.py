@@ -366,10 +366,13 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                     profile.model,
                     profile.effort,
                     "fast" if profile.fast else "",
+                    "gateway" if profile.gateway else "",
                 )
                 if value
             )
-            hint.update(Text(text + " · edit with :config-profiles"))
+            status = self.query_one(AgentControls).agent_status(profile.agent)
+            suffix = f" · {status}" if status else ""
+            hint.update(Text(text + " · edit with :config-profiles" + suffix))
         self._octopus_changed()
         self._update_preview()
 
@@ -392,7 +395,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         return LaunchSpec(
             branch=branch,
             agent=profile.agent,
-            model=profile.model if profile.agent != "bash" else "",
+            model=profile.model if profile.agent != "bash" or profile.gateway else "",
             effort=profile.effort,
             mode=self.mode,
             prompt_text=prompt,
@@ -401,6 +404,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             inputs=inputs,
             base=base,
             fast=profile.fast,
+            gateway=profile.gateway,
             extra_args=list(profile.extra_args),
             profile=self._selected_profile(),
         )
@@ -503,6 +507,15 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         except ConfigError as exc:
             self.notify(str(exc), severity="warning")
             self.query_one("#extra-args").focus()
+            return
+        if spec.gateway and not spec.model:
+            self.notify(
+                "the agent gateway requires a model: choose one of the gateway's models",
+                severity="warning",
+            )
+            if not self._selected_profile():
+                custom = self.query_one("#custom-model-row").display
+                self.query_one("#custom-model" if custom else "#model").focus()
             return
         if any(ch.isspace() for ch in spec.model):
             self.notify(f"invalid model name: {spec.model!r}", severity="warning")

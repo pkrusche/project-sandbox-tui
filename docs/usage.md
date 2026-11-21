@@ -21,9 +21,35 @@ named `config` or `doctor` as `./config` or `./doctor`.
 `doctor` checks jj (tested minimum 0.46), project-sandbox ≥ 0.2.2 and runtime
 health; failed checks exit 1, while warnings alone exit 0. It also warns about
 untrusted config and missing image sources, multiplexers or notifiers.
-Automatic runtime selection tries
-Apple `container` on macOS, then Docker and Podman, choosing the first installed
-CLI and checking its health. It also calculates comparisons to main
+
+It asks the configured `sandbox.command` what it supports, from its `--help` and
+`doctor --json` output, and saves the result for the TUI's launch forms:
+
+```text
+✓ launcher capabilities: from project-sandbox 0.4.1
+✓ agent claude: host credentials
+! agent pi: unavailable: no ~/.pi/agent on this host; use the agent gateway or --no-forward-credentials
+✓ agent copilot: token login
+✓ agent bash: no credentials needed
+✓ vcs access: full, read-only, hidden
+✓ runtimes: apple-container unavailable (macOS only); docker usable (29.9.3; daemon reachable); podman usable (5.4.2; rootless, ready); chroot usable (unprivileged user namespaces available); auto selects docker
+✓ agent selections: 2 checked
+```
+
+It then checks every configured agent selection: `defaults`, each
+`[profiles.NAME]`, actions with their own `agent`, and the built-in commit-review
+profile. Each problem names its config key, such as `profiles.review.extra_args`.
+**Failures:** settings the launcher would reject, namely an unsupported agent,
+an agent unavailable on this host, a `--vcs-access` mode or `--runtime` value it
+does not list, an unusable `sandbox.runtime`, and gateway use with another agent
+or without a model. **Warnings:** a Claude or Codex model that is not in the model
+list, and fast mode on an agent without it. A configured but unused
+[agent gateway](configuration.md#agent-gateway) is mentioned with a hint. When the
+launcher cannot be probed, a warning says that built-in lists are used and nothing
+is reported as unsupported. If `doctor --json` is unavailable, automatic runtime
+selection is checked directly: it tries Apple `container` on macOS, then Docker
+and Podman, choosing the first installed CLI and checking its health. It also
+calculates comparisons to main
 and explains unavailable results. Inside the TUI, `:doctor` shows diagnostics
 for the current bookmark list and appends the full CLI report once the checks
 finish.
@@ -474,7 +500,7 @@ not snapshotted are recorded first and can be recovered via `jj op log`), and
 | Key | Action |
 |---|---|
 | `tab` | Next field (`j`/`k` on choice fields) |
-| `h` `l` | Cycle profile, or agent, effort, model and fast mode under Custom |
+| `h` `l` | Cycle profile, or agent, gateway, model, effort and fast mode under Custom |
 | `enter` | Launch interactive session; newline in a background prompt |
 | `ctrl+s` / `ctrl+enter` | Submit a background prompt (or click the submit button): run or queue from `r`, save or add from `L`; `ctrl+enter` requires terminal support |
 | `esc` | Cancel; `r` keeps an edited background prompt as a draft |
@@ -495,6 +521,20 @@ Under Custom, **CLI args** accepts project-sandbox arguments with shell quoting,
 for example `--memory=16g --extra-domain example.org`. These follow the configured
 `sandbox.extra_args`. The preview updates as fields change; invalid quoting shows
 an error and prevents submitting.
+
+The **agent** field offers the agents the configured project-sandbox supports,
+read from its `--help` (cached per repository and refreshed in the background, so
+the form never waits). An agent that cannot run on this host, for example because
+its host configuration is missing, stays selectable with the reason shown under
+the field: `--no-forward-credentials` or the agent gateway may still make it
+work. A configured or remembered agent the launcher does not support is shown
+and marked, never silently replaced. A named profile's summary shows the same
+marks. `bash` hides the effort and fast fields.
+
+When `network.agent_proxy` is set, `pi`, `opencode` and `bash` show a **gateway**
+field. **on** sends the launch through the [agent gateway](configuration.md#agent-gateway),
+is remembered per agent like fast mode, and requires a model: the form refuses
+to launch without one. Other agents never use the gateway.
 
 For Codex and Claude, the Custom **fast** field enables fast mode in interactive
 and background runs. It requires project-sandbox 0.3.1 or later and adds `--fast`

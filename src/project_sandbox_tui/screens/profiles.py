@@ -116,6 +116,7 @@ class ProfilesScreen(ModalScreen[ProfileEdit]):
                     model=defaults.model,
                     effort=defaults.effort,
                     fast=defaults.fast,
+                    gateway=defaults.gateway,
                     extra_args=list(self.last.extra_args),
                 )
             )

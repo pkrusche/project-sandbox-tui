@@ -39,6 +39,7 @@ class LaunchSpec:
     fast: bool = False
     profile: str = ""
     extra_args: list[str] = field(default_factory=list)
+    gateway: bool = False  # through network.agent_proxy (pi, opencode, bash)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class LaunchSpec:
             "fast": self.fast,
             "profile": self.profile,
             "extra_args": list(self.extra_args),
+            "gateway": self.gateway,
         }
 
     @classmethod
@@ -74,6 +76,7 @@ class LaunchSpec:
             inputs=[str(i) for i in raw.get("inputs") or [] if isinstance(i, str)],
             base=str(raw.get("base") or ""),
             fast=raw.get("fast") is True,
+            gateway=raw.get("gateway") is True,
             profile=str(raw.get("profile") or ""),
             extra_args=[str(arg) for arg in raw.get("extra_args") or [] if isinstance(arg, str)],
         )
@@ -91,6 +94,8 @@ class LaunchSpec:
             parts.append(self.effort)
         if self.fast and self.agent in FAST_AGENTS:
             parts.append("fast")
+        if self.gateway:
+            parts.append("gateway")
         return "/".join(parts)
 
 
@@ -106,6 +111,20 @@ class RunPaths:
     def transcript(self) -> Path:
         # project-sandbox writes a Markdown transcript beside the --log file.
         return self.log.with_suffix(".md")
+
+
+GATEWAY_MODEL_PREFIX = "agent-proxy/"
+
+
+def gateway_model(agent: str, model: str) -> str:
+    """The ``--model`` project-sandbox accepts for a gateway launch.
+
+    OpenCode must name the generated ``agent-proxy`` provider; Pi adds that prefix
+    itself and bash receives the plain ID (checked against project-sandbox 0.4.1).
+    """
+    if agent == "opencode" and model and not model.startswith(GATEWAY_MODEL_PREFIX):
+        return GATEWAY_MODEL_PREFIX + model
+    return model
 
 
 def build_argv(
@@ -162,18 +181,20 @@ def build_argv(
 
     # agent
     argv.append(f"--agent={spec.agent}")
-    if spec.agent != "bash":
-        if spec.model:
-            argv.append(f"--model={spec.model}")
-        if spec.effort:
-            argv.append(f"--effort={spec.effort}")
+    model = gateway_model(spec.agent, spec.model) if spec.gateway else spec.model
+    if model and (spec.agent != "bash" or spec.gateway):  # the gateway needs --model
+        argv.append(f"--model={model}")
+    if spec.effort and spec.agent != "bash":
+        argv.append(f"--effort={spec.effort}")
     if spec.fast and spec.agent in FAST_AGENTS:
         argv.append("--fast")
 
     # network
     if n.internet_proxy:
         argv.append(f"--internet-proxy={n.internet_proxy}")
-    if n.agent_proxy:
+    if spec.gateway:  # only launches that opt in; claude and codex never use it
+        if not n.agent_proxy:
+            raise ConfigError("this launch uses the agent gateway but network.agent_proxy is empty")
         argv.append(f"--agent-proxy={n.agent_proxy}")
         if n.agent_proxy_key_env:
             argv.append(f"--agent-proxy-key-env={n.agent_proxy_key_env}")

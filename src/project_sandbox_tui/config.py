@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import time
 import tomllib
@@ -32,10 +33,13 @@ from typing import Any, Literal
 from project_sandbox_tui import commands
 from project_sandbox_tui.launchers import TERMINALS, fill_command
 
-AGENTS: tuple[str, ...] = ("claude", "codex", "opencode", "pi", "bash")
+# Fallbacks for when the launcher's --help cannot be read (see capabilities.py);
+# kept in step with project-sandbox 0.4.1.
+AGENTS: tuple[str, ...] = ("claude", "codex", "opencode", "pi", "copilot", "bash")
 FAST_AGENTS: tuple[str, ...] = ("claude", "codex")
+GATEWAY_AGENTS: tuple[str, ...] = ("pi", "opencode", "bash")  # --agent-proxy
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
-RUNTIMES: tuple[str, ...] = ("auto", "apple-container", "docker", "podman")
+RUNTIMES: tuple[str, ...] = ("auto", "apple-container", "docker", "podman", "colima", "chroot")
 GENERATED_BUILDS: tuple[str, ...] = ("", "python-uv", "rust-cargo", "node-npm")
 
 PROJECT_CONFIG_NAME = ".project-sandbox-tui.toml"
@@ -48,6 +52,21 @@ class ConfigError(ValueError):
     """Raised for invalid or inconsistent configuration."""
 
 
+# Agent and runtime names are checked for form only: which ones the launcher
+# supports is discovered from it (capabilities.py) and checked by doctor and
+# before a launch, so newer launcher agents work without an sbx-tui release.
+NAME_PATTERN = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+
+def valid_name(value: object) -> bool:
+    return isinstance(value, str) and NAME_PATTERN.fullmatch(value) is not None
+
+
+def _check_name(key: str, value: str, what: str = "an agent name") -> None:
+    if not valid_name(value):
+        raise ConfigError(f"{key}: {value!r} is not {what} (lowercase letters, digits and dashes)")
+
+
 # ---------------------------------------------------------------- sections
 
 
@@ -58,6 +77,7 @@ class Defaults:
     effort: str = ""  # "" = the agent's own default
     timeout: int = 0  # seconds for unsupervised runs; 0 = no timeout
     fast: bool = False  # Codex and Claude; requires project-sandbox >= 0.3.1
+    gateway: bool = False  # pi / opencode / bash through network.agent_proxy
 
 
 @dataclass
@@ -67,10 +87,10 @@ class AgentProfile:
     effort: str = ""
     fast: bool = False
     extra_args: list[str] = field(default_factory=list)
+    gateway: bool = False  # launch through network.agent_proxy (pi, opencode, bash)
 
     def validate(self, where: str) -> None:
-        if self.agent not in AGENTS:
-            raise ConfigError(f"{where}.agent must be one of {', '.join(AGENTS)}")
+        _check_name(f"{where}.agent", self.agent)
         if self.effort and self.effort not in EFFORTS:
             raise ConfigError(f"{where}.effort must be empty or one of {', '.join(EFFORTS)}")
         if any(ch.isspace() for ch in self.model):
@@ -351,14 +371,12 @@ class Config:
 
     def validate(self) -> None:
         d, p, s = self.defaults, self.project, self.sandbox
-        if d.agent not in AGENTS:
-            raise ConfigError(f"defaults.agent must be one of {', '.join(AGENTS)}")
+        _check_name("defaults.agent", d.agent)
         if d.effort and d.effort not in EFFORTS:
             raise ConfigError(f"defaults.effort must be empty or one of {', '.join(EFFORTS)}")
         if d.timeout < 0:
             raise ConfigError("defaults.timeout must be >= 0")
-        if s.runtime not in RUNTIMES:
-            raise ConfigError(f"sandbox.runtime must be one of {', '.join(RUNTIMES)}")
+        _check_name("sandbox.runtime", s.runtime, "a runtime name")
         if s.cpus < 0:
             raise ConfigError("sandbox.cpus must be >= 0")
         f = self.feedback
@@ -412,18 +430,22 @@ class Config:
         if p.docker_context and not p.dockerfile:
             raise ConfigError("project.docker_context needs project.dockerfile")
         for agent in self.models:
-            if agent not in AGENTS:
-                raise ConfigError(f"[models] has unknown agent {agent!r}")
+            _check_name(f"models.{agent}", agent)
         for name, profile in self.profiles.items():
             validate_profile_name(name)
             profile.validate(f"profiles.{name}")
+        uses_gateway = [f"profiles.{n}.gateway" for n, pr in self.profiles.items() if pr.gateway]
+        if d.gateway:
+            uses_gateway.insert(0, "defaults.gateway")
+        if uses_gateway and not self.network.agent_proxy:
+            raise ConfigError(f"{', '.join(uses_gateway)} needs network.agent_proxy")
         if not math.isfinite(self.ui.refresh_seconds) or self.ui.refresh_seconds <= 0:
             raise ConfigError("ui.refresh_seconds must be finite and > 0")
         for name, action in self.actions.items():
             if not action.prompt.strip():
                 raise ConfigError(f"[actions.{name}] needs a prompt")
-            if action.agent and action.agent not in AGENTS:
-                raise ConfigError(f"actions.{name}.agent must be one of {', '.join(AGENTS)}")
+            if action.agent:
+                _check_name(f"actions.{name}.agent", action.agent)
             if action.effort and action.effort not in EFFORTS:
                 raise ConfigError(
                     f"actions.{name}.effort must be empty or one of {', '.join(EFFORTS)}"
@@ -924,6 +946,7 @@ class LastUsed:
     timeout: int | None = None
     model_by_agent: dict[str, str] = field(default_factory=dict)
     fast_by_agent: dict[str, bool] = field(default_factory=dict)
+    gateway_by_agent: dict[str, bool] = field(default_factory=dict)
     host_command: list[str] = field(default_factory=list)
     profile: str | None = None  # None = never chosen; "" = custom
     extra_args: list[str] = field(default_factory=list)  # custom launch switches
@@ -949,7 +972,7 @@ class LastUsed:
             isinstance(arg, str) and "\0" not in arg for arg in extra_args
         ):
             out.extra_args = extra_args
-        if raw.get("agent") in AGENTS:
+        if valid_name(raw.get("agent")):
             out.agent = raw["agent"]
         if raw.get("effort") in (*EFFORTS, ""):
             out.effort = raw["effort"]
@@ -964,6 +987,12 @@ class LastUsed:
                 k: v
                 for k, v in raw["fast_by_agent"].items()
                 if k in FAST_AGENTS and type(v) is bool
+            }
+        if isinstance(raw.get("gateway_by_agent"), dict):
+            out.gateway_by_agent = {
+                k: v
+                for k, v in raw["gateway_by_agent"].items()
+                if k in GATEWAY_AGENTS and type(v) is bool
             }
         host_command = raw.get("host_command")
         if (
@@ -1005,6 +1034,7 @@ class LaunchDefaults:
     effort: str
     timeout: int
     fast: bool = False
+    gateway: bool = False
 
 
 def resolve_model(cfg: Config, last: LastUsed, agent: str) -> str:
@@ -1019,6 +1049,16 @@ def resolve_fast(cfg: Config, last: LastUsed, agent: str) -> bool:
     return agent in FAST_AGENTS and last.fast_by_agent.get(agent, cfg.defaults.fast)
 
 
+def resolve_gateway(cfg: Config, last: LastUsed, agent: str) -> bool:
+    """Gateway use for a launch form's ``agent``: remembered, else ``defaults.gateway``.
+
+    Only agents the gateway serves, and only while a gateway is configured.
+    """
+    if agent not in GATEWAY_AGENTS or not cfg.network.agent_proxy:
+        return False
+    return last.gateway_by_agent.get(agent, cfg.defaults.gateway)
+
+
 def resolve_launch_defaults(cfg: Config, last: LastUsed) -> LaunchDefaults:
     agent = last.agent or cfg.defaults.agent
     effort = last.effort if last.effort is not None else cfg.defaults.effort
@@ -1029,6 +1069,7 @@ def resolve_launch_defaults(cfg: Config, last: LastUsed) -> LaunchDefaults:
         effort=effort,
         timeout=timeout,
         fast=resolve_fast(cfg, last, agent),
+        gateway=resolve_gateway(cfg, last, agent),
     )
 
 
@@ -1085,9 +1126,16 @@ class ActionSettings:
     timeout: int
     extra_args: list[str] = field(default_factory=list)
     profile: str = ""  # the named profile used, "" otherwise
+    gateway: bool = False
 
     def label(self) -> str:
-        parts = [self.agent, self.model, self.effort, "fast" if self.fast else ""]
+        parts = [
+            self.agent,
+            self.model,
+            self.effort,
+            "fast" if self.fast else "",
+            "gateway" if self.gateway else "",
+        ]
         return "/".join(part for part in parts if part)
 
 
@@ -1108,6 +1156,7 @@ def resolve_action_settings(
             timeout=timeout,
             extra_args=list(profile.extra_args),
             profile=choice.profile,
+            gateway=profile.gateway,  # kept as configured: launch checks reject misuse
         )
     if choice.kind == "action":
         agent = action.agent or defaults.agent
@@ -1117,6 +1166,7 @@ def resolve_action_settings(
             effort=action.effort or defaults.effort,
             fast=resolve_fast(cfg, last, agent),
             timeout=timeout,
+            gateway=resolve_gateway(cfg, last, agent),
         )
     return ActionSettings(
         agent=defaults.agent,
@@ -1125,6 +1175,7 @@ def resolve_action_settings(
         fast=defaults.fast,
         timeout=timeout,
         extra_args=list(last.extra_args),
+        gateway=defaults.gateway,
     )
 
 
@@ -1136,6 +1187,7 @@ def remember(
     timeout: int | None,
     *,
     fast: bool = False,
+    gateway: bool = False,
     profile: str = "",
     extra_args: list[str] | None = None,
 ) -> None:
@@ -1150,6 +1202,8 @@ def remember(
         last.model_by_agent[agent] = model
         if agent in FAST_AGENTS:
             last.fast_by_agent[agent] = fast
+        if agent in GATEWAY_AGENTS:
+            last.gateway_by_agent[agent] = gateway
 
 
 # ---------------------------------------------------------------- templates
@@ -1180,10 +1234,11 @@ keep_workspace = true                  # -> --keep-workspace
 # max_steps = 1                     # includes initial task; limit pauses the queue
 
 # [defaults]
-# agent = "claude"                     # claude | codex | opencode | pi | bash
+# agent = "claude"                     # claude | codex | opencode | pi | copilot | bash
 # model = ""
 # effort = "medium"                    # low | medium | high | xhigh | max
 # fast = false                         # Codex / Claude; project-sandbox >= 0.3.1
+# gateway = false                      # pi / opencode / bash via network.agent_proxy
 
 # [profiles.review]                    # :config-profiles edits these in the TUI
 # agent = "codex"                      # launch forms offer profiles and custom
@@ -1212,22 +1267,23 @@ GLOBAL_TEMPLATE = """\
 # project-sandbox-tui — global settings
 
 [defaults]
-agent = "claude"          # claude | codex | opencode | pi | bash
+agent = "claude"          # claude | codex | opencode | pi | copilot | bash
 model = ""                # "" = the agent's own default
 effort = ""               # "" or low | medium | high | xhigh | max
 fast = false              # Codex / Claude; project-sandbox >= 0.3.1
+gateway = false           # pi / opencode / bash via network.agent_proxy
 timeout = 0               # seconds for unsupervised runs; 0 = none
 
 [network]
 # internet_proxy = "http://proxy.example:3128"   # -> --internet-proxy
-# agent_proxy = "http://127.0.0.1:4000"          # -> --agent-proxy
+# agent_proxy = "http://127.0.0.1:4000/v1"       # -> --agent-proxy for gateway = true launches
 # ca_certs = ["/path/to/corp-root.pem"]          # -> --ca-cert (repeatable)
 # extra_domains = []                              # -> --extra-domain (repeatable)
 # allow_github = false
 
 [sandbox]
 command = "project-sandbox"   # or "uvx project-sandbox"
-runtime = "auto"              # auto | apple-container | docker | podman
+runtime = "auto"              # auto | apple-container | docker | podman | colima | chroot
 # memory = "16g"
 # cpus = 6
 # no_forward_credentials = false

@@ -33,6 +33,7 @@ from textual.widgets import DataTable, Input, Static
 from textual.widgets.data_table import ColumnKey
 
 from project_sandbox_tui import (
+    capabilities,
     commands,
     commit_summary,
     doctor,
@@ -84,6 +85,7 @@ from project_sandbox_tui.sandbox import (
     read_sessions,
     running_by_branch,
 )
+from project_sandbox_tui.screens.agent import AgentControls
 from project_sandbox_tui.screens.command import CommandScreen
 from project_sandbox_tui.screens.dialogs import (
     CleanupScreen,
@@ -538,6 +540,9 @@ class SandboxTUI(App[None]):
         self.config_path = config_path
         self.dry_run = dry_run
         self.jobs = jobs or JobManager(repo, cfg)
+        # What the configured launcher supports: the cached snapshot, refreshed in
+        # the background after mount (capabilities.py); never probed on the UI path.
+        self.capabilities = self._cached_capabilities()
         # Creates workspaces and deploys skills under the launch lock (jobs.py).
         self.workspaces = WorkspacePreparer(repo, backend)
         self.jobs.prepare = self._prepare_workspace
@@ -630,6 +635,7 @@ class SandboxTUI(App[None]):
         await self.refresh_data()
         self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
         self._review_project_config()
+        self._refresh_capabilities()
 
     async def on_unmount(self) -> None:
         workers = [worker for worker in self.workers if worker.group == "commit-summary"]
@@ -1631,8 +1637,11 @@ class SandboxTUI(App[None]):
                 extra_args=list(spec.extra_args),
                 model_by_agent={spec.agent: spec.model},
                 fast_by_agent={spec.agent: spec.fast},
+                gateway_by_agent={spec.agent: spec.gateway},
             )
-            defaults = LaunchDefaults(spec.agent, spec.model, spec.effort, spec.timeout, spec.fast)
+            defaults = LaunchDefaults(
+                spec.agent, spec.model, spec.effort, spec.timeout, spec.fast, spec.gateway
+            )
 
         def save(spec: LaunchSpec) -> str | None:
             try:
@@ -1957,6 +1966,7 @@ class SandboxTUI(App[None]):
                 spec.effort,
                 spec.timeout if spec.mode == "background" else None,
                 fast=spec.fast,
+                gateway=spec.gateway,
                 profile=spec.profile,
                 extra_args=spec.extra_args,
             )
@@ -2708,7 +2718,12 @@ class SandboxTUI(App[None]):
                 parts.append("tasks (:& / :*)\n" + "\n".join(map(self._task_line, tasks)))
             try:
                 spec = LaunchSpec(
-                    branch=name, agent=d.agent, model=d.model, effort=d.effort, fast=d.fast
+                    branch=name,
+                    agent=d.agent,
+                    model=d.model,
+                    effort=d.effort,
+                    fast=d.fast,
+                    gateway=d.gateway,
                 )
                 command = self._spec_preview(spec)
             except ConfigError as exc:
@@ -2954,6 +2969,8 @@ class SandboxTUI(App[None]):
         self._refresh_timer.stop()
         self._refresh_timer = self.set_interval(cfg.ui.refresh_seconds, self.refresh_data)
         self.show_cheatsheet(cfg.ui.cheatsheet)
+        self.capabilities = self._cached_capabilities()
+        self._refresh_capabilities()
         await self.refresh_data()
         self.notify("Configuration reloaded")
         self._notify_config_warnings()
@@ -3084,6 +3101,34 @@ class SandboxTUI(App[None]):
             worker.group == "models" for worker in self.workers
         ):
             self._update_models()
+
+    def _cached_capabilities(self) -> capabilities.Capabilities:
+        try:
+            command = self.cfg.sandbox_command()
+        except ConfigError:
+            return capabilities.fallback()
+        return capabilities.cached(command, self.repo)
+
+    def _discover_capabilities(self, command: list[str]) -> capabilities.Capabilities:
+        """Runs in a worker thread: probes only when the cache is stale."""
+        return capabilities.refresh(command, self.repo)
+
+    @work(group="capabilities", exclusive=True)
+    async def _refresh_capabilities(self) -> None:
+        try:
+            command = self.cfg.sandbox_command()
+        except ConfigError:
+            return
+        caps = await asyncio.to_thread(self._discover_capabilities, command)
+        try:
+            if tuple(self.cfg.sandbox_command()) != caps.command:
+                return  # the config changed meanwhile; its own refresh follows
+        except ConfigError:
+            return
+        self.capabilities = caps
+        for screen in self.screen_stack:
+            for controls in screen.query(AgentControls):
+                controls.set_capabilities(caps)
 
     @work(group="models")
     async def _update_models(self, source: str = models_mod.DEFAULT_SOURCE) -> None:
@@ -3320,6 +3365,7 @@ class SandboxTUI(App[None]):
             model=settings.model,
             effort=settings.effort,
             fast=settings.fast,
+            gateway=settings.gateway,
             mode=mode,
             prompt_text=action.render(name, self.main_name() or "", extra),
             timeout=settings.timeout,

@@ -66,6 +66,19 @@ def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def no_background_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The TUI's startup capability refresh reads the cache instead of probing a
+    launcher; tests that exercise the refresh replace this again."""
+    from project_sandbox_tui import capabilities
+    from project_sandbox_tui.app import SandboxTUI
+
+    def cached(self: SandboxTUI, command: list[str]) -> capabilities.Capabilities:
+        return capabilities.cached(command, self.repo)
+
+    monkeypatch.setattr(SandboxTUI, "_discover_capabilities", cached)
+
+
+@pytest.fixture(autouse=True)
 def child_processes(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     """Own every real child, including launches hidden inside UI worker threads.
 

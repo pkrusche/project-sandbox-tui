@@ -29,7 +29,7 @@ from tests.test_app import run_app, wait_for_screen, wait_until
     [
         ({"profiles": []}, "must be a table"),
         ({"profiles": {"p": "codex"}}, "must be a table"),
-        ({"profiles": {"p": {"agent": "unknown"}}}, "profiles.p.agent"),
+        ({"profiles": {"p": {"agent": "claude code"}}}, "profiles.p.agent"),
         ({"profiles": {"p": {"effort": "huge"}}}, "profiles.p.effort"),
         ({"profiles": {"p": {"model": "two words"}}}, "invalid model name"),
         ({"profiles": {"p": {"fast": "yes"}}}, "must be true or false"),

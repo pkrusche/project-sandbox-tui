@@ -118,6 +118,7 @@ def resolve_launch(cfg: Config, repo: Path) -> tuple[Config, LaunchSpec]:
         model=profile.model,
         effort=profile.effort,
         fast=profile.fast,
+        gateway=profile.gateway,
         profile=name,
         extra_args=[f"--image-tag={IMAGE_TAG}", *extra],
         mode="background",

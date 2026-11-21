@@ -1,0 +1,233 @@
+usage: project-sandbox [-h] [--version] [--dockerfile DOCKERFILE]
+                       [--docker-context DOCKER_CONTEXT] [--python-uv]
+                       [--python VERSION] [--rust-cargo] [--rust VERSION]
+                       [--node-npm] [--image-tag IMAGE_TAG]
+                       [--runtime {auto,apple-container,docker,podman,colima,chroot}]
+                       [--colima-profile NAME] [--no-build] [--build-only]
+                       [--force-build] [--no-verify-dockerfile]
+                       [--memory MEMORY] [--cpus CPUS] [--shm-size SIZE]
+                       [--mount EXTRA_MOUNTS]
+                       [--vcs-access {full,read-only,hidden}]
+                       [--extra-domain EXTRA_DOMAIN] [--allow-github]
+                       [--no-firewall] [--build-proxy URL]
+                       [--build-no-proxy HOSTS] [--build-ca-cert PATH]
+                       [--ca-cert PATH] [--internet-proxy URL]
+                       [--no-internet-proxy-preflight]
+                       [--egress {firewall,sidecar}] [--sandbox-firewall |
+                       --no-sandbox-firewall] [--pi-ollama]
+                       [--agent-proxy URL] [--agent-proxy-key-env NAME]
+                       [--agent-proxy-key KEY] [--ollama-model MODEL_ID]
+                       [--pi-tools TOOLS] [--copilot-host HOST]
+                       [--copilot-token-pass ENTRY] [--branch BRANCH]
+                       [--branch-start-at REVISION]
+                       [--worktree-dir WORKTREE_DIR] [--keep-workspace]
+                       [--prompt PROMPT] [--prompt-text PROMPT_TEXT]
+                       [--agent {claude,codex,opencode,pi,copilot,bash}]
+                       [--log LOG] [--json-summary PATH] [--timeout TIMEOUT]
+                       [--model MODEL_ID] [--effort LEVEL] [--fast]
+                       [--no-forward-credentials] [--api-key-env NAME]
+                       [--api-key-env-file FILE] [--no-token-refresh]
+                       [--dry-run] [--verbose]
+                       project [base_image]
+
+positional arguments:
+  project
+  base_image
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
+  --dockerfile DOCKERFILE
+                        Build the sandbox on top of an existing Dockerfile
+                        instead of a base image tag.
+  --docker-context DOCKER_CONTEXT
+                        Build context to use with --dockerfile (default:
+                        project root).
+  --python-uv           Synthesise a Python/uv base Dockerfile instead of
+                        supplying one. Mutually exclusive with base_image and
+                        --dockerfile.
+  --python VERSION      Python image tag for --python-uv (default: 3.11). Only
+                        valid with --python-uv.
+  --rust-cargo          Synthesise a Rust/cargo base Dockerfile instead of
+                        supplying one. Mutually exclusive with base_image and
+                        --dockerfile.
+  --rust VERSION        Rust toolchain version for --rust-cargo, e.g. 1.87,
+                        producing rust:1.87-slim (default: latest stable
+                        rust:slim). Only valid with --rust-cargo.
+  --node-npm            Synthesise a Node.js/npm base Dockerfile with headless
+                        Chromium instead of supplying one. Requires
+                        package.json and a committed npm lockfile. Mutually
+                        exclusive with base_image and --dockerfile.
+  --image-tag IMAGE_TAG
+  --runtime {auto,apple-container,docker,podman,colima,chroot}
+                        Container runtime for direct CLI runs (default: auto).
+  --colima-profile NAME
+                        Colima profile for --runtime colima (default: project-
+                        sandbox). The profile must already be running;
+                        project-sandbox never starts or changes it.
+  --no-build
+  --build-only          Build/warm the sandbox image and exit without starting
+                        an agent.
+  --force-build
+  --no-verify-dockerfile
+                        Skip Dockerfile tamper-detection check. Use when you
+                        have intentionally edited the Dockerfile and do not
+                        want to be prompted. The baseline is still updated
+                        after a real build so verification resumes on the next
+                        run.
+  --memory MEMORY
+  --cpus CPUS           CPU limit for the sandbox (default: 4, capped to the
+                        CPUs a Docker engine such as a Colima VM has).
+  --shm-size SIZE       Shared memory (/dev/shm) size for the container, e.g.
+                        2g (default: 2g with --node-npm, otherwise the
+                        runtime's default).
+  --mount EXTRA_MOUNTS
+  --vcs-access {full,read-only,hidden}
+                        Runtime access to existing .git/.jj metadata (default:
+                        full). Restricted modes keep source files writable.
+  --extra-domain EXTRA_DOMAIN
+  --allow-github        Allow GitHub and GitHub Copilot hosts at runtime. This
+                        includes GitHub's published web/API/git IP ranges and
+                        DNS-pinned GitHub Copilot endpoints. Implied by
+                        --agent copilot.
+  --no-firewall
+  --build-proxy URL     Use this credential-free HTTP/HTTPS proxy during image
+                        builds only. With Apple container it is reached
+                        through a host-loopback forwarder.
+  --build-no-proxy HOSTS
+                        Additional comma-separated no_proxy entries (hosts,
+                        .domains, IPs, CIDRs) during image builds (repeatable;
+                        requires --build-proxy).
+  --build-ca-cert PATH  Install PEM CAs (single certificate or bundle) before
+                        image build downloads (repeatable; trust persists).
+  --ca-cert PATH        Install a PEM CA after build commands (repeatable;
+                        requires --internet-proxy or --agent-proxy).
+  --internet-proxy URL  Route Internet traffic through a credential-free HTTP
+                        loopback or remote HTTP/HTTPS proxy (default ports
+                        80/443).
+  --no-internet-proxy-preflight
+                        Skip the host-side reachability check of --internet-
+                        proxy, for a proxy that only containers can reach. The
+                        sandbox firewall still checks the proxy from inside
+                        the sandbox before the session starts.
+  --egress {firewall,sidecar}
+                        Internet egress mode. 'firewall' (default) pins
+                        allowed domains to IPs in the sandbox firewall.
+                        'sidecar' routes all traffic through the runtime's
+                        global Squid sidecar, which filters by hostname under
+                        $XDG_CONFIG_HOME/project-sandbox/egress.toml and is
+                        managed with project-sandbox-egress; see docs/egress-
+                        sidecar.md.
+  --sandbox-firewall    Colima sidecar mode only: also install the sandbox's
+                        own firewall, admitting only the sidecar (defense in
+                        depth on top of the isolated network).
+  --no-sandbox-firewall
+                        Colima sidecar mode only: rely on the isolated network
+                        alone, with no sandbox firewall or network
+                        capabilities (the default once Colima's containment is
+                        verified, as it is).
+  --pi-ollama           Extend the firewall to reach a host-run Ollama server
+                        and pre-configure Pi to use it as the default
+                        provider. Only takes effect with --agent pi or
+                        --build-only; a no-op otherwise.
+  --agent-proxy URL     Route pi, OpenCode, or Bash through an authenticated
+                        HTTP loopback or remote HTTP/HTTPS gateway; see
+                        docs/agent-proxy.md.
+  --agent-proxy-key-env NAME
+                        Gateway-key environment fallback (default:
+                        AGENTGATEWAY_API_KEY).
+  --agent-proxy-key KEY
+                        Unsafe last-resort gateway key; shell history and
+                        process listings may expose it.
+  --ollama-model MODEL_ID
+                        Ollama model ID to make available to Pi, overriding
+                        the built-in default list. Repeatable; only meaningful
+                        with --pi-ollama.
+  --pi-tools TOOLS      Comma-separated Pi tool allowlist, e.g. --pi-tools
+                        read,grep,find,ls for a read-only session. Only takes
+                        effect together with --agent pi; when omitted, Pi's
+                        own default tool set applies.
+  --copilot-host HOST   GitHub host for --agent copilot: github.com (default;
+                        personal, Business, and Enterprise Cloud accounts) or
+                        <tenant>.ghe.com (Enterprise Cloud with data
+                        residency). Self-hosted GitHub Enterprise Server is
+                        not supported.
+  --copilot-token-pass ENTRY
+                        pass entry holding the Copilot token for --agent
+                        copilot (default: copilot-github-token, or copilot-
+                        github-token/<host> for a GHE.com tenant). An explicit
+                        entry never falls back to `gh auth token`.
+  --branch BRANCH       Run the agent in a git worktree / jj workspace on this
+                        branch (reused if it exists, else created).
+  --branch-start-at REVISION
+                        Starting commit/tag/branch/bookmark for a NEW branch
+                        created by --branch. Errors if the branch/bookmark
+                        already exists (delete or merge it first, or omit this
+                        flag to reuse it).
+  --worktree-dir WORKTREE_DIR
+  --keep-workspace      Leave the worktree/workspace in place after the
+                        session so a later --branch run on the same branch can
+                        reuse it.
+  --prompt PROMPT
+  --prompt-text PROMPT_TEXT
+  --agent {claude,codex,opencode,pi,copilot,bash}
+                        Agent to run. When omitted, project-sandbox only
+                        initializes generated config files.
+  --log LOG
+  --json-summary PATH   Write a one-line JSON session summary to PATH after
+                        the agent exits; use '-' for stdout.
+  --timeout TIMEOUT
+  --model MODEL_ID      Model ID to use for the agent, in both interactive and
+                        unsupervised (batch) runs. Example for Claude: --agent
+                        claude --model sonnet --prompt-text '...'. Example for
+                        Codex: --agent codex --model gpt-5.4-mini --prompt-
+                        text '...'. Example for OpenCode: --agent opencode
+                        --model openai/gpt-5.4-mini --prompt-text '...'.
+                        Example for Pi: --agent pi --model sonnet --prompt-
+                        text '...'. Example for Copilot: --agent copilot
+                        --model gpt-5-mini --prompt-text '...'.
+  --effort LEVEL        Reasoning effort level for Claude, Codex, OpenCode,
+                        Pi, and Copilot, in both interactive and unsupervised
+                        (batch) runs. One of: low, medium, high, xhigh, max.
+                        project-sandbox does not force a default; when
+                        omitted, the underlying agent CLI's own default
+                        applies. Examples for Claude: --agent claude --model
+                        sonnet --effort low or --agent claude --model sonnet
+                        --effort high. Examples for Codex: --agent codex
+                        --model gpt-5.4-mini --effort low or --agent codex
+                        --model gpt-5.4-mini --effort high. Examples for
+                        OpenCode: --agent opencode --model openai/gpt-5.4-mini
+                        --effort low or --agent opencode --model
+                        openai/gpt-5.4-mini --effort high. Examples for Pi:
+                        --agent pi --model anthropic/sonnet --effort low or
+                        --agent pi --model anthropic/sonnet --effort high (Pi
+                        receives the model unchanged plus a separate
+                        --thinking flag). Examples for Copilot: --agent
+                        copilot --model gpt-5-mini --effort low or --agent
+                        copilot --model gpt-5-mini --effort high (Copilot
+                        receives separate --model and --effort flags).
+  --fast                Enable the agent's fast mode, in both interactive and
+                        unsupervised (batch) runs. Supported for Claude
+                        (fastMode setting) and Codex (service_tier = "fast").
+                        Fast mode bills at a higher rate and only works with
+                        models and plans that offer it. Example: --agent
+                        claude --fast or --agent codex --fast.
+  --no-forward-credentials
+                        Do not stage, mount, or forward host agent credentials
+                        (and remove any previously staged), and generate a
+                        credential-free devcontainer; start unauthenticated
+                        and log in inside the sandbox. Disables the host token
+                        refresh and the credential-lifetime warning.
+  --api-key-env NAME    With --no-forward-credentials, inject this host
+                        environment variable into a direct agent container.
+                        Repeat for multiple API keys.
+  --api-key-env-file FILE
+                        With --no-forward-credentials, inject API key
+                        environment variables from a dotenv-style KEY=VALUE
+                        file into a direct agent container. Repeat to load
+                        multiple files.
+  --no-token-refresh    Do not attempt to refresh the host Claude OAuth token
+                        before launching, even if it is near expiry. The
+                        staged token is used as-is.
+  --dry-run
+  --verbose
