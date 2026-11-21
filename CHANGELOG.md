@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `sbx-setup-wizard` interviews the project owner with an installed host agent
+  to set up profiles, actions and workflows. Profile agents come from launcher
+  discovery with their sources (host credentials, token login, agent gateway),
+  so one setup can combine them. The prompt carries the discovered VCS access
+  modes and runtimes.
 - Launcher capability discovery: supported agents and `--vcs-access` modes from
   the configured `sandbox.command`'s `--help`, and runtime status from its
   `doctor --json`. Results are cached per repository, and launches with settings

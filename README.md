@@ -52,6 +52,18 @@ sbx-tui --dry-run   # preview project-sandbox calls
 sbx-tui             # launch
 ```
 
+For guided project setup, run `sbx-setup-wizard` in your jj checkout. Choose
+the setup agent that runs the interview on this host: an installed Claude, Codex,
+Pi, GitHub Copilot or OpenCode. Then select the agents to consider for sandbox
+profiles. These come from what the configured project-sandbox supports, each
+shown with how it can run here (host credentials, token login, the agent gateway,
+or no credentials for Bash), so they need not be installed on the host. Tick
+**Use the agent gateway** to offer Pi and OpenCode through `network.agent_proxy`.
+Add any instructions, then **Start interview** (`ctrl+s`) opens the setup agent in
+the current terminal with the discovered agents, VCS access modes and runtimes. It
+discusses tasks, per-profile VCS and internet access, gateway models, and project
+workflows. You can run the wizard before or after `sbx-tui --init`.
+
 Press `?` for full help.
 
 Highlight `@` or a feature bookmark and press `i` for an interactive sandbox

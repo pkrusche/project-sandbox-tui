@@ -38,7 +38,7 @@
 ## 6. Setup agent selection and gateway models
 
 - [x] 6.1 Update the bundled `sbx-tui-config` skill: telling the setup agent apart from profile agents, how to read discovered capabilities from `sbx-tui doctor`, and the gateway model procedure (`<agent_proxy>/models`; key from `pass show agentgateway-api-key`, then the `agent_proxy_key_env` variable, never printed; plain IDs saved as `[models]` suggestions; `gateway = true` on profiles; manual fallback when unreachable); verify the doctor check that the installed skill matches the template still passes after `sbx-tui --init`
-- [ ] 6.2 In the setup wizard (`add-setup-wizard-skill`, in whichever change merges second), offer profile agents from discovery with their sources instead of `config.AGENTS`, keep setup agents from `PATH`, and put the capability summary in the prompt; verify with `tests/test_setup_wizard.py` cases for combined sources, copilot, and fallback wording
+- [x] 6.2 In the setup wizard (`add-setup-wizard-skill`, in whichever change merges second), offer profile agents from discovery with their sources instead of `config.AGENTS`, keep setup agents from `PATH`, and put the capability summary in the prompt; verify with `tests/test_setup_wizard.py` cases for combined sources, copilot, and fallback wording
 
 ## 7. Integration
 

@@ -42,6 +42,7 @@ Source = "https://github.com/pkrusche/project-sandbox-tui"
 
 [project.scripts]
 sbx-tui = "project_sandbox_tui.cli:main"
+sbx-setup-wizard = "project_sandbox_tui.setup_wizard:main"
 sbx-report = "project_sandbox_tui.feedback:main"
 
 [dependency-groups]
