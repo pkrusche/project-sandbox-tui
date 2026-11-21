@@ -32,7 +32,7 @@ def prompt(text: str, branch: str = "feature/x") -> LaunchSpec:
 
 def prompts(queue: TaskQueue, branch: str = "feature/x") -> list[str]:
     queue.load()
-    return [t.spec.prompt_text for t in queue.get(branch).tasks]
+    return [t.description for t in queue.get(branch).tasks]
 
 
 def test_persistent_editing_and_undo(tmp_path: Path) -> None:
@@ -95,7 +95,7 @@ def test_dispatch_concurrent_restart_and_no_replay(
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: dispatch(), range(2)))
     assert sorted(results, key=len) == [[], [first.id]]
-    assert prompts(queue) == [second.spec.prompt_text, third.spec.prompt_text]
+    assert prompts(queue) == [second.description, third.description]
     wait_for(lambda: bool(jobs.refresh({})))
     # A new TUI resumes in FIFO order after adopting the finished run.
     queue = TaskQueue(jobs.state_dir)
@@ -104,7 +104,7 @@ def test_dispatch_concurrent_restart_and_no_replay(
     queue.undo("feature/x")  # undo the third enqueue, not either consumed task
     assert prompts(queue) == []
     queue.undo("feature/x", redo=True)
-    assert prompts(queue) == [third.spec.prompt_text]
+    assert prompts(queue) == [third.description]
     assert [j.queue_id for j in queue.dispatch(jobs, lambda: {}, lambda _: None)] == [third.id]
     wait_for(lambda: bool(jobs.refresh({})))
     queue.undo("feature/x")
@@ -118,6 +118,7 @@ def test_recover_between_job_save_and_queue_save(
     jobs = JobManager(repo, fake_cfg())
     queue = TaskQueue(jobs.state_dir)
     task = queue.add(prompt("sleep:0.1"))
+    assert task.spec is not None
     original = jobs.start_background(task.spec, {}, queue_id=task.id)
     wait_for(lambda: bool(jobs.refresh({})))
     # A later manual run may already have archived the queued run.
@@ -377,13 +378,17 @@ def test_immediate_background_launch_retains_task(
     run_app(repo, fake_cfg(), scenario)
 
 
+@pytest.mark.parametrize("cli_flag", [True, False])
 def test_dry_run_does_not_consume_pending_tasks(
-    repo: Path, fake_cfg: Callable[..., Config]
+    repo: Path, fake_cfg: Callable[..., Config], cli_flag: bool
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        app.dry_run = True
+        app.dry_run = cli_flag
         app.cfg.sandbox.extra_args.append("--dry-run")
         pending = app.queue.add(prompt("real pending task"))
+        await app.refresh_data()
+        assert not app.jobs.jobs
+        assert prompts(app.queue) == ["real pending task"]
         app.queue.pause("feature/x", True)
         before = app.queue.get("feature/x").to_dict()
         await app.refresh_data()
@@ -398,7 +403,7 @@ def test_dry_run_does_not_consume_pending_tasks(
         assert queue.to_dict()["undo"] == before["undo"]
         assert len(queue.history) == 1
         assert queue.history[0].id == app.jobs.jobs["feature/x"].queue_id
-        assert queue.history[0].spec.prompt_text == "sleep:0.1 preview"
+        assert queue.history[0].description == "sleep:0.1 preview"
 
     run_app(repo, fake_cfg(), scenario)
 
@@ -705,7 +710,9 @@ def test_queue_readers_see_only_committed_transactions(tmp_path: Path, abort: bo
 
     def edit() -> None:
         with queue.transaction() as queues:
-            queues["feature/x"].tasks[0].spec.prompt_text = "updated"
+            launch = queues["feature/x"].tasks[0].spec
+            assert launch is not None
+            launch.prompt_text = "updated"
             queues["other"] = BookmarkQueue(paused=True)
             editing.set()
             assert release.wait(5)
@@ -716,7 +723,7 @@ def test_queue_readers_see_only_committed_transactions(tmp_path: Path, abort: bo
         future = pool.submit(edit)
         try:
             assert editing.wait(5)
-            assert queue.get("feature/x").tasks[0].spec.prompt_text == "original"
+            assert queue.get("feature/x").tasks[0].description == "original"
             assert "other" not in queue.queues
         finally:
             release.set()
@@ -725,7 +732,7 @@ def test_queue_readers_see_only_committed_transactions(tmp_path: Path, abort: bo
                 future.result(timeout=5)
         else:
             future.result(timeout=5)
-    assert queue.get("feature/x").tasks[0].spec.prompt_text == ("original" if abort else "updated")
+    assert queue.get("feature/x").tasks[0].description == ("original" if abort else "updated")
     assert ("other" in queue.queues) is not abort
     assert prompts(TaskQueue(tmp_path)) == ["original" if abort else "updated"]
 

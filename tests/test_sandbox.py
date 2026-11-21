@@ -43,6 +43,13 @@ def make_cfg() -> Config:
     return cfg
 
 
+def test_base_image_cannot_be_interpreted_as_a_launcher_option(tmp_path: Path) -> None:
+    cfg = make_cfg()
+    cfg.project.base_image = "--no-firewall"
+    with pytest.raises(ConfigError, match="must name an image"):
+        build_argv(cfg, tmp_path, LaunchSpec("@", "bash"))
+
+
 def test_interactive_argv(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     spec = LaunchSpec(branch="feat/x", agent="claude", model="opus", effort="high")
@@ -303,6 +310,10 @@ def test_old_records_without_gateway_load() -> None:
     gateway = LaunchSpec("b", "pi", gateway=True)
     assert LaunchSpec.from_dict(gateway.to_dict()) == gateway
     assert gateway.label() == "pi/gateway"
+
+
+def test_fallback_stop_cannot_target_an_unrelated_runtime() -> None:
+    assert sandbox.runtime_cli("chroot", which=lambda cli: f"/bin/{cli}") is None
 
 
 def _gateway_argv(tmp_path: Path, agent: str, model: str, *, gateway: bool) -> list[str]:

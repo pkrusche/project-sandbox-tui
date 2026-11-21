@@ -194,9 +194,9 @@ upstream mount format cannot represent them.
 
 ## Project workflows
 
-Use named workflows to run a sequence of actions on one bookmark. Add a workflow
-to your trusted project config (`.project-sandbox-tui.toml`) and define each
-referenced action in `[actions.NAME]`.
+Use named workflows to run agent actions, human reviews, and host commands on
+one bookmark. Add a workflow to your trusted project config
+(`.project-sandbox-tui.toml`) and define each referenced agent action in `[actions.NAME]`.
 Actions supply the prompts, an optional timeout, and either a `profile` or their
 own agent, model, and effort; see [agent actions](configuration.md#agent-actions).
 Workflow commands support inline and external terminals.
@@ -226,8 +226,8 @@ work. Write the planning action so it can run from the supplied topic and report
 `blocked` with the missing decisions when it needs input. In both modes the
 first action supplies the same `pass_state_keys` for the later steps.
 
-Before anything starts, `:workflow` lists the planning action and each step with
-a **profile** field. Use `tab` or `j` / `k` to move between steps and `h` / `l`
+Before anything starts, `:workflow` lists every step and shows a **profile** field
+for each agent action. Use `tab` or `j` / `k` to move between fields and `h` / `l`
 to change a profile; the line below each field shows the resulting agent
 settings and CLI args. Press `enter` to start the workflow or `esc` to cancel
 without starting or queueing anything. Each field offers the configured
@@ -256,10 +256,10 @@ stopped in a paused queue.
    contains `commit_id`, `subject`, `spec_tasks`, and `summary`. Open the queue
    with `L` and press `P` on that step to read the full report.
 
-Each step needs a clean process exit and a valid final `success` report to
+Each agent step needs a clean process exit and a valid final `success` report to
 advance. `pass_state_keys` requires those keys in the planner's final `state`
 and copies them into `previous_state` for every background step. The workflow
-requires the final step to report every key in `result_state_keys`. Both lists
+requires the final agent to report every key in `result_state_keys`. Both lists
 default to empty. The actions define what the state values mean. Workflow steps
 use their own sequence and handoff rules, and run ahead of ordinary prompts
 queued on the same bookmark once its queue is active. The action sequence and
@@ -277,9 +277,36 @@ step with its original planning context. If the interactive planning step
 stops, resume the queue and start it again with `:workflow`.
 
 Dry-run previews on the same bookmark preserve the stopped step, its blocker
-guidance, and its place for retry. Delete the stopped queue entry before
-resuming to abandon the workflow.
-Dry-run mode shows each action's launch mode and prompt.
+guidance, and its place for retry. Dry-run mode also shows review stages and
+what each host command would run.
+
+### Human review and host commands
+
+Add `"human-review"` wherever the workflow should wait for a person to review
+the bookmark. The stage appears as **awaiting review** in `L`. Select it and
+press `enter` to open the per-commit diff review. Mark file changes with `space`
+or mark the current commit with `A`. Use `[` and `]` to move between commits. The stage completes when
+every file change in the bookmark's commits outside the main revision captured
+at workflow start is marked as reviewed. Existing marks count for matching
+commit and file changes.
+
+A `host:NAME` step runs the named `[commands]` entry. For example, to run tests
+after implementation, set `steps = ["spec-implement", "host:test"]` and define
+`test = "scripts/test.sh"` under `[commands]`. Config loading verifies command
+names and inserts a `human-review` stage wherever a host command needs one.
+The workflow checks marks while the bookmark is idle and starts the host command
+under the same launch lock.
+
+The command runs in a fresh jj workspace at the reviewed revision. It receives
+the original checkout as `SBX_REPO`, the bookmark as `SBX_BOOKMARK`, and the
+temporary checkout as `SBX_WORKSPACE`. The workspace is removed after the command
+finishes. Select the host task in `L` and press `enter` for its log. Exit code 0
+advances the workflow. Other exits pause it, and `p` retries through a review of
+the current bookmark.
+
+To end a workflow run, select its active step in `L` and press `X`. The current
+process can finish, and the workflow schedules no further steps. Ordinary queued
+tasks remain available.
 
 ## Initialization and diagnostics
 

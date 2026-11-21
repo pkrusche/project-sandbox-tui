@@ -8,6 +8,8 @@ description: Configure project-sandbox-tui container images, launch defaults, sh
 Work from the project's jj repository root. Read `.project-sandbox-tui.toml`,
 the project manifests, Dockerfile, and development instructions before choosing
 settings. Preserve the project's existing choices unless the task changes them.
+For decisions about VCS access, egress, mounts, credentials or unattended
+workflow steps, consult the companion `sbx-tui-safety` skill.
 
 ## Inspect and edit settings
 
@@ -221,8 +223,8 @@ or the first configured profile before the user has chosen one. Prefer an
 explicit `profile` for unattended work so its setup doesn't depend on the last
 interactive launch. Use a profile to set `fast` or extra CLI flags for an action.
 
-Workflows run one action after another on a bookmark. Assign each step's agent
-setup through its action:
+Workflows run agent actions, human review stages, and host commands on a bookmark.
+Assign each agent step's launch settings through its action:
 
 ```toml
 [profiles.deep]
@@ -249,22 +251,29 @@ timeout = 3600
 
 [workflows.spec]
 planning_action = "spec-plan"
-steps = ["spec-check", "spec-implement"]
+steps = ["spec-check", "spec-implement", "host:test"]
 pass_state_keys = ["spec_path"]
 ```
 
 Workflows require `feedback.enabled` (the default), and every referenced action
 must exist. Before anything starts, `:workflow NAME [TOPIC]` shows a picker with
-a profile field for the planning action and each step. Each field starts at the
+a profile field for each agent action. Each field starts at the
 action's profile, then **action settings** for an action with its own fields,
 then the launch forms' profile. The user can change any field for that run;
 choices are not remembered, so put lasting choices in the action's `profile`.
 Steps keep the settings chosen at start even if profiles change later.
 
-A `profile` naming a profile that is not configured still loads. sbx-tui warns
-when the action or workflow is used and falls back to the launch forms' profile,
-and `sbx-tui doctor` reports it under `action profiles`. Define the profile, or
-fix the name, before relying on the action.
+`host:test` runs `test` from `[commands]`. Config loading verifies the command
+name and inserts `human-review` immediately before it unless that stage already
+appears there. Add `human-review` anywhere the workflow needs to wait for review
+of the entire bookmark diff. In `L`, press `enter` on the review stage to mark
+files, or `X` to terminate the run. Host commands start in a fresh jj workspace
+of the reviewed revision. Use `"$SBX_WORKSPACE"` for the checkout path.
+
+When a named profile is missing, sbx-tui asks before a direct action uses the
+fallback profile. The workflow picker lets the owner choose a replacement for
+each affected step. `sbx-tui doctor` lists missing references under `action
+profiles`. Fix the name before relying on the action for unattended work.
 
 For host commands, use quoted environment variables such as `"$SBX_WORKSPACE"`.
 `ui.host_agent_command` customizes `I`, the interactive host agent shortcut,

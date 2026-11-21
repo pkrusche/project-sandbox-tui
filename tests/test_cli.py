@@ -260,9 +260,12 @@ def test_init_installs_local_skills_and_preserves_edits_on_rerun(
     ignore = repo / ".gitignore"
     ignore.write_text("# keep this rule\ncache/")  # no final newline
     assert main([str(repo), "--init"]) == 0
-    paths = [repo / root / "skills/sbx-tui-config/SKILL.md" for root in (".agents", ".claude")]
-    assert paths[0].read_text() == paths[1].read_text()
-    assert paths[0].read_text().startswith("---\nname: sbx-tui-config\n")
+    paths = []
+    for name in ("sbx-tui-config", "sbx-tui-safety"):
+        copies = [repo / root / "skills" / name / "SKILL.md" for root in (".agents", ".claude")]
+        assert copies[0].read_text() == copies[1].read_text()
+        assert copies[0].read_text().startswith(f"---\nname: {name}\n")
+        paths.extend(copies)
     ignored = ignore.read_text()
     assert ignored.startswith("# keep this rule\ncache/\n")
     # Real jj snapshot: our skills are local, other skills remain trackable.

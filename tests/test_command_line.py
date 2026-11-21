@@ -79,7 +79,7 @@ def test_init_sets_up_repository_and_reloads_configuration(
         assert not config.global_config_path().exists()
         assert "feedback:start" in (repo / "AGENTS.md").read_text()
         for root in (".agents", ".claude"):
-            for skill in ("sbx-tui-config", "sbx-run-feedback"):
+            for skill in ("sbx-tui-config", "sbx-tui-safety", "sbx-run-feedback"):
                 assert (repo / root / "skills" / skill / "SKILL.md").is_file()
         if not catalog_exists:
             await wait_until(pilot, lambda: "models: offline" in messages(app))
@@ -553,6 +553,38 @@ def test_each_runs_in_every_selected_workspace(repo: Path, fake_cfg: Callable[..
     run_app(repo, fake_cfg(), scenario)
 
 
+def test_host_task_checks_ownership_and_starts_under_launch_lock(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fcntl
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        mark(app, "feature/x")
+        path = app._workspace_dir("feature/x")
+        path.mkdir(parents=True)
+        started = []
+
+        def start(name, line, script, cwd, env):
+            with (
+                (app.jobs.state_dir / "jobs.lock").open("a") as lock,
+                pytest.raises(BlockingIOError),
+            ):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            started.append(cwd)
+
+        monkeypatch.setattr(app.tasks, "start", start)
+        await app.run_command(":*!true")
+        await wait_until(
+            pilot, lambda: "not a workspace of this repository" in " ".join(messages(app))
+        )
+        assert not started
+        path.rmdir()
+        await app.run_command(":*!true")
+        assert started == [path]
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_each_cancel_and_leader(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     from tests.test_app import wait_until
 
@@ -777,12 +809,21 @@ def test_action_profile_and_remembered_fallback(
         argv = await run(app, pilot, ":check")
         assert app.jobs.jobs["feature/x"].spec.profile == "fast" and "--fast-flag" in argv
 
-        argv = await run(app, pilot, ":broken")
-        assert any(
-            "actions.broken refers to unknown profile 'gone'; using fast" in m
-            for m in messages(app)
-        )
-        assert app.jobs.jobs["feature/x"].spec.profile == "fast" and "--fast-flag" in argv
+        await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
+        previous = app.jobs.jobs["feature/x"].run_id
+        await app.run_command(":broken")
+        confirm = await wait_for_screen(app, pilot, ConfirmScreen)
+        assert "unknown profile 'gone'" in confirm.body and "Use fast" in confirm.body
+        assert "--fast-flag" in confirm.body
+        await pilot.press("n")
+        assert app.jobs.jobs["feature/x"].run_id == previous
+        assert not app.queue.get("feature/x").tasks
+        await app.run_command(":broken")
+        await wait_for_screen(app, pilot, ConfirmScreen)
+        await pilot.press("y")
+        await wait_until(pilot, lambda: app.jobs.jobs["feature/x"].run_id != previous)
+        assert app.jobs.jobs["feature/x"].spec.profile == "fast"
+        assert "--fast-flag" in app.jobs.jobs["feature/x"].argv
 
         # Action runs leave the launch forms' remembered profile alone.
         await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)

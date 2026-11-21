@@ -34,8 +34,9 @@ class SeenFiles:
         self.marks: list[str] = self._read()  # keys, oldest first
 
     @classmethod
-    def for_repo(cls, repo: Path) -> SeenFiles:
-        return cls(repo_state_dir(repo) / "diff_review.json")
+    def for_repo(cls, repo: Path, *, review_size: int = 0) -> SeenFiles:
+        # Keep enough marks to complete even a review larger than the usual cap.
+        return cls(repo_state_dir(repo) / "diff_review.json", max(MAX_MARKS, review_size))
 
     def _read(self) -> list[str]:
         try:

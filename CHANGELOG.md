@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- The setup wizard uses the new `sbx-tui-safety` skill to discuss sandbox
+  access for each task. Initialization and bookmark workspaces install it
+  alongside `sbx-tui-config`.
 - `sbx-setup-wizard` interviews the project owner with an installed host agent
   to set up profiles, actions and workflows. Profile agents come from launcher
   discovery with their sources (host credentials, token login, agent gateway),
@@ -39,12 +42,16 @@ All notable changes to this project are documented in this file.
   into an interactive session or workspace editor. The project config includes
   a spec-to-implementation workflow with checks and a structured commit summary.
   Each bookmark runs one workflow at a time.
+- Workflow steps can wait for human review or run a named host command after
+  review. The prompt queue opens the bookmark diff, shows host command logs,
+  and supports terminating the current workflow with `X`.
 - Agent actions accept `profile = "NAME"` to run with a saved agent profile,
   including its CLI args; it cannot be combined with the action's own `agent`,
   `model` or `effort`. Actions that set neither now use the profile the `i` / `r`
   launch forms would select (the first profile before any choice), including its
-  CLI args or the remembered Custom CLI args. A missing profile warns and falls
-  back to that choice, and `doctor` lists actions with unknown profiles.
+  CLI args or the remembered Custom CLI args. A missing named profile prompts
+  for confirmation before a direct action uses the fallback. `doctor` lists
+  actions with unknown profiles.
 - `:workflow` now shows a picker with a profile for the planning action and each
   step before starting; `enter` starts, `esc` cancels. Fields start at the
   action's profile or own agent settings, else the launch forms' profile, and
@@ -89,6 +96,12 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Sandbox launches reject arguments that redirect a workspace outside its
+  reservation. Dry-run launches preview host-side bookmark preparation, and a
+  shared `--dry-run` leaves pending queue entries available for a live run.
+- Config edits preserve file permissions. A stale trust prompt cannot replace
+  a newer approval. Workspace cleanup requires a fresh selection when the files
+  at risk change after review.
 - Concurrent TUIs and `sbx-tui config` edits no longer overwrite each other's
   launch defaults, host commands, or config and profile changes.
 - Durable state files also sync their directory after replacement, so a completed

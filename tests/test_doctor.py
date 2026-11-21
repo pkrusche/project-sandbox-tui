@@ -128,7 +128,7 @@ def test_outside_a_repository_and_main(
 ) -> None:
     monkeypatch.setattr(doctor, "run", runner({**HEALTHY, "project-sandbox --version": None}))
     monkeypatch.setattr(doctor.shutil, "which", lambda c: f"/bin/{c}")
-    monkeypatch.setattr(doctor, "runtime_cli", lambda runtime: "docker")
+    monkeypatch.setattr(doctor, "runtime_cli", lambda runtime, which: "docker")
     assert doctor.main(tmp_path) == 1
     out = capsys.readouterr().out
     assert "! repository:" in out and "✗ project-sandbox" in out
@@ -149,7 +149,7 @@ def test_warnings_do_not_fail_doctor(
 ) -> None:
     monkeypatch.setattr(doctor, "run", runner(HEALTHY))
     monkeypatch.setattr(doctor.shutil, "which", lambda cmd: f"/bin/{cmd}")
-    monkeypatch.setattr(doctor, "runtime_cli", lambda runtime: "docker")
+    monkeypatch.setattr(doctor, "runtime_cli", lambda runtime, which: "docker")
     assert doctor.main(tmp_path) == 0
     out = capsys.readouterr().out
     assert "! repository:" in out and "all good" in out
@@ -251,7 +251,11 @@ def test_discovered_capabilities_are_reported(repo: Path) -> None:
 
 def test_failed_discovery_warns_and_uses_builtin_lists(repo: Path) -> None:
     responses = {**HEALTHY, "project-sandbox --help": (2, "boom")}
-    checks = by_name(doctor.run_checks(repo, runner=runner(responses), which=lambda c: f"/bin/{c}"))
+    checks = by_name(
+        doctor.run_checks(
+            repo, runner=runner(responses), which=lambda c: c if c == "docker" else None
+        )
+    )
     assert checks["launcher capabilities"].status == "warn"
     assert "built-in lists" in checks["launcher capabilities"].detail
     assert "container runtime" in checks  # fallback runtime probe
@@ -275,7 +279,9 @@ def test_doctor_probe_timeout_still_reports_other_checks(repo: Path) -> None:
         "project-sandbox doctor --json": (124, "timed out after 60s"),
         "docker info": (0, "Server Version: 27"),
     }
-    checks = doctor.run_checks(repo, runner=runner(responses), which=lambda c: f"/bin/{c}")
+    checks = doctor.run_checks(
+        repo, runner=runner(responses), which=lambda c: "/bin/docker" if c == "docker" else None
+    )
     named = by_name(checks)
     warnings = [c for c in checks if c.name == "launcher capabilities" and c.status == "warn"]
     assert any("timed out" in c.detail for c in warnings)

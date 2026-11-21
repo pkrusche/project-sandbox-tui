@@ -254,3 +254,13 @@ def test_concurrent_edits_preserve_distinct_keys_and_trust(repo: Path) -> None:
         list(pool.map(change, range(12)))
     assert config.load(repo).commands == expected
     assert not config.ProjectTrust.check(repo).needs_review
+
+
+@pytest.mark.parametrize("scope", ["project", "global"])
+def test_edit_preserves_private_config_permissions(repo: Path, scope: config.ConfigScope) -> None:
+    editor = s.Editor(scope, repo)
+    editor.path.parent.mkdir(parents=True, exist_ok=True)
+    editor.path.write_text("# private\n")
+    editor.path.chmod(0o600)
+    editor.set(s.parse_key("defaults.agent"), "codex")
+    assert editor.path.stat().st_mode & 0o777 == 0o600

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import shlex
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -9,15 +10,20 @@ from typing import Any
 import pytest
 
 from project_sandbox_tui import feedback
+from project_sandbox_tui import queue as queue_module
 from project_sandbox_tui.app import SandboxTUI
 from project_sandbox_tui.config import Action, Config, ConfigError, Workflow, from_dict
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord
 from project_sandbox_tui.queue import TaskQueue, WorkflowRun
+from project_sandbox_tui.review import SeenFiles
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.dialogs import ConfirmScreen, MessageScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.queue import QueueScreen
+from project_sandbox_tui.screens.review import CommitReviewScreen
 from project_sandbox_tui.screens.workflow import WorkflowProfilesScreen
+from project_sandbox_tui.vcs import JjBackend, workspace_path
+from tests.conftest import jj, wait_for
 from tests.test_app import run_app, wait_for_screen, wait_until
 from tests.test_feedback import finish, spec
 
@@ -334,6 +340,212 @@ def test_workflow_config_requires_existing_actions_and_feedback() -> None:
         cfg.validate()
 
 
+def test_workflow_config_inserts_a_review_before_each_host_command() -> None:
+    cfg = from_dict(
+        {
+            "actions": {"plan": {"prompt": "Plan"}, "implement": {"prompt": "Implement"}},
+            "commands": {"test": "scripts/test.sh", "e2e": "scripts/e2e-test.sh"},
+            "workflows": {
+                "spec": {
+                    "planning_action": "plan",
+                    "steps": ["human-review", "host:test", "host:e2e", "implement", "host:test"],
+                },
+            },
+        }
+    )
+    cfg.validate()
+    cfg.validate()
+    assert cfg.workflows["spec"].steps == [
+        "human-review",
+        "host:test",
+        "human-review",
+        "host:e2e",
+        "implement",
+        "human-review",
+        "host:test",
+    ]
+    del cfg.commands["e2e"]
+    with pytest.raises(ConfigError, match="unknown host command 'e2e'"):
+        cfg.validate()
+
+
+@pytest.mark.parametrize("terminate", ["", "review", "host"])
+def test_workflow_review_gate_from_the_task_list(
+    repo: Path, fake_cfg: Callable[..., Config], tmp_path: Path, terminate: str
+) -> None:
+    branch = "feature/x"
+    jj(repo, "new", branch)
+    (repo / "c.txt").write_text("c\n")
+    jj(repo, "bookmark", "move", branch, "--to", "@")
+    jj(repo, "new", "main")
+    workspace = workspace_path(repo, branch, None)
+    JjBackend(repo).add_workspace(branch, workspace)
+    (workspace / "agent-only.txt").write_text("workspace-only content\n")
+    cfg = fake_cfg(deploy_config_skill=False)
+    cfg.actions = {
+        "plan": Action('report:success report-state:{"plan":"ready"}'),
+        "finish": Action("report:success"),
+    }
+    script = (
+        'set -e; test "$PWD" = "$SBX_WORKSPACE"; test "$SBX_BOOKMARK" = feature/x; '
+        "test ! -e agent-only.txt; jj root; cat b.txt c.txt"
+    )
+    release = tmp_path / "release-host-command"
+    if terminate == "host":
+        script += f"; while test ! -e {shlex.quote(str(release))}; do sleep 0.05; done"
+    cfg.commands = {"test": script}
+    cfg.workflows = {
+        "spec": Workflow("plan", ["host:test", "finish"], ["plan"], first_step_interactive=False),
+    }
+    cfg.validate()
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")
+        await start_workflow(app, pilot, ":workflow spec")
+        await wait_until(pilot, lambda: bool(app.queue.get(branch).tasks))
+        await wait_until(pilot, lambda: app.queue.get(branch).tasks[0].human_review)
+        review_task = app.queue.get(branch).tasks[0]
+        await pilot.press("L")
+        screen = await wait_for_screen(app, pilot, QueueScreen)
+        assert str(screen.table.get_cell(review_task.id, "status")) == "awaiting review"
+        await pilot.press("enter")
+        await wait_for_screen(app, pilot, CommitReviewScreen)
+        await pilot.press("space", "q")
+        await app.refresh_data()
+        assert not app.tasks.for_bookmark(branch)
+        assert app.queue.get(branch).tasks[0].id == review_task.id
+
+        if terminate == "review":
+            await pilot.press("X")
+            assert app.queue.get(branch).history[-1].status == "terminated"
+            assert not app.queue.get(branch).workflow_in_progress()
+            await pilot.press("u", "p")
+            backend = app.backend
+            SeenFiles.for_repo(repo).mark(
+                backend.review_file_keys(
+                    backend._bookmark_commit("main"), backend._bookmark_commit(branch)
+                ),
+                True,
+            )
+            await app.refresh_data()
+            assert not app.queue.get(branch).tasks and not app.tasks.for_bookmark(branch)
+            return
+
+        await pilot.press("enter")
+        await wait_for_screen(app, pilot, CommitReviewScreen)
+        await pilot.press("right_square_bracket", "space", "q")
+        if terminate == "host":
+            await wait_until(pilot, lambda: app.queue.get(branch).history[-1].status == "running")
+            host = app.queue.get(branch).history[-1]
+            assert host.host_task
+            await wait_until(pilot, lambda: host.id in screen.visible_ids())
+            screen.table.move_cursor(row=screen.visible_ids().index(host.id))
+            await pilot.press("X")
+            assert app.queue.get(branch).history[-1].terminated
+            assert str(screen.table.get_cell(host.id, "flow")) == "×"
+            assert app.queue.get(branch).history[-1].status == "running"
+            release.touch()
+            await wait_until(pilot, lambda: app.queue.get(branch).history[-1].status == "completed")
+            assert app.queue.get(branch).history[-1].id == host.id
+            assert not app.queue.get(branch).tasks
+            return
+
+        await wait_until(
+            pilot, lambda: app.queue.get(branch).history[-1].decision == "workflow complete"
+        )
+        plan, review, host, last = app.queue.get(branch).history
+        assert review.status == "reviewed" and review.parent_task == plan.id
+        assert host.host_task and host.host_task.exit_code == 0 and host.parent_task == review.id
+        assert Path(host.host_task.out_path).read_text().endswith("b\nc\n")
+        assert not Path(host.host_task.cwd).exists()
+        assert last.job and last.parent_task == host.id
+        context = feedback.read_json(Path(last.job.feedback_path).parents[1] / "context.json")
+        assert context["previous_state"] == {"plan": "ready"}
+
+    run_app(repo, cfg, scenario)
+
+
+def test_host_command_adoption_and_retry_recheck_the_bookmark(
+    repo: Path, fake_cfg: Callable[..., Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    branch = "feature/x"
+    cfg = fake_cfg()
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    backend = JjBackend(repo)
+    counter = tmp_path / "host-runs"
+    path = shlex.quote(str(counter))
+    script = f"if test -e {path}; then echo again >> {path}; else echo first > {path}; exit 7; fi"
+    base = backend._bookmark_commit("main")
+    workflow = WorkflowRun(
+        "spec", "plan", [("human-review", None), ("host:test", script)], [], [], review_base=base
+    )
+    queue.add(spec(branch=branch), workflow=workflow)
+
+    def dispatch() -> list[JobRecord]:
+        return queue.dispatch(jobs, lambda: {}, lambda _: None)
+
+    def mark_reviewed() -> None:
+        tip = backend._bookmark_commit(branch)
+        SeenFiles.for_repo(repo).mark(backend.review_file_keys(base, tip), True)
+
+    assert len(dispatch()) == 1
+    finish(jobs, branch)
+    assert not dispatch()
+    assert queue.get(branch).tasks[0].human_review
+    jj(repo, "bookmark", "move", "main", "--to", branch)
+    assert not dispatch()
+    assert queue.get(branch).tasks[0].human_review and not counter.exists()
+    mark_reviewed()
+    with jobs.interactive(LaunchSpec(branch, "claude"), {}) as agent:
+        assert not dispatch()
+        assert not counter.exists()
+        agent.exit_code = 0
+
+    real_write = queue_module.write_state
+
+    def fail_queue_write(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == queue.journal:
+            raise OSError("lost queue transaction")
+        real_write(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(queue_module, "write_state", fail_queue_write)
+        with pytest.raises(OSError, match="lost queue transaction"):
+            dispatch()
+
+    queue = TaskQueue(jobs.state_dir)
+    assert not dispatch()
+
+    def stopped() -> bool:
+        dispatch()
+        return queue.get(branch).paused
+
+    wait_for(stopped)
+    failed = queue.get(branch).history[-1]
+    assert failed.host_task and failed.host_task.exit_code == 7
+    assert counter.read_text() == "first\n"
+
+    # A new commit after the failed command must be reviewed before retry.
+    jj(repo, "new", branch)
+    (repo / "c.txt").write_text("new since the review\n")
+    jj(repo, "bookmark", "move", branch, "--to", "@")
+    jj(repo, "new", "main")
+    queue.pause(branch, False)
+    assert not dispatch()
+    assert queue.get(branch).tasks[0].human_review
+    assert counter.read_text() == "first\n"
+    mark_reviewed()
+
+    def complete() -> bool:
+        dispatch()
+        return queue.get(branch).history[-1].decision == "workflow complete"
+
+    wait_for(complete)
+    assert queue.get(branch).history[-1].attempt == 2
+    assert counter.read_text() == "first\nagain\n"
+
+
 @pytest.mark.parametrize("interactive", [False, True])
 def test_invalid_rendered_step_leaves_the_queue_usable(
     repo: Path, fake_cfg: Callable[..., Config], interactive: bool
@@ -506,9 +718,12 @@ def test_workflow_picker_overrides_are_snapshotted_and_not_remembered(
 
         app.queue.load()
         planner = app.queue.get(branch).tasks[0]
+        assert planner.spec is not None
         assert planner.spec.profile == "deep" and planner.spec.extra_args == ["--memory=16g"]
         assert planner.workflow is not None
-        steps = {name: step for name, step in planner.workflow.next_steps}
+        steps = {
+            name: step for name, step in planner.workflow.next_steps if isinstance(step, LaunchSpec)
+        }
         assert steps["implement"].profile == "fast"
         assert steps["check"].profile == "" and steps["check"].effort == "low"
 

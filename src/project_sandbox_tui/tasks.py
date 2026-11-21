@@ -15,6 +15,8 @@ import contextlib
 import fcntl
 import json
 import os
+import re
+import shutil
 import signal
 import subprocess
 import time
@@ -29,6 +31,7 @@ from project_sandbox_tui.config import private_dir
 from project_sandbox_tui.jobs import SIGINT_EXITS, _now, _parse_ts, branch_slug
 from project_sandbox_tui.processes import reap_later
 from project_sandbox_tui.sandbox import pid_alive
+from project_sandbox_tui.vcs import JjBackend, VcsError
 
 KEEP = 10  # records per bookmark
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGKILL)
@@ -58,6 +61,9 @@ class TaskRecord:
     exit_code: int | None = None
     ended_at: str = ""
     notified: bool = False
+    workflow_repo: str = ""
+    review_base: str = ""
+    review_target: str = ""
 
     @property
     def running(self) -> bool:
@@ -99,6 +105,11 @@ class TaskRecord:
             task.exit_code = None
         task.ended_at = task.ended_at if isinstance(task.ended_at, str) else ""
         task.notified = task.notified is True
+        if not all(
+            isinstance(value, str)
+            for value in (task.workflow_repo, task.review_base, task.review_target)
+        ) or (task.workflow_repo and not re.fullmatch(r"workflow-[0-9a-f]+", task.id)):
+            raise ValueError("invalid workflow repository")
         return task
 
 
@@ -211,49 +222,124 @@ class TaskManager:
     ) -> TaskRecord:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
         task_id = f"{branch_slug(bookmark)}-{stamp}-{uuid.uuid4().hex[:8]}"
-        out = self.logs_dir / f"{task_id}.task.out"
-        exit_file = self.logs_dir / f"{task_id}.task.exit"
         with self._locked():
             self.load()
-            private_dir(self.logs_dir)
+            return self._start_locked(task_id, bookmark, line, script, cwd, env)
+
+    def workflow_task(self, review_id: str) -> TaskRecord | None:
+        """Find a host command started before its queue transaction committed."""
+        with self._locked():
+            self.load()
+            return self.tasks.get(f"workflow-{review_id}")
+
+    def start_workflow(
+        self,
+        review_id: str,
+        bookmark: str,
+        name: str,
+        script: str,
+        repo: Path,
+        base: str,
+        target: str,
+    ) -> TaskRecord:
+        """Run a reviewed revision in a full checkout separate from agent files."""
+        task_id = f"workflow-{review_id}"
+        checkout = self.state_dir / "workflow-workspaces" / task_id
+        with self._locked():
+            self.load()
+            if previous := self.tasks.get(task_id):
+                return previous
+            if checkout.exists():
+                raise ValueError(f"incomplete host command launch in {checkout}")
+            backend = JjBackend(repo)
+            private_dir(checkout.parent)
             try:
-                with out.open("wb") as stream:
-                    proc = subprocess.Popen(
-                        ["sh", "-c", WRAPPER, "sbx-task", script, str(exit_file)],
-                        cwd=cwd,
-                        env=dict(env),
-                        stdin=subprocess.DEVNULL,
-                        stdout=stream,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,  # survives the TUI; own group for cancel()
-                    )
-            except OSError:
-                out.unlink(missing_ok=True)
+                backend.add_workspace(target, checkout, pinned=True)
+                env = {
+                    **os.environ,
+                    "SBX_REPO": str(repo),
+                    "SBX_BOOKMARK": bookmark,
+                    "SBX_WORKSPACE": str(checkout),
+                }
+                return self._start_locked(
+                    task_id,
+                    bookmark,
+                    name,
+                    script,
+                    checkout,
+                    env,
+                    workflow_repo=str(repo),
+                    review_base=base,
+                    review_target=target,
+                )
+            except (OSError, VcsError):
+                with contextlib.suppress(OSError, VcsError):
+                    self._remove_checkout(task_id, repo)
                 raise
-            task = TaskRecord(
-                id=task_id,
-                bookmark=bookmark,
-                line=line,
-                script=script,
-                cwd=str(cwd),
-                pid=proc.pid,
-                started_at=_now(),
-                out_path=str(out),
-                exit_path=str(exit_file),
-            )
-            self._procs[task_id] = proc
-            self.tasks[task_id] = task
-            try:
-                self.save(task)
-            except OSError:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
-                self._forget(task)
-                raise
-            reap_later(proc)
-            self._prune(bookmark)
-            return task
+
+    def _remove_checkout(self, task_id: str, repo: Path) -> None:
+        checkout = self.state_dir / "workflow-workspaces" / task_id
+        if checkout.is_dir():
+            JjBackend(repo).forget_workspace(task_id)
+            shutil.rmtree(checkout)
+
+    def _start_locked(
+        self,
+        task_id: str,
+        bookmark: str,
+        line: str,
+        script: str,
+        cwd: Path,
+        env: Mapping[str, str],
+        *,
+        workflow_repo: str = "",
+        review_base: str = "",
+        review_target: str = "",
+    ) -> TaskRecord:
+        out = self.logs_dir / f"{task_id}.task.out"
+        exit_file = self.logs_dir / f"{task_id}.task.exit"
+        private_dir(self.logs_dir)
+        try:
+            with out.open("wb") as stream:
+                proc = subprocess.Popen(
+                    ["sh", "-c", WRAPPER, "sbx-task", script, str(exit_file)],
+                    cwd=cwd,
+                    env=dict(env),
+                    stdin=subprocess.DEVNULL,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,  # survives the TUI; own group for cancel()
+                )
+        except OSError:
+            out.unlink(missing_ok=True)
+            raise
+        task = TaskRecord(
+            id=task_id,
+            bookmark=bookmark,
+            line=line,
+            script=script,
+            cwd=str(cwd),
+            pid=proc.pid,
+            started_at=_now(),
+            out_path=str(out),
+            exit_path=str(exit_file),
+            workflow_repo=workflow_repo,
+            review_base=review_base,
+            review_target=review_target,
+        )
+        self._procs[task_id] = proc
+        self.tasks[task_id] = task
+        try:
+            self.save(task)
+        except OSError:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            self._forget(task)
+            raise
+        reap_later(proc)
+        self._prune(bookmark)
+        return task
 
     def _read_exit(self, task: TaskRecord) -> int | None:
         try:
@@ -313,6 +399,9 @@ class TaskManager:
                 self._procs.pop(task.id, None)
                 self._stop_stage.pop(task.id, None)
                 self._stop_last.pop(task.id, None)
+            if task.workflow_repo and not task.running:
+                with contextlib.suppress(OSError, VcsError):
+                    self._remove_checkout(task.id, Path(task.workflow_repo))
             if not task.notified:
                 out.append(task)
         for bookmark in {task.bookmark for task in self.tasks.values()}:
@@ -338,14 +427,18 @@ class TaskManager:
 
     # ------------------------------------------------------------ cancelling
 
-    def cancel(self, bookmark: str) -> list[str]:
+    def cancel(self, bookmark: str, *, only: set[str] | None = None) -> list[str]:
         """Escalate on each call, as for sandbox runs: SIGINT → SIGTERM → SIGKILL.
 
         Returns a message per running task of ``bookmark``; finished ones are
         left alone (they are history, not status)."""
         with self._locked():
             self.load()
-            return [self._signal(task) for task in self.running(bookmark)]
+            return [
+                self._signal(task)
+                for task in self.running(bookmark)
+                if only is None or task.id in only
+            ]
 
     def cancel_task(self, task_id: str) -> str:
         """Escalate one task's cancel; a finished task's record and output are forgotten."""
@@ -356,6 +449,8 @@ class TaskManager:
                 return "task already forgotten"
             if task.running:
                 return self._signal(task)
+            if task.workflow_repo and not task.notified:
+                return "waiting for the workflow to record this host command"
             self._forget(task)
             return f"{task.bookmark}: :{task.line} forgotten"
 

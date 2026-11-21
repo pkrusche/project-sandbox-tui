@@ -20,7 +20,8 @@ from textual.widgets import Button, Checkbox, Label, Select, SelectionList, Text
 
 from project_sandbox_tui import capabilities
 from project_sandbox_tui.capabilities import Capabilities
-from project_sandbox_tui.config import ConfigError, load
+from project_sandbox_tui.config import SAFETY_SKILL, ConfigError, load
+from project_sandbox_tui.initialization import skill_template
 from project_sandbox_tui.vcs import VcsError, detect
 
 HOST_AGENTS = {
@@ -72,6 +73,11 @@ and internet egress it needs, including required domains, and map the choices to
 profile extra_args using only the modes listed above. Ask how I plan, implement,
 test and review changes, then suggest actions and workflow steps grounded in the
 project's own commands.
+
+Use the bundled safety skill below to discuss the scenarios that apply. It is
+included here so you can use it before this project has been initialized.
+
+{skill_template(SAFETY_SKILL)}
 
 Summarize the proposed project configuration for my review. Once we agree, apply it,
 preserving existing settings. Use sbx-tui --init if initialization is needed and

@@ -1809,6 +1809,41 @@ def test_cancel_selected_runs(
     run_app(repo, fake_cfg(), scenario)
 
 
+def test_cancel_confirmation_skips_replacement_runs_and_new_tasks(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from project_sandbox_tui.jobs import JobRecord
+    from project_sandbox_tui.sandbox import LaunchSpec
+    from project_sandbox_tui.tasks import TaskRecord
+
+    signals = []
+    monkeypatch.setattr("os.killpg", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr("project_sandbox_tui.jobs.pid_alive", lambda pid: True)
+    monkeypatch.setattr("project_sandbox_tui.tasks.pid_alive", lambda pid: True)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        name = "feature/x"
+        stamp = "2026-01-01T00:00:00Z"
+        job = JobRecord(name, LaunchSpec(name, "bash", mode="background"), 1000001, stamp)
+        task = TaskRecord("first", name, "test", "true", str(repo), 1000002, stamp, "", "")
+        app.jobs.save(job)
+        app.tasks.save(task)
+        await app.refresh_data()
+        app.marked = [name]
+        await pilot.press("x")
+        await wait_for_screen(app, pilot, ConfirmScreen)
+        app.jobs.save(replace(job, run_id="replacement", pid=1000003))
+        app.tasks.save(replace(task, id="second", pid=1000004))
+        await pilot.press("y")
+        assert signals == [(task.pid, signal.SIGINT)]
+        assert app.jobs.jobs[name].run_id == "replacement"
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_open_selected_workspaces(
     repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1851,7 +1886,7 @@ def test_open_selected_workspaces(
         assert (missing_path / ".agents/skills/sbx-tui-config/SKILL.md").is_file()
         assert not (feature_path / ".agents").exists()
         assert any(
-            "feature/x: sbx-tui-config not deployed" in str(n.message) for n in app._notifications
+            "feature/x: cannot verify workspace" in str(n.message) for n in app._notifications
         )
 
         # A registered workspace whose directory is gone is reported, not opened.
@@ -2041,6 +2076,32 @@ def test_cleanup_workspaces_key(repo: Path, fake_cfg: Callable[..., Config]) -> 
 
     run_app(repo, fake_cfg(), scenario)
     assert "feature/x" in run("jj", "bookmark", "list", cwd=repo)
+
+
+@pytest.mark.parametrize("operation", ["merge", "rebase", ""])
+def test_launch_preview_skips_host_bookmark_changes(
+    repo: Path, fake_cfg: Callable[..., Config], operation: str
+) -> None:
+    from project_sandbox_tui.sandbox import LaunchSpec
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        before = jj(repo, "op", "log", "--limit=1", "--no-graph", "-T", "id")
+        spec = LaunchSpec(
+            "planned",
+            "bash",
+            operation=operation,
+            base="main",
+            inputs=["main", "feature/x"],
+            extra_args=["--dry-run"],
+        )
+        app._launch_chosen(spec, new_branch_start=None if operation else "feature/x")
+        screen = await wait_for_screen(app, pilot, MessageScreen)
+        assert f"Would {operation or 'create bookmark'}" in screen.body
+        assert "--branch=planned" in screen.body
+        assert jj(repo, "op", "log", "--limit=1", "--no-graph", "-T", "id") == before
+        assert not app.jobs.jobs
+
+    run_app(repo, fake_cfg(), scenario)
 
 
 def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -> None:
@@ -2970,7 +3031,7 @@ def test_forgetting_a_finished_run_records_its_outcome(
         await wait_until(pilot, lambda: bool(app.jobs.refresh({})) or not job.running)
         assert job.status == "completed"
         # x before any refresh recorded the outcome: the record goes, the outcome stays.
-        app._cancel(["feature/x"])
+        await pilot.press("j", "x")
         assert "feature/x" not in app.jobs.jobs
         assert app.graph.state.history("feature/x")[0].status == "completed"
 
@@ -2996,7 +3057,8 @@ def test_workspace_creation_rechecks_sessions(repo: Path, fake_cfg: Callable[...
         }
         sessions_dir().mkdir(parents=True, exist_ok=True)
         (sessions_dir() / "s1.json").write_text(json.dumps(record))
-        assert app._ensure_workspace("feature/x") is None  # its session creates it
+        with app.jobs._locked():
+            assert app._ensure_workspace_locked("feature/x") is None  # its session creates it
         assert not path.exists()
 
     run_app(repo, fake_cfg(), scenario)
