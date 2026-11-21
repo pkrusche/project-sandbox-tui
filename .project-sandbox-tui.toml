@@ -108,27 +108,6 @@ rv = "review"
 rc = "check"
 re = "e2e"
 
-[profiles.codex-high-fast]
-agent = "codex"
-model = "gpt-6-astra"
-effort = "high"
-fast = true
-extra_args = []
-
-[profiles.codex-sol-fast]
-agent = "codex"
-model = "gpt-6.1-sol"
-effort = "high"
-fast = true
-extra_args = []
-
-[profiles.codex-luna-fast]
-agent = "codex"
-model = "gpt-6-luna"
-effort = "high"
-fast = true
-extra_args = []
-
 [profiles.chores]
 agent = "codex"
 model = "gpt-6-luna"
