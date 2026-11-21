@@ -43,6 +43,9 @@ full "commit_id", a short plain-text "summary", "complexity" ("l", "m" or "h"
 based on how much context review requires) and a JSON boolean "harmful".
 Look for potential data loss, removed functionality and weakened safeguards.
 When "harmful" is true, include a short plain-text "harm_reason".
+Optionally include "priority_files", an array of changed files that deserve
+review first. Use exact repository-relative paths from this patch (the new
+path for a rename or copy), without diff prefixes. Omit routine changes.
 Omit commits whose patch is too large or lacks enough information to assess
 reliably. Keep entries brief so the report fits the feedback size limit.
 
@@ -183,6 +186,7 @@ class Assessment:
     complexity: str
     harmful: bool
     harm_reason: str
+    priority_files: frozenset[str] = frozenset()
 
 
 def _collect(
@@ -224,7 +228,15 @@ def _collect(
             and type(harmful) is bool
             and (not harmful or reason)
         ):
-            assessments[commit_id] = Assessment(summary, complexity.upper(), harmful, reason)
+            paths = entry.get("priority_files")
+            priority_files = (
+                frozenset(path for path in paths if isinstance(path, str) and path)
+                if isinstance(paths, list)
+                else frozenset()
+            )
+            assessments[commit_id] = Assessment(
+                summary, complexity.upper(), harmful, reason, priority_files
+            )
     return assessments
 
 

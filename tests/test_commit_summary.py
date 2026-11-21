@@ -153,8 +153,8 @@ def test_collect_only_unique_valid_requested_entries(tmp_path: Path) -> None:
     valid = {"summary": "[bold]Plain[/bold]", "complexity": "m", "harmful": False}
     reason = {"harmful": True, "harm_reason": "Could delete data"}
     entries = [
-        {"commit_id": "a" * 40, **valid},
-        {"commit_id": "b" * 40, **valid, **reason},
+        {"commit_id": "a" * 40, **valid, "priority_files": "not-an-array"},
+        {"commit_id": "b" * 40, **valid, **reason, "priority_files": ["a b", "a b", None, []]},
         {"commit_id": "c" * 40, **valid},
         {"commit_id": "c" * 40},
         {"commit_id": "d" * 40, **valid, "complexity": []},
@@ -169,7 +169,9 @@ def test_collect_only_unique_valid_requested_entries(tmp_path: Path) -> None:
     path = root / "output/feedback.json"
     assert summary._collect(path, "review", commits, 0) == {
         "a" * 40: summary.Assessment("[bold]Plain[/bold]", "M", False, ""),
-        "b" * 40: summary.Assessment("[bold]Plain[/bold]", "M", True, "Could delete data"),
+        "b" * 40: summary.Assessment(
+            "[bold]Plain[/bold]", "M", True, "Could delete data", frozenset({"a b"})
+        ),
     }
     with pytest.raises(summary.SummaryError, match="status 7"):
         summary._collect(path, "review", commits, 7)

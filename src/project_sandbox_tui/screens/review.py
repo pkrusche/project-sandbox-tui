@@ -132,12 +132,15 @@ class DiffReviewScreen(Screen[ReviewPosition]):
     def position(self) -> ReviewPosition:
         return ReviewPosition(row=self.current_row or 0)
 
+    def _file_cell(self, change: FileChange) -> Text:
+        return Text(change.display, style="dim" if change.key in self.seen else "")
+
     def _cells(self, change: FileChange) -> tuple[Text, ...]:
         seen = change.key in self.seen
         return (
             Text("✓", style="green") if seen else Text("●", style="bold"),
             Text(change.status, style=STATUS_STYLES.get(change.status, "")),
-            Text(change.display, style="dim" if seen else ""),
+            self._file_cell(change),
             lines_cell(change),
             size_cell(change),
         )
@@ -219,7 +222,11 @@ class CommitReviewScreen(DiffReviewScreen):
 
     DEFAULT_CSS = """
     CommitReviewScreen #review-commit { height: 1; background: $panel; padding: 0 1; }
-    CommitReviewScreen #review-assessment { height: auto; max-height: 6; padding: 0 1; }
+    CommitReviewScreen #review-assessment {
+        height: auto; max-height: 40%; overflow-y: auto; background: $panel;
+        border: round $accent; border-title-color: $accent; border-title-style: bold;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -246,6 +253,7 @@ class CommitReviewScreen(DiffReviewScreen):
         self.commit_ids = tuple(commit.commit for commit in commits)
         self.summarize = summarize
         self.assessment = assessment
+        self.priority_files: frozenset[str] = frozenset()
         self.changes = changes
         self.commit_index = 0
         if position is not None:
@@ -273,10 +281,11 @@ class CommitReviewScreen(DiffReviewScreen):
         return self.commits[self.commit_index]
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="review-commit")
         result = Static("", id="review-assessment", markup=False)
+        result.border_title = "Commit summary"
         result.display = False
         yield result
+        yield Static("", id="review-commit")
         yield from super().compose()
 
     def _title(self) -> None:
@@ -291,18 +300,39 @@ class CommitReviewScreen(DiffReviewScreen):
     def action_summarize_commits(self) -> None:
         self.summarize(self.commits)
 
+    def _file_cell(self, change: FileChange) -> Text:
+        cell = super()._file_cell(change)
+        if change.path in self.priority_files:
+            return Text.assemble(("Priority  ", "bold yellow"), cell)
+        return cell
+
     def refresh_assessment(self) -> None:
         widget = self.query_one("#review-assessment", Static)
         result = self.assessment(self.commit_ids, self.current_commit.commit)
         widget.display = bool(result)
         if isinstance(result, Assessment):
             harmful = "Y" if result.harmful else "N"
-            display = f"Complexity {result.complexity} · Potentially harmful {harmful}"
+            complexity_style = {"L": "green", "M": "yellow", "H": "red"}[result.complexity]
+            display = Text(result.summary + "\n")
+            display.append(f"Complexity {result.complexity}", style=f"bold {complexity_style}")
+            display.append(" · ")
+            display.append(
+                f"Potentially harmful {harmful}", style="bold red" if result.harmful else "green"
+            )
             if result.harmful:
-                display += f" · {result.harm_reason}"
-            widget.update(Text(f"{display}\n{result.summary}"))
+                display.append(f" · {result.harm_reason}")
+            widget.update(display)
         else:
             widget.update(Text(result, style="dim"))
+
+        priorities = result.priority_files if isinstance(result, Assessment) else frozenset()
+        if priorities != self.priority_files:
+            changed = self.priority_files ^ priorities
+            self.priority_files = priorities
+            table = self.query_one(DataTable)
+            for row, change in enumerate(self.files):
+                if change.path in changed:
+                    table.update_cell(str(row), "file", self._file_cell(change), update_width=True)
 
     def action_commit(self, step: int) -> None:
         index = min(max(self.commit_index + step, 0), len(self.commits) - 1)

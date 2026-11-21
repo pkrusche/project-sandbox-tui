@@ -401,10 +401,12 @@ patches to one background agent. Opening a review starts no analysis. Keep
 browsing commits and opening file diffs while assessments show **Pending**;
 pressing `s` again during that batch leaves the existing run in progress.
 
-The selected commit shows its summary, complexity (L/M/H for low, medium or
-high context needed to assess the change), and potentially harmful flag (Y/N),
-with a reason for Y. Assessments are advisory and stay available for those
-exact commit IDs until you exit the TUI. A rewritten commit needs a new
+The panel at the top shows the selected commit's summary. Color-coded labels
+show how much context the review requires (L/M/H) and whether the change is
+potentially harmful (Y/N), with a reason for Y. Files the agent flags for
+closer review carry a **Priority** label in the file list.
+
+Assessments are advisory and stay available for those exact commit IDs until you exit the TUI. A rewritten commit needs a new
 assessment. Missing or invalid results show **Unavailable**. Press `s` again
 after completion to retry or refresh the batch; a failed run keeps prior
 successful assessments and reports the failure in a notification.

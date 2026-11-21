@@ -3388,6 +3388,7 @@ def test_commit_summary_batch_remains_pinned_during_bookmark_move(
         {
             "commit_id": original[0].commit,
             "summary": "[bold]Initial content[/bold]",
+            "priority_files": ["b.txt"],
             "complexity": "l",
             "harmful": False,
         },
@@ -3397,6 +3398,7 @@ def test_commit_summary_batch_remains_pinned_during_bookmark_move(
             "complexity": "h",
             "harmful": True,
             "harm_reason": "Could delete data",
+            "priority_files": ["second.txt", "missing.txt"],
         },
     ]
     ready = tmp_path / "ready.json"
@@ -3453,14 +3455,19 @@ def test_commit_summary_batch_remains_pinned_during_bookmark_move(
         assert rewritten[-1].commit != original[-1].commit
         release.touch()
         await wait_until(pilot, lambda: "Initial content" in assessment(screen).plain)
-        assert assessment(screen).plain.endswith("[bold]Initial content[/bold]")
-        assert assessment(screen).plain.startswith("Complexity L · Potentially harmful N")
+        assert str(screen.query_one(DataTable).get_cell("0", "file")) == "Priority  b.txt"
+        panel = screen.query_one("#review-assessment", Static)
+        assert panel.region.bottom <= screen.query_one("#review-commit").region.y
+        assert assessment(screen).plain.startswith("[bold]Initial content[/bold]")
+        assert assessment(screen).plain.endswith("Complexity L · Potentially harmful N")
         await pilot.press("right_square_bracket")
         assert (
             "Complexity H · Potentially harmful Y · Could delete data" in assessment(screen).plain
         )
         assert str(screen.query_one(DataTable).get_cell("0", "seen")) == "✓"
+        assert str(screen.query_one(DataTable).get_cell("0", "file")) == "Priority  second.txt"
         await pilot.press("right_square_bracket")
+        assert str(screen.query_one(DataTable).get_cell("0", "file")) == "third.txt"
         assert assessment(screen).plain == "Unavailable"
         await close_review()
 
