@@ -89,8 +89,10 @@ separately. Only final success feedback with a clean process exit supplies new
 assessments. Temporary inputs are removed after completion, cancellation or
 failure; exiting the app cancels and waits for summary workers.
 
-Several TUI instances may run on one repository, and each does its jj, file and
-process work in worker threads. These locks order what they do:
+Each TUI instance does its jj, file and process work in worker threads.
+Instances opened from the same checkout share the file locks shown below.
+See [cleanup from a second checkout](cleanup.md#cleanup-from-a-second-checkout)
+for the limits of this protection across checkouts.
 
 ```text
   this TUI only       _history_lock (asyncio)    held for a whole action that
@@ -98,8 +100,8 @@ process work in worker threads. These locks order what they do:
                               │                  ctrl+r f @ e, merge or rebase
                               │                  preparation, W removal
                               ▼
-  every TUI on the    opgraph.json.lock          bookmark history and undo stack
-  repository                  │
+  every TUI in the    opgraph.json.lock          bookmark history and undo stack
+  same checkout               │
   (flock on files             ▼
   in the state        jobs.lock                  job records, and the launch
   directory)                  │                  guard: busy checks and spawns
@@ -132,7 +134,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 | `f` | history → graph | Fast-forward main, undo entry |
 | `@` | history → jobs | Busy check of the working copy (and of the target's workspace before starting a change there), move it |
 | `e` | history | Describe, only if the target is still the commit that was edited |
-| `:*` | jobs, tasks | Create a missing workspace unless a session is starting; start the task |
+| `:*` | jobs → tasks | Verify or create the workspace and register the task before cleanup can remove it |
 | `:&` | tasks, jobs | Start one task in the repository under `@`; warn if a session is running there |
 | `o` | jobs | Create a missing workspace unless a session is starting; deploy skills if idle |
 | `x` | tasks, jobs, graph | Signal tasks; signal or forget the run; record a forgotten run's outcome |
@@ -150,15 +152,16 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 - Locks are `flock`s on separately opened files, so they also order the threads
   of one TUI. They are not re-entrant: code holding one uses unlocked helpers
   such as `JobManager._busy_reason`.
-- Merging or rebasing selected bookmarks keeps `jobs.lock` while jj runs, so no
-  session can start on an input or the result bookmark mid-operation. Refreshes
-  and launches in other TUIs of the repository wait until jj finishes.
+- Merging or rebasing selected bookmarks holds `jobs.lock` while jj runs.
+  Refreshes and launches from the same checkout wait until jj finishes.
 - Workers that change the repository are not `exclusive`. A second action waits
   for `_history_lock` instead of cancelling the first after jj has already run.
 - Launch defaults and host-command updates share the per-checkout `last_used.lock`.
-  CLI settings edits and the TUI profile editor share `config.lock` in the
-  application state directory while reading, validating and saving both scopes.
-  Project edits carry forward the trust status of the exact input they edited.
+  CLI settings edits, the TUI profile editor, initialization and trust approvals
+  share `config.lock` in the application state directory. Project edits carry
+  forward the trust status of the exact input they edited. An approval checks
+  the trusted baseline again under the lock. A newer approval requires a fresh
+  review of the diff.
 - Initialization and host feedback installation share a per-workspace
   `guidance.lock`. Host installation takes it inside `jobs.lock`.
 

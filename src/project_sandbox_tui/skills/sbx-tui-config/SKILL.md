@@ -8,6 +8,8 @@ description: Configure project-sandbox-tui container images, launch defaults, sh
 Work from the project's jj repository root. Read `.project-sandbox-tui.toml`,
 the project manifests, Dockerfile, and development instructions before choosing
 settings. Preserve the project's existing choices unless the task changes them.
+For decisions about VCS access, egress, mounts, credentials or unattended
+workflow steps, consult the companion `sbx-tui-safety` skill.
 
 ## Inspect and edit settings
 
@@ -261,10 +263,10 @@ then the launch forms' profile. The user can change any field for that run;
 choices are not remembered, so put lasting choices in the action's `profile`.
 Steps keep the settings chosen at start even if profiles change later.
 
-A `profile` naming a profile that is not configured still loads. sbx-tui warns
-when the action or workflow is used and falls back to the launch forms' profile,
-and `sbx-tui doctor` reports it under `action profiles`. Define the profile, or
-fix the name, before relying on the action.
+When a named profile is missing, sbx-tui asks before a direct action uses the
+fallback profile. The workflow picker lets the owner choose a replacement for
+each affected step. `sbx-tui doctor` lists missing references under `action
+profiles`. Fix the name before relying on the action for unattended work.
 
 For host commands, use quoted environment variables such as `"$SBX_WORKSPACE"`.
 `ui.host_agent_command` customizes `I`, the interactive host agent shortcut,

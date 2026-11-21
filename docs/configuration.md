@@ -35,21 +35,24 @@ package managers, or Dockerfiles intended only for production. Rerunning
 The new template explicitly clears unused image settings so that an inherited
 global image source or build version cannot conflict with the detected choice.
 
-Initialization also installs the `sbx-tui-config` agent skill at:
+Initialization installs two configuration skills under both `.agents/skills/`
+and `.claude/skills/`. Each skill has a `SKILL.md` that other agents can also
+read directly.
 
-- `.agents/skills/sbx-tui-config/SKILL.md` ([Codex skill location](https://developers.openai.com/codex/skills/)).
-- `.claude/skills/sbx-tui-config/SKILL.md` ([Claude Code skill location](https://code.claude.com/docs/en/skills)).
+- `sbx-tui-config` covers image selection, configuration scopes, commands,
+  actions, validation and trust handling.
+- `sbx-tui-safety` helps choose access for reviews, implementation, host tasks
+  and unattended workflows. The setup wizard includes the skill in the host
+  interview even before initialization.
 
-Both copies teach image selection, configuration scopes, commands/actions, and
-validation and trust handling. Ask the agent to use `sbx-tui-config` to configure
-the project; other agents can read either file directly. Initialization also
+Initialization also
 installs `sbx-run-feedback` alongside it and adds conditional reporting guidance
 to `AGENTS.md`. The configuration and reporting skill directories are added to
 the root `.gitignore`; other skills and the project
 config remain eligible for version control. Existing skill files are preserved.
 To refresh a bundled skill, remove its installed `SKILL.md` and rerun `--init`.
 Reporting guidance is delivered at launch as described in [agent feedback](feedback.md).
-Bookmark workspaces get their own configuration skill automatically; see
+Bookmark workspaces get their own configuration skills automatically. See
 [workspace skills](#workspace-skills).
 
 ## Workspace skills
@@ -62,11 +65,11 @@ workspace gets its own complete copy, so an agent can read supporting files and
 run scripts with the same relative paths as in the source; a sandbox sees them
 under `/workspace`. `@` uses the checkout's own files. `:*` tasks do not deploy.
 
-**Bundled skill.** `sbx-tui-config` (see [initialization](#initialization)) is
-copied to `.agents/skills/sbx-tui-config/` and `.claude/skills/sbx-tui-config/`,
+**Bundled skills.** Both configuration skills are
+copied under `.agents/skills/` and `.claude/skills/`,
 including in projects that never ran `--init`. Where the bookmark's in-tree
 `.gitignore` files do not already ignore these directories, sbx-tui appends
-`/.agents/skills/sbx-tui-config/` and `/.claude/skills/sbx-tui-config/` once to
+one exclusion per skill directory to
 the repository's local Git excludes (`info/exclude` in the directory printed by
 `jj git root`). These apply to every workspace of the repository and keep the
 copies out of jj snapshots without changing a tracked file. A target that is
@@ -115,8 +118,10 @@ name the bookmark and path. Each skill is staged in the workspace's `.jj`
 directory and moved into place with one rename, keeping executable bits. A
 failure in a configured skill stops the launch (a queued prompt pauses its
 queue); fix it and retry. Directories that were published stay complete and are
-reused. Extra arguments that choose the workspace (`--branch`, `--worktree-dir`)
-are refused for configured skills; set `project.worktree_dir` instead. Dry runs
+reused. All sandbox launches reserve the selected bookmark. The launcher refuses
+`--branch` and `--worktree-dir` in shared or per-run extra arguments because
+they can redirect the run outside that reservation. Use the bookmark selector
+and `project.worktree_dir` to set the destination. Dry runs
 and the launch form preview list the planned destinations without creating a
 workspace or copying.
 
@@ -378,7 +383,7 @@ worktree_dir = ""                 # default: sibling <repo>-workspaces
 keep_workspace = true             # reuse the workspace across runs
 default_branch_start = ""         # new bookmarks: auto main/master/trunk, else @- (or @ with no bookmarks)
 main_branch = ""                  # main for diff, fast-forward, @ saves and cleanup; auto main/master/trunk
-deploy_config_skill = true        # copy sbx-tui-config into bookmark workspaces
+deploy_config_skill = true        # copy both bundled configuration skills into bookmark workspaces
 
 [ui]
 notify_command = ""     # "" = platform default; {title} {message}
@@ -502,8 +507,9 @@ as written. Names follow the `[commands]` rules and must not repeat a
 
 `timeout` applies in every case; unset, it takes the launch default. If `profile`
 names a profile that is not configured, for example after deleting it in
-`:config-profiles`, sbx-tui warns when the action runs and uses the remembered
-profile as above. `sbx-tui doctor` lists such actions as an `action profiles`
+`:config-profiles`, sbx-tui asks before launching or queuing the action with the
+fallback profile. The prompt names the missing profile and shows the replacement
+and its extra arguments. `sbx-tui doctor` lists such actions as an `action profiles`
 warning.
 
 ```toml
@@ -526,7 +532,7 @@ sbx-tui config set --project actions.deep-review.profile 'Deep review'
 | Location | Contents |
 |---|---|
 | `models.json` | Downloaded model catalog |
-| `config.lock` | Serializes CLI config edits and TUI profile saves |
+| `config.lock` | Serializes config edits, template creation and project trust approvals |
 | `<repo>-<hash>/last_used.json`, `last_used.lock` in the same directory | Launch defaults, selected profile, Custom CLI arguments and host command |
 | `<repo>-<hash>/prompt_history.json` | Prompt history |
 | `<repo>-<hash>/command_history.json` | Command-line history |
@@ -544,9 +550,14 @@ sbx-tui config set --project actions.deep-review.profile 'Deep review'
 Job records include full argv and prompts. Repository state, job and log
 directories use mode `0700` (user-only access), including older directories.
 
-TUI instances on one repository share these files: each change re-reads its
-file under a [lock](architecture.md#concurrency-and-locking) and replaces it
-atomically. A history, review or prompt file
+The hash comes from the resolved checkout path. Instances opened from the same
+checkout share job and task locks. Other checkouts of the same jj repository
+have independent locks and records, even when they share `project.worktree_dir`.
+Cleanup surveys all registered jj workspaces. See
+[cleanup from a second checkout](cleanup.md#cleanup-from-a-second-checkout).
+
+Each state update re-reads its file under a lock and replaces it atomically.
+See [concurrency and locking](architecture.md#concurrency-and-locking). A history, review or prompt file
 that cannot be read is left as it is rather than overwritten; one that does not
 parse is renamed to `<name>.corrupt-<time>` and started afresh. Files written
 by a newer sbx-tui version are not changed.

@@ -24,7 +24,7 @@ from project_sandbox_tui.config import (
     remembered_profile,
 )
 from project_sandbox_tui.history import PromptHistory
-from project_sandbox_tui.sandbox import LaunchSpec, Mode
+from project_sandbox_tui.sandbox import LaunchSpec, Mode, validate_launch_target
 from project_sandbox_tui.screens.agent import CUSTOM_MODEL as CUSTOM_MODEL
 from project_sandbox_tui.screens.agent import AgentControls
 from project_sandbox_tui.screens.history import HistorySearchScreen
@@ -504,6 +504,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 return
         try:
             spec = self.current_spec()
+            validate_launch_target(self.cfg, spec)
         except ConfigError as exc:
             self.notify(str(exc), severity="warning")
             self.query_one("#extra-args").focus()

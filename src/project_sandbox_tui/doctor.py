@@ -173,7 +173,13 @@ def check_project_sandbox(cfg: Config, runner: Runner) -> Check:
 def check_runtime(cfg: Config, runner: Runner, which: Callable[[str], str | None]) -> Check:
     """The runtime project-sandbox would pick, and whether it answers."""
     requested = cfg.sandbox.runtime
-    cli = runtime_cli(requested)
+    cli = runtime_cli(requested, which)
+    if cli is None and requested != "auto":
+        return Check(
+            "container runtime",
+            "warn",
+            f"could not verify {requested!r} without launcher diagnostics",
+        )
     if cli is None or which(cli) is None:
         wanted = cli or "docker, podman or Apple container"
         return Check(

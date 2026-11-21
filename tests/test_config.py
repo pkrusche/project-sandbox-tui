@@ -396,6 +396,16 @@ def test_changed_project_config_keeps_the_trusted_copy(tmp_path: Path) -> None:
     assert c.ProjectTrust.check(tmp_path).needs_review
 
 
+def test_older_review_cannot_replace_newer_approval(tmp_path: Path) -> None:
+    project = write(tmp_path / c.PROJECT_CONFIG_NAME, '[defaults]\nagent = "bash"\n')
+    pending = c.ProjectTrust.check(tmp_path)
+    project.write_text('[defaults]\nagent = "codex"\n')
+    c.ProjectTrust.check(tmp_path).trust(tmp_path)
+    with pytest.raises(c.ConfigError, match="review the diff again"):
+        pending.trust(tmp_path)
+    assert c.load(tmp_path).defaults.agent == "codex"
+
+
 def test_explicit_empty_launch_defaults_override_config(tmp_path: Path) -> None:
     cfg = c.Config(defaults=c.Defaults(model="opus", effort="high", timeout=600))
     c.remember(tmp_path, "claude", "", "", 0)

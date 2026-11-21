@@ -338,14 +338,18 @@ class TaskManager:
 
     # ------------------------------------------------------------ cancelling
 
-    def cancel(self, bookmark: str) -> list[str]:
+    def cancel(self, bookmark: str, *, only: set[str] | None = None) -> list[str]:
         """Escalate on each call, as for sandbox runs: SIGINT → SIGTERM → SIGKILL.
 
         Returns a message per running task of ``bookmark``; finished ones are
         left alone (they are history, not status)."""
         with self._locked():
             self.load()
-            return [self._signal(task) for task in self.running(bookmark)]
+            return [
+                self._signal(task)
+                for task in self.running(bookmark)
+                if only is None or task.id in only
+            ]
 
     def cancel_task(self, task_id: str) -> str:
         """Escalate one task's cancel; a finished task's record and output are forgotten."""

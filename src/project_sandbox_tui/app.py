@@ -714,7 +714,7 @@ class SandboxTUI(App[None]):
             await asyncio.to_thread(self.queue.refresh, self.jobs, self._task_outcome)
             if (
                 listed
-                and not self.dry_run
+                and not self._sandbox_dry_run()
                 and any(
                     not q.paused and (q.tasks or q.needs_decision(self.cfg.feedback))
                     for q in self.queue.queues.values()
@@ -1163,6 +1163,9 @@ class SandboxTUI(App[None]):
 
     # ------------------------------------------------------------ actions
 
+    def _sandbox_dry_run(self, extra_args: Sequence[str] = ()) -> bool:
+        return self.dry_run or "--dry-run" in (*self.cfg.sandbox.extra_args, *extra_args)
+
     def _spec_preview(self, spec: LaunchSpec) -> str:
         paths = self.jobs.new_run_paths(spec.branch) if spec.mode == "background" else None
         if spec.mode == "background" and not spec.prompt_text.strip():
@@ -1176,7 +1179,7 @@ class SandboxTUI(App[None]):
         """Shorter preview for the launch form: state-dir paths abbreviated, then the
         skill directories the launch deploys unless the workspace has them."""
         preview = self._spec_preview(spec).replace(str(self.jobs.logs_dir), "<logs>")
-        targets = planned_destinations(self.cfg, self.repo, spec.branch, spec.extra_args)
+        targets = planned_destinations(self.cfg, self.repo, spec.branch)
         if targets:
             preview += "\nskills (if missing): " + ", ".join(map(str, targets))
         return preview
@@ -1415,7 +1418,7 @@ class SandboxTUI(App[None]):
         except ConfigError as exc:
             self.notify(f"Could not summarize commits. {exc}", severity="error")
             return
-        if self.dry_run or "--dry-run" in self.cfg.sandbox.extra_args:
+        if self._sandbox_dry_run():
             span = commit_ids[0][:12]
             if len(commit_ids) > 1:
                 span += f" → {commit_ids[-1][:12]}"
@@ -1820,6 +1823,24 @@ class SandboxTUI(App[None]):
     ) -> None:
         if spec is None:
             return
+        if (spec.operation or new_branch_start is not None) and self._sandbox_dry_run(
+            spec.extra_args
+        ):
+            if spec.operation:
+                preparation = f"Would {spec.operation} {', '.join(spec.inputs)} into {spec.branch}"
+                if spec.base and spec.operation == "rebase":
+                    preparation += f" on {spec.base}"
+            else:
+                preparation = f"Would create bookmark {spec.branch} from {new_branch_start}"
+            try:
+                preview = self._form_preview(spec)
+            except ValueError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            self.call_after_refresh(
+                self.push_screen, MessageScreen("Dry run", f"{preparation}\n\n{preview}")
+            )
+            return
         # Start only once the form is gone and its key event is fully processed:
         # dismiss() runs this callback before the screen has been popped, and an
         # interactive session blocks the event loop until the agent exits.
@@ -1918,7 +1939,7 @@ class SandboxTUI(App[None]):
             if self.branch(spec.branch) is None:
                 raise VcsError(f"{spec.branch} no longer exists")
             if spec.mode == "background":
-                if self.dry_run:
+                if self._sandbox_dry_run(spec.extra_args):
                     # Preview only this submission; never consume pending real tasks.
                     started = [
                         self.queue.start(
@@ -2632,30 +2653,24 @@ class SandboxTUI(App[None]):
             return self.repo
         return workspace_path(self.repo, name, self.worktree_dir)
 
-    def _ensure_workspace(self, name: str, *, deploy: bool = False) -> Path | None:
-        """The row's workspace directory, created (``jj workspace add``) if missing.
+    def _ensure_workspace_locked(self, name: str, *, deploy: bool = False) -> Path | None:
+        """Get or create the row's workspace with jobs.lock held by the caller.
 
         ``deploy``: also deploy workspace skills, if the workspace is idle.
         None, after a notice, when it cannot be created now."""
         path = self._workspace_dir(name)
-        if path == self.repo or (path.exists() and not deploy):
-            return path
+        if name == WORKING_COPY:
+            return self.repo
         try:
-            # Under the launch lock, with sessions read again: no session may
-            # start (and create the workspace itself) between the check and jj.
-            with self.jobs._locked():
-                self.jobs.load()
-                busy = self.jobs._busy_reason(name, self._sessions_now([name]))
-                if busy and path.exists():
-                    return path  # in use: leave its files alone
-                if busy:
-                    # Its session is about to create the workspace: never race it.
-                    self.notify(f"{name}: workspace not created yet; try again", severity="warning")
-                    return None
-                self.workspaces.prepare(self.cfg, name, sandbox=False, deploy=deploy)
+            self.jobs.load()
+            busy = self.jobs._busy_reason(name, self._sessions_now([name]))
+            if busy and not path.exists():
+                self.notify(f"{name}: workspace not created yet; try again", severity="warning")
+                return None
+            self.workspaces.prepare(self.cfg, name, sandbox=False, deploy=deploy and not busy)
         except PreparationError as exc:
             self.notify(str(exc), severity="error", timeout=10)
-            return path if path.is_dir() else None
+            return path if deploy and path.is_dir() else None  # the editor can inspect a stray path
         except OSError as exc:
             self.notify(f"{name}: could not create a workspace: {exc}", severity="error")
             return None
@@ -2664,7 +2679,12 @@ class SandboxTUI(App[None]):
         return path
 
     def _open_editor(self, name: str) -> None:
-        path = self._ensure_workspace(name, deploy=True)
+        try:
+            with self.jobs._locked():
+                path = self._ensure_workspace_locked(name, deploy=True)
+        except OSError as exc:
+            self.notify(f"{name}: could not open workspace: {exc}", severity="error")
+            return
         if path is None:
             return
         if self.cfg.ui.editor_command:
@@ -2837,6 +2857,7 @@ class SandboxTUI(App[None]):
                 self.backend,
                 self.cfg,
                 ws,
+                expected_details=body,
                 state_dir=self.jobs.state_dir,
                 sessions_dir=self.sessions_dir,
             )
@@ -2850,20 +2871,17 @@ class SandboxTUI(App[None]):
         """x: cancel a run, harder on the second press, forget it on the third.
 
         Asks first before the first signal reaches several runs at once."""
-        chosen = self._action_branches()
-        fresh = [
-            f"{name}  {job.spec.label()}"
-            for name in chosen
-            if (job := self.jobs.jobs.get(name)) is not None
-            and job.running
-            and not self.jobs.cancel_started(name)
-        ]
-        fresh += [
-            f"{name}  :{task.line}"
-            for name in chosen
-            if not self.tasks.cancel_started(name)
-            for task in self.tasks.running(name)
-        ]
+        chosen = {}
+        fresh = []
+        for name in self._action_branches():
+            job = self.jobs.jobs.get(name)
+            tasks = self.tasks.running(name)
+            chosen[name] = (dataclasses.replace(job) if job else None, {t.id for t in tasks})
+            if job and job.running and not self.jobs.cancel_started(name):
+                fresh.append(f"{name}  {job.spec.label()}")
+            fresh.extend(
+                f"{name}  :{t.line}" for t in tasks if not self.tasks.cancel_requested(t.id)
+            )
         if len(fresh) < 2:
             self._cancel(chosen)
             return
@@ -2879,16 +2897,16 @@ class SandboxTUI(App[None]):
         )
         self.push_screen(ConfirmScreen(f"cancel {len(fresh)} runs?", body, "cancel"), decided)
 
-    def _cancel(self, names: list[str]) -> None:
-        for name in names:
+    def _cancel(self, chosen: dict[str, tuple[JobRecord | None, set[str]]]) -> None:
+        for name, (job, task_ids) in chosen.items():
             # Running tasks first: a finished run's status should not hide them.
-            messages = self.tasks.cancel(name)
-            job = self.jobs.jobs.get(name)
-            if not messages or (job is not None and job.running):
-                messages.append(self.jobs.cancel(name, self.sessions))
-                if job is not None and name not in self.jobs.jobs:
+            messages = self.tasks.cancel(name, only=task_ids) if task_ids else []
+            if job is not None and (not task_ids or job.running):
+                message, forgotten = self.jobs.cancel_selected(job, self.sessions)
+                messages.append(message)
+                if forgotten:
                     self._record_forgotten(job)
-            for message in messages:
+            for message in messages or [f"{name}: nothing to cancel"]:
                 self.notify(message)
         self._render_table()
 
@@ -3313,17 +3331,18 @@ class SandboxTUI(App[None]):
         def go() -> None:
             started, busy = [], []
             for name in targets:
-                path = self._ensure_workspace(name)
-                if path is None:
-                    continue
-                env = {
-                    **os.environ,
-                    "SBX_REPO": str(self.repo),
-                    "SBX_BOOKMARK": name,
-                    "SBX_WORKSPACE": str(path),
-                }
                 try:
-                    self.tasks.start(name, command.line, command.script, path, env)
+                    with self.jobs._locked():
+                        path = self._ensure_workspace_locked(name)
+                        if path is None:
+                            continue
+                        env = {
+                            **os.environ,
+                            "SBX_REPO": str(self.repo),
+                            "SBX_BOOKMARK": name,
+                            "SBX_WORKSPACE": str(path),
+                        }
+                        self.tasks.start(name, command.line, command.script, path, env)
                 except OSError as exc:
                     self.notify(f"{name}: could not run :{command.line}: {exc}", severity="error")
                     continue
@@ -3441,7 +3460,7 @@ class SandboxTUI(App[None]):
         if workflow.result_state_keys:
             keys = ", ".join(workflow.result_state_keys)
             steps[-1][1].prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
-        if self.dry_run or "--dry-run" in self.cfg.sandbox.extra_args:
+        if self._sandbox_dry_run():
 
             def chosen_label(stage: LaunchSpec, choice: StepChoice) -> str:
                 # A profile deleted while the picker was open resolves as Custom.
@@ -3487,8 +3506,6 @@ class SandboxTUI(App[None]):
             return
         last = LastUsed.load(self.repo)
         choice, warning = initial_choice(self.cfg, last, command.action, action)
-        if warning:
-            self.notify(f"{warning}; using {choice.label()}", severity="warning")
         specs = [
             self._action_spec(action, name, last, choice, extra=command.args) for name in eligible
         ]
@@ -3504,7 +3521,11 @@ class SandboxTUI(App[None]):
             f"Each starts or queues :{command.action} as an unsupervised "
             f"{specs[0].label()} run{profile}."
         )
-        if len(eligible) == 1:
+        if warning:
+            body = f"{warning}. Use {choice.label()} for this run?\n\n{body}"
+            if specs[0].extra_args:
+                body += f"\nProfile arguments: {shlex.join(specs[0].extra_args)}"
+        elif len(eligible) == 1:
             go()
             return
         title = f"start :{command.action} on {len(eligible)} bookmark{'s' * (len(eligible) != 1)}?"

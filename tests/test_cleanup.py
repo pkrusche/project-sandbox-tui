@@ -7,6 +7,7 @@ import pytest
 from project_sandbox_tui.cleanup import (
     Workspace,
     find_workspaces,
+    force_removal_details,
     force_remove_workspace,
     remove_workspaces,
 )
@@ -458,6 +459,44 @@ def test_cleanup_keeps_unmerged_bookmark_of_merged_workspace(repo: Path) -> None
     assert chosen.removable and not chosen.branch
     assert remove_workspaces(backend, cfg, [chosen]) == [f"removed feature/x: {path}"]
     assert backend._bookmark_commit("feature/x") == commit
+
+
+def test_cleanup_requires_fresh_selection_before_deleting_ignored_files(repo: Path) -> None:
+    run("jj", "bookmark", "create", "old", "-r", "main", cwd=repo)
+    path = _add_workspace(repo, "old")
+    backend, cfg = detect(repo), Config()
+    [chosen] = find_workspaces(backend, cfg)
+    assert chosen.removable and not chosen.removes_ignored
+    ignore = Path(run("jj", "git", "root", cwd=repo).strip()) / "info" / "exclude"
+    ignore.parent.mkdir(parents=True, exist_ok=True)
+    with ignore.open("a") as stream:
+        stream.write("\nlocal-notes\n")
+    (path / "local-notes").write_text("keep until reviewed")
+    [result] = remove_workspaces(backend, cfg, [chosen])
+    assert "review the workspace again" in result
+    assert (path / "local-notes").is_file()
+    assert backend._bookmark_commit("old") == backend._bookmark_commit("main")
+    [reviewed] = find_workspaces(backend, cfg)
+    assert reviewed.removable and reviewed.removes_ignored
+    assert remove_workspaces(backend, cfg, [reviewed])[0].startswith("removed ")
+    assert not path.exists()
+
+
+def test_force_removal_rechecks_the_displayed_file_list(repo: Path) -> None:
+    path = _add_workspace(repo, "feature/x")
+    (path / "draft").write_text("unsaved")
+    backend, cfg = detect(repo), Config()
+    [chosen] = find_workspaces(backend, cfg)
+    assert chosen.forceable
+    original = force_removal_details(chosen)
+    (path / "other-draft").write_text("added during review")
+    assert "deletion list changed" in force_remove_workspace(
+        backend, cfg, chosen, expected_details=original
+    )
+    assert (path / "other-draft").is_file()
+    assert force_remove_workspace(
+        backend, cfg, chosen, expected_details=force_removal_details(chosen)
+    ).startswith("force-removed")
 
 
 def test_cleanup_rechecks_bookmark_of_selected_workspace(repo: Path) -> None:

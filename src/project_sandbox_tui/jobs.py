@@ -36,6 +36,7 @@ from project_sandbox_tui.sandbox import (
     build_argv,
     pid_alive,
     runtime_cli,
+    validate_launch_target,
 )
 
 Status = Literal[
@@ -701,6 +702,7 @@ class JobManager:
 
     def _check_supported(self, spec: LaunchSpec) -> None:
         """Refuse settings the launcher rejects, using the cached capability snapshot."""
+        validate_launch_target(self.cfg, spec)
         try:
             command = tuple(self.cfg.sandbox_command())
         except ConfigError:
@@ -964,6 +966,24 @@ class JobManager:
             self.load()
             return self._cancel(branch, sessions)
 
+    def cancel_selected(
+        self, selected: JobRecord, sessions: dict[str, SessionRecord]
+    ) -> tuple[str, bool]:
+        """Cancel the displayed run and report whether this call forgot its record."""
+        branch = selected.branch
+        with self._locked():
+            self.load()
+            current = self.jobs.get(branch)
+            if current is None or (
+                current.started_at,
+                current.pid,
+                current.run_id,
+                current.status,
+            ) != (selected.started_at, selected.pid, selected.run_id, selected.status):
+                return f"{branch}: run changed since selection, skipped", False
+            message = self._cancel(branch, sessions)
+            return message, branch not in self.jobs
+
     def cancel_started(self, branch: str) -> bool:
         """Whether ``cancel`` already signalled (or tried to) the branch's current run."""
         return branch in self._stop_stage
@@ -1041,6 +1061,11 @@ class JobManager:
             return (
                 f"{branch}: sent SIGKILL, record forgotten, "
                 f"requested container stop for {container}"
+            )
+        if container:
+            return (
+                f"{branch}: sent SIGKILL, record forgotten; check container {container} "
+                f"in {runtime or self.cfg.sandbox.runtime}"
             )
         return f"{branch}: sent SIGKILL, record forgotten (no container to stop)"
 

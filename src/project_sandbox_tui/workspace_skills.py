@@ -1,6 +1,6 @@
 """Deploying skills into bookmark workspaces before agents or editors use them.
 
-The bundled ``sbx-tui-config`` skill (unless ``project.deploy_config_skill`` is
+The bundled configuration skills (unless ``project.deploy_config_skill`` is
 false) and each ``[[workspace_skills]]`` entry are copied into a bookmark's
 workspace on first use; existing valid copies are kept. See
 ``docs/configuration.md#workspace-skills`` for the user-facing rules.
@@ -25,21 +25,25 @@ import subprocess
 import tempfile
 import threading
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.resources import as_file, files
 from pathlib import Path
 
 from project_sandbox_tui.config import (
-    CONFIG_SKILL_NAME,
-    CONFIG_SKILL_TARGETS,
+    CONFIG_SKILLS,
     Config,
 )
-from project_sandbox_tui.vcs import WORKING_COPY, JjBackend, VcsError, tracked_files, workspace_path
+from project_sandbox_tui.vcs import (
+    WORKING_COPY,
+    JjBackend,
+    VcsError,
+    registered_workspace_name,
+    tracked_files,
+    workspace_path,
+)
 
 SKILL_FILE = "SKILL.md"
-# project-sandbox options that choose a different workspace than the typed settings.
-WORKSPACE_FLAGS: tuple[str, ...] = ("--branch", "--worktree-dir")
 STAGING_PREFIX = "sbx-tui-skill-"  # under the workspace's .jj directory
 
 
@@ -55,16 +59,16 @@ class _Problem(Exception):
 class Skill:
     """A skill directory to deploy: the bundled one, or a ``[[workspace_skills]]`` entry."""
 
-    source: Path | None  # None: the bundled sbx-tui-config skill
+    source: Path | str  # host directory, or the resource name for a bundled skill
     targets: tuple[str, ...]  # relative to the workspace, e.g. ".agents/skills/x"
 
     @property
     def explicit(self) -> bool:
-        return self.source is not None
+        return isinstance(self.source, Path)
 
     @property
     def label(self) -> str:
-        return str(self.source) if self.source is not None else CONFIG_SKILL_NAME
+        return str(self.source)
 
 
 @dataclass(frozen=True)
@@ -77,7 +81,7 @@ def configured_skills(cfg: Config, repo: Path) -> list[Skill]:
     """The skills to deploy, bundled first; relative sources resolve from ``repo``."""
     skills = []
     if cfg.project.deploy_config_skill:
-        skills.append(Skill(None, CONFIG_SKILL_TARGETS))
+        skills.extend(Skill(name, targets) for name, targets in CONFIG_SKILLS.items())
     for entry in cfg.workspace_skills:
         skills.append(Skill(cfg.resolve_path(entry.source, repo), tuple(entry.targets)))
     return skills
@@ -89,20 +93,9 @@ def workspace_dir(cfg: Config, repo: Path, branch: str) -> Path:
     return workspace_path(repo, branch, cfg.resolve_path(wd, repo) if wd else None)
 
 
-def workspace_overrides(args: Iterable[str]) -> list[str]:
-    """Extra project-sandbox arguments that would choose another bookmark or workspace."""
-    return [
-        arg
-        for arg in args
-        if any(arg == flag or arg.startswith(f"{flag}=") for flag in WORKSPACE_FLAGS)
-    ]
-
-
-def planned_destinations(
-    cfg: Config, repo: Path, branch: str, extra_args: Sequence[str] = ()
-) -> list[Path]:
+def planned_destinations(cfg: Config, repo: Path, branch: str) -> list[Path]:
     """Skill directories a launch on ``branch`` would deploy (for previews; no I/O)."""
-    if branch == WORKING_COPY or workspace_overrides([*cfg.sandbox.extra_args, *extra_args]):
+    if branch == WORKING_COPY:
         return []
     root = workspace_dir(cfg, repo, branch)
     return [root / target for skill in configured_skills(cfg, repo) for target in skill.targets]
@@ -346,27 +339,16 @@ class WorkspacePreparer:
         skills = configured_skills(cfg, self.repo) if deploy else []
         if sandbox:
             sandbox_args = [*cfg.sandbox.extra_args, *extra_args]
-            if overrides := workspace_overrides(sandbox_args):
-                if not skills:
-                    return path
-                message = (
-                    f"{branch}: extra arguments {' '.join(overrides)} choose the workspace; "
-                    "set the bookmark and project.worktree_dir in the launch settings instead"
-                )
-                if any(skill.explicit for skill in skills):
-                    raise PreparationError(f"{message} to deploy workspace skills")
-                self._note(f"{message}; {CONFIG_SKILL_NAME} was not deployed", warning=True)
-                return path
             if "--dry-run" in sandbox_args:
                 if skills:
                     planned = ", ".join(str(path / t) for s in skills for t in s.targets)
                     self._note(f"{branch}: dry run, skills not deployed: {planned}")
                 return path
-            if os.path.lexists(path):
-                self._check_registration(branch, path)
-            elif not skills:
-                return path  # project-sandbox creates it
-        if not os.path.lexists(path):
+        if os.path.lexists(path):
+            self._check_registration(branch, path, sandbox=sandbox)
+        elif sandbox and not skills:
+            return path  # project-sandbox creates it
+        else:
             try:
                 self.backend.add_workspace(branch, path)
             except (VcsError, OSError) as exc:
@@ -376,20 +358,21 @@ class WorkspacePreparer:
             self._deploy(branch, path, skills)
         return path
 
-    def _check_registration(self, branch: str, path: Path) -> None:
-        """Refuse a sandbox start project-sandbox could not reuse or remove safely."""
+    def _check_registration(self, branch: str, path: Path, *, sandbox: bool) -> None:
+        """Check both the registration and the directory currently at its location."""
+        if path.is_symlink() or path.resolve() == self.repo.resolve():
+            raise PreparationError(f"{branch}: {path} must be its own workspace directory")
         try:
             names = self.backend.workspace_names()
+            name = registered_workspace_name(self.repo, path)
         except (VcsError, OSError) as exc:
-            raise PreparationError(f"{branch}: could not list workspaces: {exc}") from exc
-        if names is None:  # jj too old to tell
-            return
-        name = names.get(path.resolve())
-        if name is None:
+            raise PreparationError(f"{branch}: cannot verify workspace {path}: {exc}") from exc
+        if names is not None and names.get(path.resolve()) != name:
             raise PreparationError(
-                f"{branch}: {path} exists but is not a jj workspace of this repository; "
-                "move it away to start a sandbox"
+                f"{branch}: {path} is not the registered location of workspace {name!r}"
             )
+        if not sandbox and name == branch:
+            return  # Legacy workspaces were named for their bookmarks.
         if name != path.name:
             raise PreparationError(
                 f"{branch}: workspace {path} is registered as {name!r}, but project-sandbox "
@@ -406,8 +389,8 @@ class WorkspacePreparer:
             plans: list[_Target] = [_Target(s, t) for s in skills for t in s.targets]
             for skill in skills:
                 try:
-                    if skill.source is None:
-                        bundled = files("project_sandbox_tui").joinpath("skills", CONFIG_SKILL_NAME)
+                    if isinstance(skill.source, str):
+                        bundled = files("project_sandbox_tui").joinpath("skills", skill.source)
                         sources[skill] = stack.enter_context(as_file(bundled))
                     else:
                         sources[skill] = skill.source
@@ -425,7 +408,7 @@ class WorkspacePreparer:
             for plan in plans:
                 if plan.problem and not plan.skill.explicit:
                     self._note(
-                        f"{branch}: {CONFIG_SKILL_NAME} not deployed to {path / plan.target}: "
+                        f"{branch}: {plan.skill.label} not deployed to {path / plan.target}: "
                         f"{plan.problem}",
                         warning=True,
                     )
@@ -451,7 +434,7 @@ class WorkspacePreparer:
                             f"{path / plan.target}: {reason}"
                         ) from exc
                     self._note(
-                        f"{branch}: {CONFIG_SKILL_NAME} not deployed to {path / plan.target}: "
+                        f"{branch}: {plan.skill.label} not deployed to {path / plan.target}: "
                         f"{reason}",
                         warning=True,
                     )

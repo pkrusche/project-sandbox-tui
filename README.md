@@ -61,8 +61,9 @@ or no credentials for Bash), so they need not be installed on the host. Tick
 **Use the agent gateway** to offer Pi and OpenCode through `network.agent_proxy`.
 Add any instructions, then **Start interview** (`ctrl+s`) opens the setup agent in
 the current terminal with the discovered agents, VCS access modes and runtimes. It
-discusses tasks, per-profile VCS and internet access, gateway models, and project
-workflows. You can run the wizard before or after `sbx-tui --init`.
+uses the bundled `sbx-tui-safety` skill to discuss the VCS access, network
+destinations, credentials and mounts each task needs. You can run the wizard
+before or after `sbx-tui --init`.
 
 Press `?` for full help.
 
@@ -72,8 +73,8 @@ Use `:config-profiles` to save an agent setup,
 then choose it in either launch form. Select **custom** to adjust settings for a run.
 
 See [initialization](docs/configuration.md#initialization) for project detection
-and the local `sbx-tui-config` setup skill. Existing config and skill files are
-preserved. Bookmark workspaces get their own ignored copy of the skill, plus any
+and the local `sbx-tui-config` and `sbx-tui-safety` skills. Existing config and skill files are
+preserved. Bookmark workspaces get their own ignored copies, plus any
 [workspace skills](docs/configuration.md#workspace-skills) you configure.
 
 ## Documentation

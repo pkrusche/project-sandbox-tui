@@ -10,16 +10,13 @@ from typing import Literal, TextIO
 
 from project_sandbox_tui import config as config_mod
 from project_sandbox_tui.config import (
-    CONFIG_SKILL_NAME,
-    CONFIG_SKILL_TARGETS,
+    CONFIG_SKILLS,
     PROJECT_TEMPLATE,
     repo_state_dir,
     state_lock,
 )
 from project_sandbox_tui.feedback_transport import SKILL_NAME as FEEDBACK_SKILL
 
-SKILL_NAME = CONFIG_SKILL_NAME
-SKILL_DIRS = tuple(Path(target) for target in CONFIG_SKILL_TARGETS)
 FEEDBACK_DIRS = tuple(Path(root) / "skills" / FEEDBACK_SKILL for root in (".agents", ".claude"))
 GUIDANCE_START = "<!-- sbx-tui feedback:start -->"
 GUIDANCE_END = "<!-- sbx-tui feedback:end -->"
@@ -39,10 +36,10 @@ def initialize(repo: Path, global_path: Path | None = None) -> Generator[str]:
         (config_mod.project_config_path(repo), project_template(repo)),
     ):
         try:
-            written = config_mod.write_template(path, template)
-            if written and path == config_mod.project_config_path(repo):
-                # Trust only what we wrote, even if the file changes meanwhile.
-                config_mod.ProjectTrust(path, template, None).trust(repo)
+            with config_mod.config_lock():
+                written = config_mod.write_template(path, template)
+                if written and path == config_mod.project_config_path(repo):
+                    config_mod.write_trusted_config(repo, template)
         except (OSError, config_mod.ConfigError) as exc:
             raise config_mod.ConfigError(f"could not write {path}: {exc}") from exc
         yield f"{'wrote' if written else 'exists'}: {path}"
@@ -73,10 +70,10 @@ def project_template(repo: Path) -> str:
     return PROJECT_TEMPLATE.replace('base_image = "python:3.12-slim"', source, 1)
 
 
-def skill_template() -> str:
+def skill_template(name: str) -> str:
     return (
         files("project_sandbox_tui")
-        .joinpath("skills", SKILL_NAME, "SKILL.md")
+        .joinpath("skills", name, "SKILL.md")
         .read_text(encoding="utf-8")
     )
 
@@ -131,7 +128,8 @@ def ignore_skills(repo: Path) -> bool:
     """Append only our skill directories, preserving existing ignore rules."""
     path = Path(".gitignore")
     existing = _existing(repo, path)
-    patterns = [f"/{directory.as_posix()}/" for directory in (*SKILL_DIRS, *FEEDBACK_DIRS)]
+    patterns = [f"/{target}/" for targets in CONFIG_SKILLS.values() for target in targets]
+    patterns.extend(f"/{directory.as_posix()}/" for directory in FEEDBACK_DIRS)
     missing = [pattern for pattern in patterns if pattern not in existing.splitlines()]
     if not missing:
         return False
@@ -151,16 +149,13 @@ def install_feedback(repo: Path, *, guidance: bool = True, config_skill: bool = 
 
 def _install(repo: Path, *, guidance: bool, config_skill: bool) -> list[str]:
     messages = []
-    template = (
-        files("project_sandbox_tui").joinpath("skills", FEEDBACK_SKILL, "SKILL.md").read_text()
-    )
+    template = skill_template(FEEDBACK_SKILL)
     updated = ignore_skills(repo)
     messages.append(f"{'updated' if updated else 'exists'}: {repo / '.gitignore'}")
     if config_skill:
-        config_template = skill_template()
-        messages.extend(
-            _install_skill(repo, directory, config_template) for directory in SKILL_DIRS
-        )
+        for name, targets in CONFIG_SKILLS.items():
+            config_template = skill_template(name)
+            messages.extend(_install_skill(repo, Path(t), config_template) for t in targets)
     messages.extend(_install_skill(repo, directory, template) for directory in FEEDBACK_DIRS)
     if not guidance:
         return messages

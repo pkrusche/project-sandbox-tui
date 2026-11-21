@@ -377,13 +377,17 @@ def test_immediate_background_launch_retains_task(
     run_app(repo, fake_cfg(), scenario)
 
 
+@pytest.mark.parametrize("cli_flag", [True, False])
 def test_dry_run_does_not_consume_pending_tasks(
-    repo: Path, fake_cfg: Callable[..., Config]
+    repo: Path, fake_cfg: Callable[..., Config], cli_flag: bool
 ) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        app.dry_run = True
+        app.dry_run = cli_flag
         app.cfg.sandbox.extra_args.append("--dry-run")
         pending = app.queue.add(prompt("real pending task"))
+        await app.refresh_data()
+        assert not app.jobs.jobs
+        assert prompts(app.queue) == ["real pending task"]
         app.queue.pause("feature/x", True)
         before = app.queue.get("feature/x").to_dict()
         await app.refresh_data()

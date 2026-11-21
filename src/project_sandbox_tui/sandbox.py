@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -127,6 +128,24 @@ def gateway_model(agent: str, model: str) -> str:
     return model
 
 
+def validate_launch_target(cfg: Config, spec: LaunchSpec) -> None:
+    """The workspace passed to the launcher must match the TUI's reservation."""
+    if cfg.project.base_image.startswith("-"):
+        raise ConfigError("project.base_image must name an image and cannot start with '-'")
+    for arg in (*cfg.sandbox.extra_args, *spec.extra_args):
+        option = arg.partition("=")[0]
+        # argparse also accepts unambiguous abbreviations, e.g. --worktree.
+        if (
+            option.startswith("--")
+            and len(option) > 2
+            and any(flag.startswith(option) for flag in ("--branch", "--worktree-dir"))
+        ):
+            raise ConfigError(
+                f"{option} in extra_args can redirect the reserved workspace. "
+                "Select the bookmark in the TUI and set project.worktree_dir for its location."
+            )
+
+
 def build_argv(
     cfg: Config,
     repo: Path,
@@ -135,6 +154,7 @@ def build_argv(
     feedback_dir: Path | None = None,
 ) -> list[str]:
     """Return the full ``project-sandbox`` argv for ``spec``."""
+    validate_launch_target(cfg, spec)
     if not cfg.has_image_source():
         raise ConfigError(
             "no image configured: set project.base_image, project.dockerfile or "
@@ -339,15 +359,18 @@ def running_by_branch(
     return out
 
 
-def runtime_cli(runtime: str) -> str | None:
+def runtime_cli(runtime: str, which: Callable[[str], str | None] | None = None) -> str | None:
     """The container CLI to use for a fallback ``stop``."""
+    which = which or shutil.which
     if runtime == "apple-container":
         return "container"
     if runtime in ("docker", "podman"):
         return runtime
-    if platform.system() == "Darwin" and shutil.which("container"):
+    if runtime not in ("", "auto"):
+        return None  # Only the launcher knows how to address this runtime.
+    if platform.system() == "Darwin" and which("container"):
         return "container"
     for candidate in ("docker", "podman"):
-        if shutil.which(candidate):
+        if which(candidate):
             return candidate
     return None

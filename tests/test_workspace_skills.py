@@ -12,7 +12,7 @@ import pytest
 
 from project_sandbox_tui import workspace_skills as ws
 from project_sandbox_tui.config import (
-    CONFIG_SKILL_TARGETS,
+    CONFIG_SKILLS,
     Config,
     ConfigError,
     WorkspaceSkill,
@@ -25,7 +25,7 @@ from project_sandbox_tui.vcs import JjBackend, workspace_path
 from project_sandbox_tui.workspace_skills import PreparationError, WorkspacePreparer
 from tests.conftest import add_bookmark, jj
 
-BUNDLED = list(CONFIG_SKILL_TARGETS)
+BUNDLED = [target for targets in CONFIG_SKILLS.values() for target in targets]
 CUSTOM = ".agents/skills/release-review"
 
 
@@ -140,12 +140,10 @@ def test_planned_destinations_for_previews(repo: Path, tmp_path: Path) -> None:
     cfg = _custom_cfg(tmp_path / "s")
     root = workspace_path(repo, "feature/x", None)
     assert ws.planned_destinations(cfg, repo, "feature/x") == [
-        root / BUNDLED[0],
-        root / BUNDLED[1],
+        *(root / target for target in BUNDLED),
         root / CUSTOM,
     ]
     assert ws.planned_destinations(cfg, repo, "@") == []
-    assert ws.planned_destinations(cfg, repo, "feature/x", ["--worktree-dir=/x"]) == []
     cfg.project.worktree_dir = str(tmp_path / "trees")
     assert ws.planned_destinations(cfg, repo, "a")[0] == tmp_path / "trees" / "a" / BUNDLED[0]
     assert not root.exists()  # no I/O
@@ -163,9 +161,11 @@ def test_bundled_skill_deploys_to_new_workspace_and_stays_out_of_snapshots(repo:
     names = jj(repo, "workspace", "list", "-T", 'stringify(name) ++ "\\n"').split()
     assert path.name in names and "feature/x" not in names
     assert not (path / ".git").exists()
-    bundled = (Path(ws.__file__).parent / "skills" / "sbx-tui-config" / "SKILL.md").read_text()
-    for target in BUNDLED:
-        assert (path / target / "SKILL.md").read_text() == bundled
+    templates = Path(ws.__file__).parent / "skills"
+    for name in ("sbx-tui-config", "sbx-tui-safety"):
+        bundled = (templates / name / "SKILL.md").read_bytes()
+        for root in (".agents", ".claude"):
+            assert (path / root / "skills" / name / "SKILL.md").read_bytes() == bundled
     assert _excludes(repo).count("/.agents/skills/sbx-tui-config/") == 1
     assert _excludes(repo).count("/.claude/skills/sbx-tui-config/") == 1
     assert not (repo / ".gitignore").exists()
@@ -192,7 +192,9 @@ def test_bundled_skill_deploys_to_new_workspace_and_stays_out_of_snapshots(repo:
 
     shutil.rmtree(path / BUNDLED[0])
     preparer.prepare(Config(), "feature/x", sandbox=True)
-    assert (path / BUNDLED[0] / "SKILL.md").read_text() == bundled
+    assert (path / BUNDLED[0] / "SKILL.md").read_bytes() == (
+        templates / "sbx-tui-config" / "SKILL.md"
+    ).read_bytes()
 
 
 def test_bundled_skill_uses_in_tree_rules_and_preserves_excludes(repo: Path) -> None:
@@ -211,6 +213,8 @@ def test_bundled_skill_uses_in_tree_rules_and_preserves_excludes(repo: Path) -> 
         "*.log",
         "/.agents/skills/sbx-tui-config/",
         "/.claude/skills/sbx-tui-config/",
+        "/.agents/skills/sbx-tui-safety/",
+        "/.claude/skills/sbx-tui-safety/",
     ]
 
 
@@ -400,16 +404,22 @@ def test_dry_run_plans_without_creating(repo: Path, tmp_path: Path) -> None:
     assert "/.agents/skills/sbx-tui-config/" not in _excludes(repo)
 
 
-@pytest.mark.parametrize("arg", ["--worktree-dir=/elsewhere", "--branch"])
-def test_workspace_overrides_in_extra_args(repo: Path, tmp_path: Path, arg: str) -> None:
-    preparer = _preparer(repo)
-    path = preparer.prepare(Config(), "feature/x", sandbox=True, extra_args=[arg])
-    assert not path.exists()
-    [note] = preparer.take_notes()
-    assert note.warning and "sbx-tui-config was not deployed" in note.message
-    with pytest.raises(PreparationError, match="to deploy workspace skills"):
-        preparer.prepare(_custom_cfg(_skill(tmp_path)), "feature/x", sandbox=True, extra_args=[arg])
-    assert not path.exists()
+@pytest.mark.parametrize("branch", ["@", "feature/x"])
+@pytest.mark.parametrize("shared", [True, False])
+@pytest.mark.parametrize(
+    "args", [["--worktree-dir", "/elsewhere"], ["--branch=main"], ["--work=/x"]]
+)
+def test_workspace_override_rejected_before_preparation(
+    repo: Path, fake_cfg: Callable[..., Config], branch: str, shared: bool, args: list[str]
+) -> None:
+    cfg = fake_cfg()
+    spec = LaunchSpec(branch, "bash", mode="background", prompt_text="exit:0")
+    (cfg.sandbox.extra_args if shared else spec.extra_args).extend(args)
+    jobs, preparer = _prepared_manager(repo, cfg)
+    with pytest.raises(ConfigError, match="reserved workspace"):
+        jobs.start_background(spec, {})
+    assert not jobs.jobs and not preparer.take_notes()
+    assert not workspace_path(repo, "feature/x", None).exists()
 
 
 def test_legacy_workspace_registration_blocks_sandbox_reuse(repo: Path) -> None:
@@ -427,8 +437,9 @@ def test_legacy_workspace_registration_blocks_sandbox_reuse(repo: Path) -> None:
 
     stray = workspace_path(repo, "main", None)
     stray.mkdir()
-    with pytest.raises(PreparationError, match="not a jj workspace of this repository"):
-        preparer.prepare(Config(), "main", sandbox=True)
+    for sandbox in (True, False):
+        with pytest.raises(PreparationError, match="not a workspace of this repository"):
+            preparer.prepare(Config(), "main", sandbox=sandbox)
 
 
 def test_working_copy_uses_the_checkout(repo: Path) -> None:

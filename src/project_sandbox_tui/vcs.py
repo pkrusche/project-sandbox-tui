@@ -184,6 +184,26 @@ def workspace_path(repo: Path, branch: str, worktree_dir: Path | None) -> Path:
     return root / safe
 
 
+def workspace_store(root: Path) -> Path:
+    """Resolve the shared jj store, including secondary workspaces' pointer files."""
+    store = root / ".jj" / "repo"
+    try:
+        if store.is_file():
+            store = store.parent / store.read_text().strip()
+        return store.resolve()
+    except (ValueError, RuntimeError) as exc:
+        raise VcsError(f"{root}: invalid jj store path") from exc
+
+
+def registered_workspace_name(repo: Path, path: Path) -> str:
+    """Read the workspace identity from the directory being opened or removed."""
+    if not (path / ".jj").is_dir() or workspace_store(path) != workspace_store(repo):
+        raise VcsError(f"{path} is not a workspace of this repository")
+    return JjBackend(path)._jj(
+        "workspace", "list", "-T", "if(target.current_working_copy(), stringify(name))"
+    )
+
+
 _JJ_TEMPLATE = (
     # stringify: ``name`` prints names that need revset quoting quoted (``"fix-"``)
     'if(remote, "", stringify(name) ++ "\\x00" ++ '

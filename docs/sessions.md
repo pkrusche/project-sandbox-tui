@@ -14,8 +14,11 @@ sessions reuse it with `keep_workspace` and teardown can remove it. A sandbox
 start refuses a workspace registered under another name by an older version:
 rename it with `jj workspace rename` inside it, or remove it with `W`. Rows with
 a starting session wait for the session's own workspace. Before starting, the
-bundled `sbx-tui-config` skill and any configured
+bundled `sbx-tui-config` and `sbx-tui-safety` skills and any configured
 [workspace skills](configuration.md#workspace-skills) are copied in.
+Sandbox launches, host agents and per-workspace host tasks verify the jj
+registration before reusing an existing directory. Editors can open an
+unregistered path for inspection after showing the issue.
 
 Select `@ working copy` to run directly in the TUI's checkout with `i`, `r`, or
 a configured agent action. These sessions use the existing files, including
@@ -40,7 +43,9 @@ asks for confirmation; `y` quits, and `ctrl+q` again over the dialog also quits.
 
 On a finished run, `x` clears the status at once. Presses within a second count
 once. When the first press would signal several selected runs, sbx-tui lists
-them and asks first; later presses escalate without asking. The [bookmark history](usage.md#bookmark-history) keeps cleared runs.
+them and asks first. Confirmation applies to the displayed run and task IDs.
+A replacement run or a newly started task needs a fresh selection. Later
+presses escalate. The [bookmark history](usage.md#bookmark-history) keeps cleared runs.
 
 Each bookmark has one current job record. When a new run replaces it or `x`
 clears it, the old record moves to the bookmark's job history in the

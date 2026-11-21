@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import os
 import tomllib
 import uuid
 from collections.abc import Callable, Generator
@@ -30,14 +31,14 @@ from project_sandbox_tui.config import (
     ProjectTrust,
     Workflow,
     _load,
+    config_lock,
     global_config_path,
     load,
     merge_config,
     project_config_path,
-    state_home,
-    state_lock,
     valid_name,
     validate_profile_name,
+    write_trusted_config,
 )
 
 
@@ -187,7 +188,7 @@ class Editor:
         # Project and global files are validated together. Serialize both scopes,
         # including the trusted-copy update, across CLI and TUI editors.
         try:
-            with state_lock(state_home() / "config.lock"):
+            with config_lock():
                 if self.scope == "project" and self.repo is not None:
                     trust = ProjectTrust.check(self.repo)
                     # Parse exactly the bytes whose trust status was checked.
@@ -289,9 +290,17 @@ class Editor:
         cfg.validate()  # nothing is written when this raises
 
         tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(text, encoding="utf-8")
+            mode = self.path.stat().st_mode & 0o777
+        except FileNotFoundError:
+            mode = None
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666 if mode is None else 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                if mode is not None:
+                    os.fchmod(stream.fileno(), mode)
+                stream.write(text)
             tmp.replace(self.path)
         except OSError as exc:
             raise ConfigError(f"cannot write {self.path}: {exc}") from exc
@@ -301,7 +310,7 @@ class Editor:
         if self.scope == "project" and trusted:
             # The user made this change, to a file they had trusted.
             assert self.repo is not None
-            ProjectTrust(self.path, text, None).trust(self.repo)
+            write_trusted_config(self.repo, text)
         if self.warn is not None:
             for warning in cfg.warnings:
                 self.warn(warning)

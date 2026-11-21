@@ -81,6 +81,7 @@ def test_host_handoff(tmp_path, monkeypatch, host, flags) -> None:
         assert path == executable
         assert argv[:-1] == [str(executable), *flags]
         assert f"Interview agent: {host}" in argv[-1]
+        assert wizard.skill_template("sbx-tui-safety") in argv[-1]
         assert argv[-1].endswith(instructions)
         raise SystemExit(42)
 

@@ -19,8 +19,10 @@ from project_sandbox_tui.vcs import (
     _run,
     _run_with_stderr,
     main_branch,
+    registered_workspace_name,
     revset_symbol,
     workspace_path,
+    workspace_store,
 )
 
 
@@ -35,6 +37,8 @@ class Workspace:
     branch: str = ""  # bookmark deleted together with this row
     # Kept, but the user may force-delete it: not busy, not the repository itself.
     forceable: bool = False
+    removes_ignored: bool = False
+    missing: bool = False
 
     @property
     def describe(self) -> str:
@@ -53,14 +57,6 @@ class _Found:
     protected: bool = False  # never deleted, not even by force
 
 
-def _jj_store(root: Path) -> Path:
-    """The shared repo store of a jj workspace (secondary workspaces hold a pointer file)."""
-    store = root / ".jj" / "repo"
-    if store.is_file():
-        store = store.parent / store.read_text().strip()
-    return store.resolve()
-
-
 def _jj_workspaces(repo: Path, wd: Path | None, bookmarks: set[str]) -> list[_Found]:
     """Every jj workspace except the current one."""
     base = ["jj", "--no-pager", "--color=never", "--ignore-working-copy", "workspace", "list"]
@@ -72,7 +68,7 @@ def _jj_workspaces(repo: Path, wd: Path | None, bookmarks: set[str]) -> list[_Fo
         )
     except VcsError:  # jj without the ``root`` template keyword
         out = _run([*base, "-T", f'{name} ++ "\\x00\\x00" ++ {current} ++ "\\n"'], repo)
-    store = _jj_store(repo)
+    store = workspace_store(repo)
     # Workspaces are registered under their directory's name (``feature-x-1a2b3c``
     # for ``feature/x``); older ones under the bookmark name.
     by_path = {workspace_path(repo, b, wd).resolve(): b for b in bookmarks}
@@ -117,13 +113,9 @@ def _merged(repo: Path, main: str | None, ws: _Found) -> bool:
 
 
 def _verify_workspace(repo: Path, path: Path, name: str) -> None:
-    if not (path / ".jj").is_dir() or _jj_store(path) != _jj_store(repo):
-        raise VcsError(f"{path} is not a workspace of this repository")
     # jj may no longer know a missing workspace's root. A guessed path
     # can now belong to another workspace of the same repository.
-    current = _jj(
-        path, "workspace", "list", "-T", "if(target.current_working_copy(), stringify(name))"
-    )
+    current = registered_workspace_name(repo, path)
     if current != name:
         raise VcsError(f"{path} is not the registered workspace {name}")
 
@@ -170,7 +162,7 @@ def _inspect(
     def keep(why: str, forceable: bool = True) -> Workspace:
         return Workspace(name, path, why, forceable=forceable)
 
-    def remove(status: str, merged: bool) -> Workspace:
+    def remove(status: str, merged: bool, *, ignored: bool = False) -> Workspace:
         # A workspace's working-copy revision and its namesake bookmark can
         # move independently. Never infer that the bookmark is merged from
         # the workspace's ancestry alone.
@@ -179,7 +171,9 @@ def _inspect(
             status = ", ".join(filter(None, (status, f"merged into {main}")))
         if branch:
             status += f" · deletes bookmark {branch}"
-        return Workspace(name, path, status, True, branch)
+        return Workspace(
+            name, path, status, True, branch, removes_ignored=ignored, missing=ws.missing
+        )
 
     if ws.problem and not ws.missing:
         return keep(ws.problem, forceable=not ws.protected)
@@ -215,7 +209,7 @@ def _inspect(
         return keep(changes)
     if ignored and not merged:
         return keep("ignored files (removable once merged into the main branch)")
-    return remove("ignored files are deleted" if ignored else "clean", merged)
+    return remove("ignored files are deleted" if ignored else "clean", merged, ignored=ignored)
 
 
 def _merged_bookmarks(
@@ -343,6 +337,11 @@ def remove_workspaces(
         if not ws.removable:
             results.append(f"skipped {ws.describe}")
             return
+        if (ws.removes_ignored and not selected.removes_ignored) or (
+            selected.missing and not ws.missing
+        ):
+            results.append(f"skipped {ws.describe}: contents changed, review the workspace again")
+            return
         if ws.path is not None:
             try:
                 if not dry_run:
@@ -438,6 +437,7 @@ def force_remove_workspace(
     cfg: Config,
     chosen: Workspace,
     *,
+    expected_details: str | None = None,
     state_dir: Path | None = None,
     sessions_dir: Path | None = None,
 ) -> str:
@@ -472,6 +472,8 @@ def force_remove_workspace(
             owned = ws.path.exists()
             if owned:
                 _verify_workspace(repo, ws.path, ws.name)
+            if expected_details is not None and force_removal_details(ws) != expected_details:
+                return f"skipped {ws.describe}: deletion list changed, review the workspace again"
             _run(["jj", "workspace", "forget", "--", ws.name], repo)
             if owned:
                 shutil.rmtree(ws.path)

@@ -172,7 +172,7 @@ class Project:
     keep_workspace: bool = True  # --keep-workspace
     default_branch_start: str = ""  # start revision for new bookmarks ("" = main/trunk/@-)
     main_branch: str = ""  # cleanup removes work fully merged into it ("" = main/master/trunk)
-    deploy_config_skill: bool = True  # copy sbx-tui-config into bookmark workspaces on first use
+    deploy_config_skill: bool = True  # copy the bundled configuration skills into workspaces
 
 
 @dataclass
@@ -256,8 +256,11 @@ class Workflow:
 
 # Where workspace skills may be deployed: one directory directly below one of these.
 SKILL_ROOTS: tuple[str, ...] = (".agents/skills", ".claude/skills")
-CONFIG_SKILL_NAME = "sbx-tui-config"  # the bundled skill (``skills/`` in this package)
-CONFIG_SKILL_TARGETS: tuple[str, ...] = tuple(f"{root}/{CONFIG_SKILL_NAME}" for root in SKILL_ROOTS)
+SAFETY_SKILL = "sbx-tui-safety"
+CONFIG_SKILLS = {
+    name: tuple(f"{root}/{name}" for root in SKILL_ROOTS)
+    for name in ("sbx-tui-config", SAFETY_SKILL)
+}
 
 
 @dataclass
@@ -493,7 +496,7 @@ class Config:
     def _validate_workspace_skills(self) -> None:
         seen: dict[str, str] = {}
         if self.project.deploy_config_skill:
-            seen = dict.fromkeys(CONFIG_SKILL_TARGETS, "project.deploy_config_skill")
+            seen = {t: "project.deploy_config_skill" for ts in CONFIG_SKILLS.values() for t in ts}
         for index, skill in enumerate(self.workspace_skills):
             where = f"workspace_skills[{index}]"
             if not skill.source.strip() or "\0" in skill.source:
@@ -831,17 +834,18 @@ class ProjectTrust:
         """Trust exactly the reviewed text (not whatever the file holds by now)."""
         if self.current is None:
             raise ConfigError(f"{self.path}: nothing to trust")
-        path = trusted_config_path(repo)
-        tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         try:
-            private_dir(path.parent)
-            tmp.write_text(self.current, encoding="utf-8")
-            tmp.replace(path)
+            with config_lock():
+                path = trusted_config_path(repo)
+                private_dir(path.parent)
+                baseline = _read_text(path)
+                if baseline == self.current:
+                    return
+                if baseline != self.trusted:
+                    raise ConfigError("trusted config changed during review; review the diff again")
+                write_trusted_config(repo, self.current)
         except OSError as exc:
-            raise ConfigError(f"cannot write {path}: {exc}") from exc
-        finally:
-            with contextlib.suppress(OSError):
-                tmp.unlink(missing_ok=True)
+            raise ConfigError(f"cannot write {trusted_config_path(repo)}: {exc}") from exc
 
     def describe(self) -> str:
         """One line for the user: why the project config is not in effect."""
@@ -851,6 +855,19 @@ class ProjectTrust:
 
 
 # ---------------------------------------------------------------- state
+
+
+def write_trusted_config(repo: Path, text: str) -> None:
+    """Store the approved text atomically. The caller holds config_lock()."""
+    path = trusted_config_path(repo)
+    private_dir(path.parent)
+    tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def repo_state_dir(repo: Path) -> Path:
@@ -874,6 +891,10 @@ def state_lock(path: Path) -> Generator[None]:
     with path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
+
+
+def config_lock() -> contextlib.AbstractContextManager[None]:
+    return state_lock(state_home() / "config.lock")
 
 
 STATE_VERSION = 1  # of the JSON state files read with read_state_for_update
@@ -1222,7 +1243,7 @@ base_image = "python:3.12-slim"
 keep_workspace = true                  # -> --keep-workspace
 # default_branch_start = "main"        # start revision for new bookmarks
 # main_branch = "main"                 # baseline for diff, fast-forward, @ saves and cleanup
-# deploy_config_skill = true           # copy sbx-tui-config into bookmark workspaces
+# deploy_config_skill = true           # copy the bundled configuration skills into workspaces
 
 # [feedback]
 # enabled = true                    # collect structured agent reports when supported
