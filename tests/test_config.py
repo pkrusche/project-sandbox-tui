@@ -76,12 +76,51 @@ def test_project_overrides_global(tmp_path: Path) -> None:
     assert cfg.models == {"codex": ["gpt-a", "gpt-b"]}
 
 
+def test_unknown_project_keys_warn(tmp_path: Path) -> None:
+    path = write(
+        c.project_config_path(tmp_path),
+        "future = true\n"
+        "[defaults]\nagent = 'codex'\nagnet = 'x'\n"
+        "[actions.review]\nprompt = 'Review'\nmode = 'x'\n"
+        "[profiles.deep]\neffort = 'high'\nextra = 1\n"
+        "[feedback]\nenabled = true\n"
+        "[workflows.flow]\nplanning_action = 'review'\nsteps = ['review']\nextra = 1\n"
+        "[[workspace_skills]]\nsource = 'skill'\ntargets = ['.agents/skills/skill']\nextra = 1\n",
+    )
+    cfg = candidate(tmp_path)
+    assert cfg.defaults.agent == "codex"
+    assert cfg.actions["review"].prompt == "Review"
+    assert cfg.profiles["deep"].effort == "high"
+    assert cfg.workflows["flow"].steps == ["review"]
+    assert cfg.workspace_skills[0].source == "skill"
+    assert cfg.warnings == [
+        f"{path}: {message} (ignored)"
+        for message in (
+            "unknown section(s): future",
+            "[defaults] has unknown key(s): agnet",
+            "[actions.review] has unknown key(s): mode",
+            "[profiles.deep] has unknown key(s): extra",
+            "[workflows.flow] has unknown key(s): extra",
+            "workspace_skills[0] has unknown key(s): extra",
+        )
+    ]
+    assert not c.load(tmp_path).warnings
+    c.ProjectTrust.check(tmp_path).trust(tmp_path)
+    assert c.load(tmp_path).warnings == cfg.warnings
+
+
+def test_unknown_global_key_is_still_an_error(tmp_path: Path) -> None:
+    text = "[defaults]\nagnet = 'x'\n"
+    write(c.global_config_path(), text)
+    write(c.project_config_path(tmp_path), text)
+    with pytest.raises(c.ConfigError, match=r"unknown key\(s\): agnet"):
+        candidate(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("[defaults]\nagnet = 'x'\n", "unknown key"),
-        ("[nope]\n", "unknown section"),
-        ("[defaults]\nagent = 'gpt'\n", "defaults.agent"),
+        ("[defaults]\nagent = 'gpt'\nagnet = 'x'\n", "defaults.agent"),
         ("[defaults]\neffort = 'extreme'\n", "defaults.effort"),
         ("[defaults]\nfast = 'true'\n", "defaults.fast must be true or false"),
         ("[ui]\nbell = 'yes'\n", "ui.bell must be true or false"),
@@ -128,7 +167,6 @@ def test_project_overrides_global(tmp_path: Path) -> None:
         ("[actions.review]\nprompt = 'x'\neffort = 'huge'\n", "actions.review.effort"),
         ("[actions.review]\nprompt = 'x'\ntimeout = -1\n", "actions.review.timeout"),
         ("[actions.review]\nprompt = 'x'\ntimeout = '1'\n", "must be an integer"),
-        ("[actions.review]\nprompt = 'x'\nmode = 'x'\n", "unknown key"),
         ("[actions.help]\nprompt = 'x'\n", "built-in"),
         ("[commands]\nreview = 'x'\n[actions.review]\nprompt = 'x'\n", "also in"),
     ],

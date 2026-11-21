@@ -2,7 +2,10 @@
 
 Settings are deep-merged from global
 `$XDG_CONFIG_HOME/project-sandbox-tui/config.toml` (default `~/.config/…`) and
-trusted `<repo>/.project-sandbox-tui.toml`. Unknown keys are errors.
+trusted `<repo>/.project-sandbox-tui.toml`. Unknown project keys are ignored with
+a warning. When the trusted config contains unknown items, `sbx-tui` lists them
+and asks for confirmation before opening the TUI. Unknown global keys and
+invalid values for recognized settings are errors.
 
 ## Initialization
 

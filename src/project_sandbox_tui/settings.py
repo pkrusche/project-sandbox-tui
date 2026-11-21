@@ -12,7 +12,7 @@ import contextlib
 import dataclasses
 import tomllib
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,10 +31,9 @@ from project_sandbox_tui.config import (
     ProjectTrust,
     Workflow,
     _load,
-    deep_merge,
-    from_dict,
     global_config_path,
     load,
+    merge_config,
     project_config_path,
     state_home,
     state_lock,
@@ -160,7 +159,12 @@ class Editor:
     """Change one config file of ``repo`` (``global`` or ``project``)."""
 
     def __init__(
-        self, scope: ConfigScope, repo: Path | None, global_path: Path | None = None
+        self,
+        scope: ConfigScope,
+        repo: Path | None,
+        global_path: Path | None = None,
+        *,
+        warn: Callable[[str], None] | None = None,
     ) -> None:
         if scope == "project" and repo is None:
             raise ConfigError("--project needs a jj repository (-R/--repository)")
@@ -168,6 +172,7 @@ class Editor:
         self.repo = repo
         self.global_path = global_path or global_config_path()
         self.path = project_config_path(repo) if repo and scope == "project" else self.global_path
+        self.warn = warn
 
     def read(self) -> tomlkit.TOMLDocument:
         try:
@@ -276,8 +281,12 @@ class Editor:
     def _write(self, text: str, trusted: bool) -> None:
         mine = tomllib.loads(text)
         other = self._other()
-        merged = deep_merge(other, mine) if self.scope == "project" else deep_merge(mine, other)
-        from_dict(merged).validate()  # nothing is written when this raises
+        if self.scope == "project":
+            cfg = merge_config(other, mine, self.path)
+        else:
+            project_path = project_config_path(self.repo) if self.repo is not None else None
+            cfg = merge_config(mine, other, project_path)
+        cfg.validate()  # nothing is written when this raises
 
         tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -293,6 +302,9 @@ class Editor:
             # The user made this change, to a file they had trusted.
             assert self.repo is not None
             ProjectTrust(self.path, text, None).trust(self.repo)
+        if self.warn is not None:
+            for warning in cfg.warnings:
+                self.warn(warning)
 
 
 def file_values(
@@ -302,7 +314,12 @@ def file_values(
     return tomllib.loads(tomlkit.dumps(Editor(scope, repo, global_path).read()))
 
 
-def effective_values(repo: Path | None, global_path: Path | None = None) -> dict[str, Any]:
+def effective_values(
+    repo: Path | None, global_path: Path | None = None, *, warn: Callable[[str], None] | None = None
+) -> dict[str, Any]:
     """The merged settings in effect (global + trusted project config)."""
     cfg = load(repo, global_path) if repo is not None else _load(global_path, None, None)
+    if warn is not None:
+        for warning in cfg.warnings:
+            warn(warning)
     return effective(cfg)

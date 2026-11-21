@@ -2907,7 +2907,7 @@ class SandboxTUI(App[None]):
             trust = ProjectTrust.check(self.repo)
             if not trust.needs_review:
                 return False
-            load_candidate(trust, self.config_path)  # never offer what cannot load
+            candidate = load_candidate(trust, self.config_path)
         except ConfigError as exc:
             self.notify(f"Project config not trusted: {exc}", severity="error")
             return False
@@ -2926,8 +2926,11 @@ class SandboxTUI(App[None]):
             "This file comes with the repository. It can set commands that run on this "
             "machine (sandbox.command, ui.*_command, [commands]) and loosen the sandbox (network, "
             f"credentials, extra_args). Trusting it copies it to {trusted_config_path(self.repo)}; "
-            "later changes are shown here again before they take effect.\n\n" + trust.diff()
+            "later changes are shown here again before they take effect."
         )
+        if candidate.warnings:
+            body += "\n\n" + "\n".join(f"Warning: {warning}" for warning in candidate.warnings)
+        body += "\n\n" + trust.diff()
         title = "trust the project config?" if trust.trusted is None else "project config changed"
         self.push_screen(ConfirmScreen(title, body, "trust"), decided)
         return True
@@ -2953,6 +2956,11 @@ class SandboxTUI(App[None]):
         self.show_cheatsheet(cfg.ui.cheatsheet)
         await self.refresh_data()
         self.notify("Configuration reloaded")
+        self._notify_config_warnings()
+
+    def _notify_config_warnings(self) -> None:
+        for warning in self.cfg.warnings:
+            self.notify(warning, severity="warning", timeout=10)
 
     def action_toggle_cheatsheet(self) -> None:
         self.show_cheatsheet(not self.cheatsheet_visible)

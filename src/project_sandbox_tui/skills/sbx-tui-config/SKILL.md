@@ -22,9 +22,10 @@ sbx-tui config list --project
 sbx-tui config list
 ```
 
-The project file is merged over the global file; omitted keys inherit global
-values. Unknown keys are errors. Use project scope for repository requirements;
-use global scope for personal defaults only when that is part of the request.
+The project file is merged over the global file. Omitted keys inherit global
+values. Unknown project keys are ignored with a warning. Unknown global keys
+are errors. Use project scope for repository requirements. Use global scope for
+personal defaults only when that is part of the request.
 Remembered launch choices can override configured agent, model, effort, timeout,
 and fast mode. Model and fast-mode choices are remembered separately per agent.
 `defaults.fast = true` enables fast mode for Codex and Claude and requires

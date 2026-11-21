@@ -24,7 +24,7 @@ import shlex
 import time
 import tomllib
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -323,6 +323,7 @@ class Config:
     sources: list[Path] = field(default_factory=list)  # files that were loaded
     # List the project scope first when both files define the profile.
     profile_sources: dict[str, tuple[ConfigScope, ...]] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     # ---------------------------------------------------------- helpers
 
@@ -513,6 +514,11 @@ _SECTIONS: dict[str, type[Any]] = {
     "feedback": Feedback,
     "commit_review": CommitReview,
 }
+_NAMED_SECTION_KEYS = {
+    "actions": set(ACTION_KEYS),
+    "profiles": {f.name for f in dataclasses.fields(AgentProfile)},
+    "workflows": {f.name for f in dataclasses.fields(Workflow)},
+}
 
 
 # ---------------------------------------------------------------- loading
@@ -588,19 +594,69 @@ def _build_section(name: str, cls: type[Any], data: Any) -> Any:
     if not isinstance(data, dict):
         raise ConfigError(f"[{name}] must be a table")
     instance = cls()
-    known = {f.name for f in dataclasses.fields(cls)}
-    unknown = sorted(set(data) - known)
-    if unknown:
-        raise ConfigError(f"[{name}] has unknown key(s): {', '.join(unknown)}")
     for key, value in data.items():
         setattr(instance, key, _coerce(name, key, value, getattr(instance, key)))
     return instance
 
 
+def _check_config_keys(
+    data: dict[str, Any], warn: Callable[[str], None] | None = None
+) -> dict[str, Any]:
+    """Check schema keys while leaving value validation to the merged config."""
+
+    def check(table: Any, known: set[str], message: str) -> Any:
+        if not isinstance(table, dict):
+            return table
+        unknown = sorted(set(table) - known)
+        if not unknown:
+            return table
+        names = ", ".join(key if key.isprintable() else repr(key) for key in unknown)
+        detail = f"{message}: {names}"
+        if warn is None:
+            raise ConfigError(detail)
+        warn(detail)
+        return {key: value for key, value in table.items() if key in known}
+
+    result = dict(check(data, set(_SECTIONS) | set(TABLES), "unknown section(s)"))
+    for name, cls in _SECTIONS.items():
+        if name in result:
+            keys = {f.name for f in dataclasses.fields(cls)}
+            result[name] = check(result[name], keys, f"[{name}] has unknown key(s)")
+    for name, keys in _NAMED_SECTION_KEYS.items():
+        tables = result.get(name)
+        if isinstance(tables, dict):
+            result[name] = {
+                entry: check(
+                    table,
+                    keys,
+                    f"[{name}.{entry if entry.isprintable() else repr(entry)}] has unknown key(s)",
+                )
+                for entry, table in tables.items()
+            }
+    skills = result.get("workspace_skills")
+    if isinstance(skills, list):
+        keys = set(WORKSPACE_SKILL_KEYS)
+        result["workspace_skills"] = [
+            check(table, keys, f"workspace_skills[{index}] has unknown key(s)")
+            for index, table in enumerate(skills)
+        ]
+    return result
+
+
+def merge_config(
+    global_data: dict[str, Any], project_data: dict[str, Any], project_source: Path | None
+) -> Config:
+    if project_source is None:
+        return from_dict(global_data)
+    warnings: list[str] = []
+    project_data = _check_config_keys(project_data, warnings.append)
+    cfg = from_dict(deep_merge(global_data, project_data))
+    cfg.warnings = [f"{project_source}: {warning} (ignored)" for warning in warnings]
+    return cfg
+
+
 def from_dict(data: dict[str, Any]) -> Config:
-    unknown = sorted(set(data) - set(_SECTIONS) - set(TABLES))
-    if unknown:
-        raise ConfigError(f"unknown section(s): {', '.join(unknown)}")
+    data = _check_config_keys(data)
     cfg = Config()
     for name, cls in _SECTIONS.items():
         if name in data:
@@ -637,9 +693,6 @@ def from_dict(data: dict[str, Any]) -> Config:
         where = f"workspace_skills[{index}]"
         if not isinstance(table, dict):
             raise ConfigError(f"{where} must be a table with source and targets")
-        unknown = sorted(set(table) - set(WORKSPACE_SKILL_KEYS))
-        if unknown:
-            raise ConfigError(f"{where} has unknown key(s): {', '.join(unknown)}")
         values = {k: _coerce(where, k, v, WORKSPACE_SKILL_KEYS[k]) for k, v in table.items()}
         cfg.workspace_skills.append(WorkspaceSkill(**values))
     return cfg
@@ -649,9 +702,6 @@ def _build_action(name: str, data: Any) -> Action:
     where = f"actions.{name}"
     if not isinstance(data, dict):
         raise ConfigError(f'[{where}] must be a table, e.g. [{where}] prompt = "…"')
-    unknown = sorted(set(data) - set(ACTION_KEYS))
-    if unknown:
-        raise ConfigError(f"[{where}] has unknown key(s): {', '.join(unknown)}")
     values = {k: _coerce(where, k, v, ACTION_KEYS[k]) for k, v in data.items()}
     return Action(**values)
 
@@ -665,7 +715,7 @@ def load(repo: Path, global_path: Path | None = None) -> Config:
     trust = ProjectTrust.check(repo)
     if trust.current is None or trust.trusted is None:
         return _load(global_path, None, None)
-    return _load(global_path, trust.trusted, trusted_config_path(repo))
+    return _load(global_path, trust.trusted, trusted_config_path(repo), project_path=trust.path)
 
 
 def load_candidate(trust: ProjectTrust, global_path: Path | None = None) -> Config:
@@ -674,7 +724,11 @@ def load_candidate(trust: ProjectTrust, global_path: Path | None = None) -> Conf
 
 
 def _load(
-    global_path: Path | None, project_text: str | None, project_source: Path | None
+    global_path: Path | None,
+    project_text: str | None,
+    project_source: Path | None,
+    *,
+    project_path: Path | None = None,
 ) -> Config:
     gpath = global_path or global_config_path()
     global_data: dict[str, Any] = {}
@@ -691,7 +745,7 @@ def _load(
         except ValueError as exc:
             raise ConfigError(f"{project_source}: {exc}") from exc
         sources.append(project_source)
-    cfg = from_dict(deep_merge(global_data, project_data))
+    cfg = merge_config(global_data, project_data, project_path or project_source)
     cfg.sources = sources
     profile_tables: dict[ConfigScope, Any] = {
         "project": project_data.get("profiles"),

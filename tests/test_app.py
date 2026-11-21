@@ -1620,7 +1620,9 @@ def test_reload_config(repo: Path, tmp_path: Path) -> None:
 def test_untrusted_project_config_is_reviewed_at_start(repo: Path) -> None:
     from project_sandbox_tui.config import ProjectTrust, load
 
-    (repo / ".project-sandbox-tui.toml").write_text('[project]\nbase_image = "img"\n')
+    (repo / ".project-sandbox-tui.toml").write_text(
+        '[project]\nbase_image = "img"\nfuture = true\n'
+    )
     app = SandboxTUI(repo, detect(repo), load(repo))
     assert not app.cfg.has_image_source()
 
@@ -1629,9 +1631,14 @@ def test_untrusted_project_config_is_reviewed_at_start(repo: Path) -> None:
             await pilot.pause()
             assert isinstance(app.screen, ConfirmScreen)
             assert "can set commands that run on this machine" in app.screen.body
+            assert "unknown key(s): future (ignored)" in app.screen.body
             await pilot.press("y")
             await pilot.pause()
             assert app.cfg.project.base_image == "img"
+            assert any(
+                "unknown key(s): future (ignored)" in str(n.message) and n.severity == "warning"
+                for n in app._notifications
+            )
             assert not ProjectTrust.check(repo).needs_review
 
     asyncio.run(scenario())

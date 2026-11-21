@@ -171,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sbx-tui: config error: {exc}", file=sys.stderr)
         return 2
     headless = args.cleanup_workspaces or args.print_config
+    if headless:
+        for warning in cfg.warnings:
+            _warn_config(warning)
     if trust.needs_review and headless:  # the TUI asks for a review itself
         print(f"sbx-tui: {trust.describe()} (review: sbx-tui --trust-config)", file=sys.stderr)
     if args.dry_run:
@@ -189,6 +192,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.print_config:
         return _print_config(repo, backend, cfg)
+
+    if cfg.warnings:
+        for warning in cfg.warnings:
+            _warn_config(warning)
+        if not _confirm("Start sbx-tui with these items ignored? [y/N] "):
+            return 1
 
     from project_sandbox_tui.app import SandboxTUI  # import Textual only when needed
 
@@ -222,7 +231,7 @@ def _config(args: Namespace, repo: Path | None) -> int:
     scope: config_mod.ConfigScope | None = getattr(args, "scope", None)
     if args.action == "list":
         if scope is None:
-            data = settings.effective_values(repo, args.config)
+            data = settings.effective_values(repo, args.config, warn=_warn_config)
             _warn_untrusted(repo)
         else:
             data = settings.file_values(scope, repo, args.config)
@@ -233,7 +242,7 @@ def _config(args: Namespace, repo: Path | None) -> int:
     if args.action == "get":
         key = settings.parse_key(args.key)
         _warn_untrusted(repo)
-        table = settings.effective_values(repo, args.config)
+        table = settings.effective_values(repo, args.config, warn=_warn_config)
         for part in key.path[:-1]:
             table = table.get(part, {})
         if key.path[-1] not in table:
@@ -244,7 +253,7 @@ def _config(args: Namespace, repo: Path | None) -> int:
 
     if scope is None:
         raise ConfigError(f"config {args.action} needs --global or --project")
-    editor = settings.Editor(scope, repo, args.config)
+    editor = settings.Editor(scope, repo, args.config, warn=_warn_config)
     if args.action == "path":
         print(editor.path)
         return 0
@@ -267,6 +276,18 @@ def _config(args: Namespace, repo: Path | None) -> int:
     return 0
 
 
+def _warn_config(message: str) -> None:
+    print(f"sbx-tui: config warning: {message}", file=sys.stderr)
+
+
+def _confirm(prompt: str) -> bool:
+    try:
+        answer = input(prompt)
+    except EOFError:
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
 def _warn_untrusted(repo: Path | None) -> None:
     if repo is None:
         return
@@ -281,13 +302,11 @@ def _trust_config(repo: Path, global_path: Path | None) -> int:
         state = "trusted" if trust.current is not None else "not present"
         print(f"{trust.path}: {state}")
         return 0
-    config_mod.load_candidate(trust, global_path)  # never trust a config that cannot load
+    cfg = config_mod.load_candidate(trust, global_path)
+    for warning in cfg.warnings:
+        _warn_config(warning)
     print(trust.diff(), end="")
-    try:
-        answer = input(f"Trust {trust.path}? It can run commands on this machine. [y/N] ")
-    except EOFError:
-        answer = ""
-    if answer.strip().lower() not in ("y", "yes"):
+    if not _confirm(f"Trust {trust.path}? It can run commands on this machine. [y/N] "):
         print("not trusted")
         return 1
     trust.trust(repo)
@@ -312,6 +331,7 @@ def _print_config(repo: Path, backend: JjBackend, cfg: config_mod.Config) -> int
 
     data = dataclasses.asdict(cfg)
     del data["profile_sources"]
+    del data["warnings"]
     data["sources"] = [str(p) for p in cfg.sources]
     print(json.dumps(data, indent=2))
     try:

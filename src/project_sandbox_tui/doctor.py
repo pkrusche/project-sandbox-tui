@@ -195,7 +195,7 @@ def check_runtime(cfg: Config, runner: Runner, which: Callable[[str], str | None
 
 
 def check_config(cfg: Config, repo: Path | None) -> list[Check]:
-    checks: list[Check] = []
+    checks = [Check("project config", "warn", warning) for warning in cfg.warnings]
     if repo is not None:
         try:
             trust = ProjectTrust.check(repo)

@@ -72,11 +72,73 @@ def test_trust_config_asks(
 def test_trust_config_refuses_an_invalid_file(
     repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (repo / ".project-sandbox-tui.toml").write_text("[nope]\n")
+    (repo / ".project-sandbox-tui.toml").write_text("[defaults]\nagent = 1\n")
     monkeypatch.setattr("builtins.input", lambda _prompt: "y")
     assert main([str(repo), "--trust-config"]) == 2
-    assert "unknown section" in capsys.readouterr().err
+    assert "defaults.agent must be a string" in capsys.readouterr().err
     assert config.ProjectTrust.check(repo).needs_review
+
+
+def test_unknown_project_keys_warn_in_cli(
+    repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = config.project_config_path(repo)
+    path.write_text('[project]\nbase_image = "img"\nfuture = true\n')
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    for args in (
+        [str(repo), "--trust-config"],
+        [str(repo), "--print-config"],
+        ["config", "get", "project.base_image", "-R", str(repo)],
+    ):
+        assert main(args) == 0
+        out, err = capsys.readouterr()
+        assert f"config warning: {path}: [project] has unknown key(s): future (ignored)" in err
+        if "--print-config" in args:
+            assert '"base_image": "img"' in out
+            assert '"future"' not in out and '"warnings"' not in out
+    assert not config.ProjectTrust.check(repo).needs_review
+    assert main(["config", "set", "--project", "defaults.agent", "codex", "-R", str(repo)]) == 0
+    assert "unknown key(s): future (ignored)" in capsys.readouterr().err
+    assert "future = true" in path.read_text()
+    assert config.load(repo).defaults.agent == "codex"
+
+
+@pytest.mark.parametrize("answer", [" YES ", "n", "", None])
+def test_start_requires_confirmation_for_unknown_project_items(
+    repo: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str | None,
+) -> None:
+    from project_sandbox_tui.app import SandboxTUI
+
+    path = config.project_config_path(repo)
+    path.write_text('future_section = true\n[project]\nbase_image = "img"\nfuture_key = true\n')
+    config.ProjectTrust.check(repo).trust(repo)
+    events = []
+
+    def respond(prompt: str) -> str:
+        err = capsys.readouterr().err
+        assert f"{path}: unknown section(s): future_section (ignored)" in err
+        assert f"{path}: [project] has unknown key(s): future_key (ignored)" in err
+        assert prompt.endswith("[y/N] ")
+        events.append("prompt")
+        if answer is None:
+            raise EOFError
+        return answer
+
+    def run(app: SandboxTUI) -> None:
+        assert app.cfg.project.base_image == "img"
+        events.append("run")
+
+    monkeypatch.setattr("builtins.input", respond)
+    monkeypatch.setattr(SandboxTUI, "run", run)
+    if answer == " YES ":
+        assert main([str(repo)]) == 0
+        assert events == ["prompt", "run"]
+    else:
+        assert main([str(repo)]) == 1
+        assert events == ["prompt"]
 
 
 def test_init_trusts_the_template_it_writes(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
