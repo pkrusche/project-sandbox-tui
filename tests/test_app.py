@@ -3400,6 +3400,10 @@ def test_commit_summary_batch_remains_pinned_during_bookmark_move(
             "harm_reason": "Could delete data",
             "priority_files": ["second.txt", "missing.txt"],
         },
+        {
+            "commit_id": original[2].commit,
+            "unavailable_reason": "The patch for [third.txt] was too large to assess reliably.",
+        },
     ]
     ready = tmp_path / "ready.json"
     release = tmp_path / "release"
@@ -3460,6 +3464,11 @@ def test_commit_summary_batch_remains_pinned_during_bookmark_move(
         assert panel.region.bottom <= screen.query_one("#review-commit").region.y
         assert assessment(screen).plain.startswith("[bold]Initial content[/bold]")
         assert assessment(screen).plain.endswith("Complexity L · Potentially harmful N")
+        assert any(
+            "1 of 3 commit assessments unavailable. The patch for [third.txt] was too large"
+            in str(n.message)
+            for n in app._notifications
+        )
         await pilot.press("right_square_bracket")
         assert (
             "Complexity H · Potentially harmful Y · Could delete data" in assessment(screen).plain
@@ -3468,7 +3477,10 @@ def test_commit_summary_batch_remains_pinned_during_bookmark_move(
         assert str(screen.query_one(DataTable).get_cell("0", "file")) == "Priority  second.txt"
         await pilot.press("right_square_bracket")
         assert str(screen.query_one(DataTable).get_cell("0", "file")) == "third.txt"
-        assert assessment(screen).plain == "Unavailable"
+        assert (
+            assessment(screen).plain
+            == "Unavailable · The patch for [third.txt] was too large to assess reliably."
+        )
         await close_review()
 
         screen = await open_review()
@@ -3489,9 +3501,11 @@ def test_commit_summary_batch_remains_pinned_during_bookmark_move(
         assert "Initial content" in assessment(screen).plain
         assert any("No new commit assessments" in str(n.message) for n in app._notifications)
         await pilot.press("right_square_bracket", "right_square_bracket")
-        assert assessment(screen).plain == "Unavailable"
+        assert assessment(screen).plain == "Unavailable · sandbox exited with status 7"
 
-        prepare([*entries, {**entries[0], "commit_id": original[-1].commit, "summary": "Retried"}])
+        prepare(
+            [*entries[:2], {**entries[0], "commit_id": original[-1].commit, "summary": "Retried"}]
+        )
         await pilot.press("s")
         await wait_until(pilot, ready.is_file)
         release.touch()

@@ -72,7 +72,7 @@ def test_isolated_launch_and_cleanup(
     cfg, spec = summary.resolve_launch(cfg, repo)
     backend = detect(repo)
     commits = backend.review_commits("main", "feature/x")
-    (tmp_path / "request.json").write_text('{"state": {}}')
+    (tmp_path / "request.json").write_text('{"state": {"commits": []}}')
 
     async def exercise() -> None:
         run = asyncio.create_task(summary.run(cfg, spec, backend, commits))
@@ -88,6 +88,8 @@ def test_isolated_launch_and_cleanup(
         assert root.parent == tmp_path and workspace.name == "workspace"
         assert str(workspace) == data["cwd"]
         assert all(str(repo) not in arg for arg in argv)
+        prompt = next(arg for arg in argv if arg.startswith("--prompt-text="))
+        assert '"unavailable_reason"' in prompt
         assert set(argv[2:]) >= {
             "--agent=codex",
             "--model=chosen-model",
@@ -110,7 +112,11 @@ def test_isolated_launch_and_cleanup(
                 await run
         else:
             (tmp_path / "release").touch()
-            assert await run == {}
+            assert await run == {
+                commits[0].commit: summary.Unavailable(
+                    "The reviewer returned no entry for this commit."
+                )
+            }
         assert not root.exists()
 
     asyncio.run(exercise())
@@ -136,15 +142,26 @@ def test_stage_failure_cleans_input(
     assert list(tmp_path.glob("sbx-review-*")) == []
 
 
-@pytest.mark.parametrize("state", [{}, {"commits": {}}, {"commits": [None, {}, {"commit_id": []}]}])
-def test_collect_missing_and_malformed_entries(tmp_path: Path, state: dict[str, object]) -> None:
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        ({}, "The review report is missing its commits list."),
+        ({"commits": {}}, "The review report is missing its commits list."),
+        (
+            {"commits": [None, {}, {"commit_id": []}]},
+            "The reviewer returned no entry for this commit.",
+        ),
+    ],
+)
+def test_collect_missing_and_malformed_entries(
+    tmp_path: Path, state: dict[str, object], reason: str
+) -> None:
     root = tmp_path / "feedback"
     feedback_transport.prepare(root, "review")
     feedback.report(root, "done", "success", state)
-    assert (
-        summary._collect(root / "output/feedback.json", "review", [ReviewCommit("a" * 40, "")], 0)
-        == {}
-    )
+    assert summary._collect(
+        root / "output/feedback.json", "review", [ReviewCommit("a" * 40, "")], 0
+    ) == {"a" * 40: summary.Unavailable(reason)}
 
 
 def test_collect_only_unique_valid_requested_entries(tmp_path: Path) -> None:
@@ -161,20 +178,32 @@ def test_collect_only_unique_valid_requested_entries(tmp_path: Path) -> None:
         {"commit_id": "e" * 40, **valid, "harmful": 1},
         {"commit_id": "f" * 40, **valid, "harmful": True},
         {"commit_id": "0" * 40, **valid, "summary": "   "},
+        {"commit_id": "3" * 40, "unavailable_reason": "  Binary patch\n lacks context.  "},
+        {"commit_id": "4" * 40, "unavailable_reason": []},
         {"commit_id": "1" * 40, **valid},  # unrequested
         {"commit_id": "f", **valid},  # abbreviated ID
     ]
     feedback.report(root, "done", "success", {"commits": entries})
-    commits = [ReviewCommit(char * 40, "") for char in "abcdef02"]
+    commits = [ReviewCommit(char * 40, "") for char in "abcdef0234"]
     path = root / "output/feedback.json"
     assert summary._collect(path, "review", commits, 0) == {
         "a" * 40: summary.Assessment("[bold]Plain[/bold]", "M", False, ""),
         "b" * 40: summary.Assessment(
             "[bold]Plain[/bold]", "M", True, "Could delete data", frozenset({"a b"})
         ),
+        "c" * 40: summary.Unavailable("The reviewer returned duplicate entries for this commit."),
+        **{
+            char * 40: summary.Unavailable("The assessment has missing or invalid fields.")
+            for char in "def0"
+        },
+        "2" * 40: summary.Unavailable("The reviewer returned no entry for this commit."),
+        "3" * 40: summary.Unavailable("Binary patch lacks context."),
+        "4" * 40: summary.Unavailable("The reviewer gave an empty or invalid reason for skipping."),
     }
     with pytest.raises(summary.SummaryError, match="status 7"):
         summary._collect(path, "review", commits, 7)
+    with pytest.raises(summary.SummaryError, match="timed out"):
+        summary._collect(path, "review", commits, 124)
     with pytest.raises(summary.SummaryError, match="invalid commit review feedback"):
         summary._collect(path, "another-run", commits, 0)
 
@@ -187,5 +216,8 @@ def test_collect_requires_final_success(tmp_path: Path, outcome: str | None) -> 
     with pytest.raises(summary.SummaryError, match="no final feedback"):
         summary._collect(path, "review", [], 0)
     feedback.report(root, "reported", outcome)
-    with pytest.raises(summary.SummaryError, match="did not report final success"):
+    expected = (
+        f"sandbox reported {outcome}: reported" if outcome else "before publishing final feedback"
+    )
+    with pytest.raises(summary.SummaryError, match=expected):
         summary._collect(path, "review", [], 0)

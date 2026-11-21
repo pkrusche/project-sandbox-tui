@@ -347,7 +347,7 @@ PYTHON
     scratch.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
 
-    async def exercise() -> dict[str, commit_summary.Assessment]:
+    async def exercise() -> dict[str, commit_summary.AssessmentResult]:
         async with asyncio.timeout(BUILD_DEADLINE + spec.timeout):
             return await commit_summary.run(cfg, spec, backend, commits)
 

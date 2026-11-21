@@ -15,6 +15,7 @@ from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from textwrap import shorten
 from typing import ClassVar, cast
 
 from rich.cells import cell_len
@@ -554,7 +555,7 @@ class SandboxTUI(App[None]):
         self._review_keys: dict[tuple[str, str], set[str]] = {}
         self._review_positions: dict[tuple[str, str, str], ReviewPosition] = {}
         self._pending_summaries: set[tuple[str, ...]] = set()
-        self._commit_assessments: dict[str, commit_summary.Assessment | None] = {}
+        self._commit_assessments: dict[str, commit_summary.AssessmentResult] = {}
         self.sessions: dict[str, SessionRecord] = {}
         self.filter_text = ""
         self._prefix = PrefixKeys()  # gg and dd
@@ -1397,9 +1398,10 @@ class SandboxTUI(App[None]):
     ) -> commit_summary.Assessment | str:
         if commit_ids in self._pending_summaries:
             return "Pending"
-        if commit_id in self._commit_assessments:
-            return self._commit_assessments[commit_id] or "Unavailable"
-        return ""
+        result = self._commit_assessments.get(commit_id)
+        if isinstance(result, commit_summary.Unavailable):
+            return f"Unavailable · {result.reason}"
+        return result or ""
 
     def _refresh_assessments(self) -> None:
         for screen in self.screen_stack:
@@ -1440,15 +1442,26 @@ class SandboxTUI(App[None]):
             results = await commit_summary.run(cfg, spec, self.backend, commits)
         except (ConfigError, commit_summary.SummaryError, VcsError, OSError) as exc:
             for commit_id in commit_ids:
-                self._commit_assessments.setdefault(commit_id, None)
+                if not isinstance(
+                    self._commit_assessments.get(commit_id), commit_summary.Assessment
+                ):
+                    self._commit_assessments[commit_id] = commit_summary.Unavailable(str(exc))
             self.notify(f"No new commit assessments. {exc}", severity="error")
         else:
-            for commit_id in commit_ids:
-                self._commit_assessments[commit_id] = results.get(commit_id)
-            missing = len(commit_ids) - len(results)
-            if missing:
+            self._commit_assessments.update(results)
+            reasons = [
+                result.reason
+                for result in results.values()
+                if isinstance(result, commit_summary.Unavailable)
+            ]
+            if reasons:
+                detail = (
+                    shorten(reasons[0], width=200, placeholder="…")
+                    if len(set(reasons)) == 1
+                    else "Open each affected commit to see its reason."
+                )
                 self.notify(
-                    f"Commit assessments unavailable for {missing} of {len(commit_ids)} commits.",
+                    f"{len(reasons)} of {len(commit_ids)} commit assessments unavailable. {detail}",
                     severity="warning",
                 )
         finally:

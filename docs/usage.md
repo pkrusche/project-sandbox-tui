@@ -432,10 +432,12 @@ show how much context the review requires (L/M/H) and whether the change is
 potentially harmful (Y/N), with a reason for Y. Files the agent flags for
 closer review carry a **Priority** label in the file list.
 
-Assessments are advisory and stay available for those exact commit IDs until you exit the TUI. A rewritten commit needs a new
-assessment. Missing or invalid results show **Unavailable**. Press `s` again
-after completion to retry or refresh the batch; a failed run keeps prior
-successful assessments and reports the failure in a notification.
+Assessments are advisory and stay available for those exact commit IDs until
+you exit the TUI. A rewritten commit needs a new assessment. If the reviewer
+skips a commit, **Unavailable** shows the reason it gave, such as a patch too
+large to assess reliably. The panel also identifies missing or invalid entries.
+Press `s` after completion to retry the batch. If the run fails, the panel
+shows the failure for commits that have no prior successful assessment.
 Dry-run mode previews the selected profile and pinned range.
 See [commit review configuration](configuration.md#commit-review).
 
