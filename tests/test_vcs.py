@@ -1004,6 +1004,9 @@ def test_review_commits_with_nul_in_ancestor_description(repo: Path) -> None:
         check=True,
         cwd=repo,
     )
+    jj(repo, "bookmark", "create", "with-nul")
+    branches = {branch.name: branch for branch in vcs.detect(repo).list_branches()}
+    assert branches["with-nul"].subject == branches["@"].subject == subject
     jj(repo, "new", "-m", "follow-up")
     commits = vcs.detect(repo).review_commits("main", "@")
     assert [c.subject for c in commits] == [subject, "follow-up"]

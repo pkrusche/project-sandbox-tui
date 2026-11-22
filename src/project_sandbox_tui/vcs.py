@@ -209,12 +209,12 @@ _JJ_TEMPLATE = (
     'if(remote, "", stringify(name) ++ "\\x00" ++ '
     "if(normal_target, "
     'normal_target.change_id().shortest(8) ++ "\\x00" ++ '
-    'normal_target.description().first_line() ++ "\\x00" ++ '
+    'json(normal_target.description().first_line()) ++ "\\x00" ++ '
     'normal_target.committer().timestamp().format("%s") ++ "\\x00" ++ '
     # "current" in jj: the bookmark sits on the working-copy commit or its parent
     'if(normal_target.contained_in("@ | @-"), "1", "0") ++ "\\x00" ++ '
     "normal_target.commit_id(), "
-    '"\\x00(conflicted)\\x000\\x000\\x00") ++ "\\n")'
+    '"\\x00" ++ json("(conflicted)") ++ "\\x000\\x000\\x00") ++ "\\n")'
 )
 
 
@@ -235,7 +235,7 @@ def commit_revset(commit: str) -> str:
 
 
 _JJ_WORKING_COPY_TEMPLATE = (
-    'change_id.shortest(8) ++ "\\x00" ++ description.first_line() ++ "\\x00" ++ '
+    'change_id.shortest(8) ++ "\\x00" ++ json(description.first_line()) ++ "\\x00" ++ '
     'committer.timestamp().format("%s") ++ "\\x00" ++ commit_id ++ "\\n"'
 )
 
@@ -352,7 +352,7 @@ class JjBackend:
         out = self._jj("bookmark", "list", "-T", _JJ_TEMPLATE)
         branches: list[Branch] = [working_copy]
         targets: dict[str, str] = {}
-        for line in out.splitlines():
+        for line in out.split("\n"):
             parts = line.split("\0")
             if len(parts) != 6:
                 continue
@@ -362,7 +362,7 @@ class JjBackend:
                 Branch(
                     name=name,
                     head=head,
-                    subject=subject,
+                    subject=json.loads(subject),
                     timestamp=int(ts) if ts.isdigit() else 0,
                     is_current=current == "1",
                     commit=commit,
@@ -427,7 +427,7 @@ class JjBackend:
             Branch(
                 name=WORKING_COPY,
                 head=head,
-                subject=subject or "(no description set)",
+                subject=json.loads(subject) or "(no description set)",
                 timestamp=int(ts) if ts.isdigit() else 0,
                 is_current=True,
                 working_copy=True,
