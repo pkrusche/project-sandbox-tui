@@ -206,6 +206,7 @@ def test_actions(tmp_path: Path) -> None:
     action = cfg.actions["review"]
     assert (action.agent, action.effort, action.timeout) == ("", "high", 0)
     assert action.render("feature/x", "main") == "Review feature/x against main.\nKeep {braces}.\n"
+    assert action.render("feature/{main}", "main").startswith("Review feature/{main} against main.")
     assert action.render("b", "m", " look at x ").endswith("Keep {braces}.\n\nlook at x\n")
     assert action.to_dict() == {"prompt": action.prompt, "effort": "high", "timeout": 0}
 

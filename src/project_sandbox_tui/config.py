@@ -265,7 +265,8 @@ class Action:
         return bool(self.agent or self.model or self.effort)
 
     def render(self, bookmark: str, main: str, extra: str = "") -> str:
-        text = self.prompt.replace("{bookmark}", bookmark).replace("{main}", main).rstrip()
+        values = {"bookmark": bookmark, "main": main}
+        text = re.sub(r"\{(bookmark|main)\}", lambda m: values[m[1]], self.prompt).rstrip()
         if extra.strip():
             text += f"\n\n{extra.strip()}"
         return text + "\n"
