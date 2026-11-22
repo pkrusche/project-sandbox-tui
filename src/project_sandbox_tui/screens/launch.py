@@ -716,6 +716,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             self.notify(str(exc), severity="warning")
             self.query_one("#extra-args").focus()
             return
+        if spec.gateway and not self.cfg.network.agent_proxy:
+            self.notify("the agent gateway requires network.agent_proxy", severity="warning")
+            return
         if spec.gateway and not spec.model:
             self.notify(
                 "the agent gateway requires a model: choose one of the gateway's models",

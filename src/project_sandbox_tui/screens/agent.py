@@ -89,11 +89,7 @@ class AgentControls(Vertical):
         return bool(self.cfg.network.agent_proxy)
 
     def _uses_gateway(self, agent: str) -> bool:
-        return (
-            self.gateway_configured
-            and agent in GATEWAY_AGENTS
-            and self._gateway_by_agent.get(agent, False)
-        )
+        return agent in GATEWAY_AGENTS and self._gateway_by_agent.get(agent, False)
 
     def compose(self) -> ComposeResult:
         agent = self.defaults.agent
@@ -104,7 +100,9 @@ class AgentControls(Vertical):
         gateway = CycleField(
             "gateway", ("off", "on"), "on" if self._uses_gateway(agent) else "off", id="gateway"
         )
-        gateway.display = self.gateway_configured and agent in GATEWAY_AGENTS
+        gateway.display = (
+            self.gateway_configured and agent in GATEWAY_AGENTS
+        ) or self._uses_gateway(agent)
         yield gateway
         yield CycleField(
             "model",
@@ -228,7 +226,9 @@ class AgentControls(Vertical):
 
     def _show_gateway(self, agent: str) -> None:
         gateway = self.query_one("#gateway", CycleField)
-        gateway.display = self.gateway_configured and agent in GATEWAY_AGENTS
+        gateway.display = (
+            self.gateway_configured and agent in GATEWAY_AGENTS
+        ) or self._uses_gateway(agent)
         with self.prevent(CycleField.Changed):
             gateway.value = "on" if self._uses_gateway(agent) else "off"
 

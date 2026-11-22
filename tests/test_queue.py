@@ -265,6 +265,38 @@ def test_editing_prompt_keeps_queued_setup(
     run_app(repo, cfg, scenario)
 
 
+def test_edit_gateway_task_after_proxy_removed(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    cfg = fake_cfg()
+    saved = replace(prompt("review"), agent="bash", gateway=True, model="saved-model")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.queue.pause(saved.branch, True)
+        app.queue.add(saved)
+        await pilot.press("j", "L")
+        await wait_for_screen(app, pilot, QueueScreen)
+        await pilot.press("e")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        gateway = form.query_one("#gateway", CycleField)
+        assert gateway.display and gateway.value == "on"
+        form.query_one("#prompt", TextArea).text = "updated review"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert app.screen is form
+        assert any("network.agent_proxy" in str(n.message) for n in app._notifications)
+        app.queue.load()
+        assert app.queue.get(saved.branch).tasks[0].spec == saved
+
+        gateway.focus()
+        await pilot.press("right", "ctrl+s")
+        await wait_for_screen(app, pilot, QueueScreen)
+        app.queue.load()
+        assert app.queue.get(saved.branch).tasks[0].spec == replace(
+            saved, prompt_text="updated review", gateway=False, model=""
+        )
+
+    run_app(repo, cfg, scenario)
+
+
 def test_busy_run_queues_but_interactive_does_not(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
