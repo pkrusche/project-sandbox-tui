@@ -122,6 +122,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         draft: str = "",
         submit_label: str = "launch",
         fixed_branch: bool = False,
+        new_branch_only: bool = False,
         initial_level: int | None = None,
         save: Callable[[LaunchSpec], str | None] | None = None,
         blocked_guidance: str = "",
@@ -140,6 +141,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.branch = branch
         self.submit_label = submit_label
         self.fixed_branch = fixed_branch
+        self.new_branch_only = new_branch_only
         self.initial_level = initial_level
         self.save = save
         self.blocked_guidance = blocked_guidance
@@ -386,6 +388,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             hint.update(Text(error, "yellow"))
         elif name and name not in self.branches and not validate_branch_name(name):
             hint.update(Text(f"new bookmark {name}, created from {self.branch_label}", "yellow"))
+        elif self.new_branch_only:
+            hint.update(Text("enter a new bookmark name"))
         else:
             hint.update(KeyHints("existing name selects it · new name creates it from base"))
 
@@ -673,6 +677,8 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     def _target_error(self, name: str) -> str:
         names = self.octopus.existing if self.octopus is not None else self.branches
+        if self.new_branch_only and name in names:
+            return f"choose a new bookmark for the result: {name} already exists"
         return session_target_error(name, names, self.cfg.project.main_branch)
 
     def action_launch(self) -> None:

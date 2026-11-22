@@ -1633,6 +1633,8 @@ class SandboxTUI(App[None]):
             problem = "no main bookmark to compare with (project.main_branch)"
         elif name == main:
             problem = f"select a bookmark to reorganise against {main}"
+        elif branch.comparison_error:
+            problem = branch.comparison_error
         elif branch.comparison is not None and not branch.comparison.ahead:
             problem = f"{name} has no commits ahead of {main} to reorganise"
         if problem or main is None:
@@ -1642,11 +1644,6 @@ class SandboxTUI(App[None]):
         result = reorganise.result_name(name, known)
         last = LastUsed.load(self.repo)
         draft_key = (":reorganise", name)
-
-        def check(spec: LaunchSpec) -> str | None:
-            if spec.branch == name:
-                return f"reorganise into another bookmark: {name} is the one being reorganised"
-            return None
 
         screen = LaunchScreen(
             result,
@@ -1659,18 +1656,16 @@ class SandboxTUI(App[None]):
             branches=[b.name for b in self.branches],
             draft=self._drafts.get(draft_key, ""),
             submit_label="run / queue",
-            save=check,
+            new_branch_only=True,
             heading=f"reorganise {main}..{name} · unsupervised run",
             render_prompt=partial(reorganise.prompt, name, main),
         )
 
         def chosen(spec: LaunchSpec | None) -> None:
             self._keep_draft(draft_key, screen.draft, spec, reopen=f":reorganise {name}")
-            if spec is not None and check(spec):  # the form refuses this already
-                return
             self._launch_chosen(
                 spec,
-                new_branch_start=main if spec is not None and spec.branch not in known else None,
+                new_branch_start=main,
                 draft_key=draft_key,
                 remember_defaults=False,
             )

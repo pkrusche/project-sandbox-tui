@@ -19,6 +19,7 @@ from project_sandbox_tui.config import Config
 from project_sandbox_tui.screens.command import CommandScreen
 from project_sandbox_tui.screens.dialogs import ConfirmScreen, HelpScreen, MessageScreen
 from project_sandbox_tui.vcs import VcsError
+from tests.conftest import jj
 from tests.test_app import run_app, wait_for_screen, wait_until
 
 
@@ -1073,6 +1074,23 @@ def test_reorganise_prompt_and_result_name() -> None:
     assert """jj diff --from '"fix-"' --to '"fix--reorganised"'""" in text
 
 
+def test_reorganise_refuses_a_conflicted_source(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    jj(repo, "bookmark", "create", "source", "-r", "main")
+    operation = jj(repo, "op", "log", "--no-graph", "-n", "1", "-T", "id")
+    jj(repo, "bookmark", "move", "source", "--to", "feature/x")
+    jj(repo, "--at-op", operation, "bookmark", "move", "source", "--to", "@")
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await app.run_command(":reorganise source")
+        await pilot.pause()
+        assert app.screen is app.main
+        assert any("bookmark 'source' is conflicted" in message for message in messages(app))
+
+    run_app(repo, fake_cfg(), scenario)
+
+
 def test_reorganise_opens_a_prefilled_unsupervised_form(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:
@@ -1082,6 +1100,7 @@ def test_reorganise_opens_a_prefilled_unsupervised_form(
     from project_sandbox_tui.screens.launch import LaunchScreen
     from project_sandbox_tui.widgets import CycleField
 
+    jj(repo, "bookmark", "create", "other", "-r", "main")
     cfg = fake_cfg()
     cfg.defaults.agent = "bash"
 
@@ -1115,13 +1134,13 @@ def test_reorganise_opens_a_prefilled_unsupervised_form(
         branch.value = "feature/x-split"
         await pilot.pause()
         assert "the bookmark feature/x-split" in area.text
-        # Reorganising into the source bookmark is refused.
-        branch.value = "feature/x"
-        await pilot.pause()
         area.text = "exit:0"
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert isinstance(app.screen, LaunchScreen) and not app.jobs.jobs
+        for existing in ("feature/x", "@", "main", "other"):
+            branch.value = existing
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert app.screen is form and not app.jobs.jobs
 
         branch.value = "feature/x-split"
         await pilot.pause()

@@ -289,8 +289,8 @@ to the original bookmark's.
 Choose the setup as in any launch form: a persona with its provider, a saved
 profile or custom settings, and the level. The prompt can be edited; it follows
 the bookmark field until you change it. `esc` keeps an edited prompt as a draft
-for the next `:reorganise` of the same bookmark. The bookmark being reorganised
-cannot be the target, and the working copy and main cannot be reorganised.
+for the next `:reorganise` of the same bookmark. The result must have a new
+bookmark name. Select a feature bookmark as the source.
 Like agent actions, these runs do not change the remembered launch choices or
 the prompt history. The agent needs to create jj commits, so levels with
 read-only or hidden VCS access (4 and 5) cannot complete it.
