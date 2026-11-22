@@ -43,6 +43,7 @@ from project_sandbox_tui import (
     launchers,
     notify,
     octopus,
+    reorganise,
     security,
     terminal,
 )
@@ -1608,6 +1609,74 @@ class SandboxTUI(App[None]):
 
         self.push_screen(screen, chosen)
 
+    def _open_reorganise(self, name: str = "") -> None:
+        """``:reorganise [BOOKMARK]``: the unsupervised launch form, pre-filled to
+        rebuild ``main..BOOKMARK`` as task-aligned commits on a new bookmark."""
+        if not name:
+            self._end_visual()
+            selected = self.selection()
+            if len(selected) > 1:
+                self.notify("select one bookmark to reorganise", severity="warning")
+                return
+            found = selected[0] if selected else self._require_branch()
+            if found is None:
+                return
+            name = found
+        main = self.main_name()
+        branch = self.branch(name)
+        problem = ""
+        if name == WORKING_COPY:
+            problem = ":reorganise needs a bookmark, not the working copy"
+        elif branch is None:
+            problem = f"no bookmark {name}"
+        elif main is None:
+            problem = "no main bookmark to compare with (project.main_branch)"
+        elif name == main:
+            problem = f"select a bookmark to reorganise against {main}"
+        elif branch.comparison is not None and not branch.comparison.ahead:
+            problem = f"{name} has no commits ahead of {main} to reorganise"
+        if problem or main is None:
+            self.notify(problem, severity="warning")
+            return
+        known = {b.name for b in self.branches}
+        result = reorganise.result_name(name, known)
+        last = LastUsed.load(self.repo)
+        draft_key = (":reorganise", name)
+
+        def check(spec: LaunchSpec) -> str | None:
+            if spec.branch == name:
+                return f"reorganise into another bookmark: {name} is the one being reorganised"
+            return None
+
+        screen = LaunchScreen(
+            result,
+            "background",
+            self.cfg,
+            last,
+            resolve_launch_defaults(self.cfg, last),
+            self._form_preview,
+            branch_label=main,
+            branches=[b.name for b in self.branches],
+            draft=self._drafts.get(draft_key, ""),
+            submit_label="run / queue",
+            save=check,
+            heading=f"reorganise {main}..{name} · unsupervised run",
+            render_prompt=partial(reorganise.prompt, name, main),
+        )
+
+        def chosen(spec: LaunchSpec | None) -> None:
+            self._keep_draft(draft_key, screen.draft, spec, reopen=f":reorganise {name}")
+            if spec is not None and check(spec):  # the form refuses this already
+                return
+            self._launch_chosen(
+                spec,
+                new_branch_start=main if spec is not None and spec.branch not in known else None,
+                draft_key=draft_key,
+                remember_defaults=False,
+            )
+
+        self.push_screen(screen, chosen)
+
     def _blocked_guidance(self, name: str, task: QueuedTask | None = None) -> str:
         if task is None:
             queue = self.queue.get(name)
@@ -1847,7 +1916,13 @@ class SandboxTUI(App[None]):
 
         self.push_screen(screen, launched)
 
-    def _keep_draft(self, key: tuple[str, ...], draft: str | None, spec: LaunchSpec | None) -> None:
+    def _keep_draft(
+        self,
+        key: tuple[str, ...],
+        draft: str | None,
+        spec: LaunchSpec | None,
+        reopen: str = "r",
+    ) -> None:
         """Keep an edited prompt until its launch starts, so esc never loses it."""
         if draft is None:  # not an unsupervised run
             return
@@ -1856,7 +1931,7 @@ class SandboxTUI(App[None]):
             return
         self._drafts[key] = draft
         if spec is None:
-            self.notify("prompt kept as a draft: r brings it back")
+            self.notify(f"prompt kept as a draft: {reopen} brings it back")
 
     def _launch_chosen(
         self,
@@ -1865,6 +1940,7 @@ class SandboxTUI(App[None]):
         new_branch_start: str | None = None,
         draft_key: tuple[str, ...] = (),
         blocked_guidance: str = "",
+        remember_defaults: bool = True,
     ) -> None:
         if spec is None:
             return
@@ -1900,6 +1976,7 @@ class SandboxTUI(App[None]):
             new_branch_start=new_branch_start,
             draft_key=draft_key,
             blocked_guidance=blocked_guidance,
+            remember_defaults=remember_defaults,
         )
 
     @work(group="octopus")  # not exclusive: see _create_branch
@@ -3299,6 +3376,8 @@ class SandboxTUI(App[None]):
             self._open_host_agents(command.argv)
         elif command.builtin == "workflow":
             self._run_workflow(command)
+        elif command.builtin == "reorganise":
+            self._open_reorganise(*command.argv)
         else:
             self._run_shell(command)
 

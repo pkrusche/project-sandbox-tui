@@ -18,6 +18,7 @@ require a `.jj/` directory.
 | `launchers.py`, `terminal.py` | External terminals and terminal restoration |
 | `host_session.py` | External host agent runner: persistent PID and exit status |
 | `octopus.py`, `cleanup.py` | Host-side integration and workspace cleanup |
+| `reorganise.py` | `:reorganise` result names and pre-filled prompt |
 | `workspace_skills.py` | Workspace creation and skill deployment before launches |
 | `models.py`, `history.py`, `notify.py` | Suggestions, prompt and command history, notifications |
 | `commands.py` | `:` command parsing (`:!`, `:&`, `:*`, `[actions]`), completion and leader-key mappings |
@@ -123,7 +124,7 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 |---|---|---|
 | Refresh (every `ui.refresh_seconds`) | graph, jobs, tasks, queue → jobs, then graph and dispatch when needed | Adopt bookmarks, poll jobs and tasks, capture finished runs, dispatch pending prompts and record new runs |
 | `i` | jobs, graph | Recheck busy, prepare the workspace, reserve the session and add the run node |
-| `r`, `:NAME` actions | queue; queue → jobs, graph | Save the prompt, launch when idle and add the run node. A new bookmark typed into the form is recorded first, under graph |
+| `r`, `:reorganise`, `:NAME` actions | queue; queue → jobs, graph | Save the prompt, launch when idle and add the run node. A new bookmark typed into the form is recorded first, under graph |
 | `:workflow` | queued: as `r`; interactive: queue → jobs, graph | Refuse while another workflow is in progress, reserve the planner and its queue entry together, then add the run node |
 | `L` edits / pause / resume | queue | Reload and atomically save pending tasks, history, marks and pause state |
 | `I` | jobs, graph | Recheck busy, create a missing workspace and deploy skills, reserve the target before launching the host agent; add the run node |

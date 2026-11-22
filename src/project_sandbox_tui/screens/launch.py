@@ -124,9 +124,18 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         fixed_branch: bool = False,
         save: Callable[[LaunchSpec], str | None] | None = None,
         blocked_guidance: str = "",
+        heading: str = "",
+        render_prompt: Callable[[str], str] | None = None,
     ) -> None:
-        """``draft``: a prompt typed earlier but not launched; shown instead of ``prompt_text``."""
+        """``draft``: a prompt typed earlier but not launched; shown instead of ``prompt_text``.
+
+        ``heading`` replaces the title's description of the run. ``render_prompt``
+        generates the prompt for the bookmark field's value: the prompt follows
+        that field until the user edits it.
+        """
         super().__init__()
+        self.heading = heading
+        self.render_prompt = render_prompt
         self.branch = branch
         self.submit_label = submit_label
         self.fixed_branch = fixed_branch
@@ -158,6 +167,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             self.branch = octopus_mod.default_result_name("merge", octopus.inputs)
             self._auto_result = self.branch
             self._auto_prompt = self._render_template("merge", self.branch, octopus.default_base)
+            self.initial_prompt = draft or self._auto_prompt
+        elif render_prompt is not None:
+            self._auto_prompt = render_prompt(branch)
+            self._baseline_prompt = self._auto_prompt
             self.initial_prompt = draft or self._auto_prompt
 
     def compose(self) -> ComposeResult:
@@ -296,7 +309,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         what = "interactive session" if self.mode == "interactive" else "unsupervised run"
         if self.submit_label != "launch":
             what = f"{self.submit_label} · unsupervised task"
-        title = Text(what)
+        title = Text(self.heading or what)
         if self.octopus is not None:
             op = self._value("#operation", "merge") or "merge"
             title.append(f" · {op} {len(self.octopus.inputs)} bookmarks into ")
@@ -365,6 +378,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         if self.octopus is not None:  # the result is always new; the title names it
             return
         name = self.query_one("#branch", Input).value.strip()
+        self._follow_branch(name)
         hint = self.query_one("#branch-hint", Static)
         if error := self._target_error(name):
             hint.update(Text(error, "yellow"))
@@ -372,6 +386,18 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             hint.update(Text(f"new bookmark {name}, created from {self.branch_label}", "yellow"))
         else:
             hint.update(KeyHints("existing name selects it · new name creates it from base"))
+
+    def _follow_branch(self, name: str) -> None:
+        """Regenerate an unedited ``render_prompt`` prompt for the bookmark field."""
+        if self.render_prompt is None or self.mode != "background":
+            return
+        area = self.query_one("#prompt", PromptArea)
+        if area.text != self._auto_prompt:  # edited, or a draft: keep it
+            return
+        fresh = self.render_prompt(name)
+        if fresh != area.text:
+            self._auto_prompt = self._baseline_prompt = fresh
+            area.replace_text(fresh)
 
     def _update_prompt_hint(self) -> None:
         if self.mode != "background":

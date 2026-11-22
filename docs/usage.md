@@ -185,6 +185,7 @@ removes the workspace instead.
 | `:*!cmd` · `:*name args` | Run a background task in [each target workspace](#running-in-each-workspace) at once |
 | `:action args` | Start the [`[actions]`](configuration.md#agent-actions) prompt on each target, with `args` appended |
 | `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
+| `:reorganise [bookmark]` (`:reorganize`) | [Reorganise](#reorganising-a-bookmark) `main..bookmark` into smaller, task-aligned commits on a new bookmark |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
 | `:config-profiles` | View profile sources, create or edit project profiles, or delete the selected profile with `ctrl+d` |
 | `:init` | Run [initialization](configuration.md#initialization) for the open repository, show results and reload configuration |
@@ -272,6 +273,29 @@ remembered or default provider), its `profile`, or its own agent, model and
 effort; otherwise they use the setup the launch forms would select. See
 [agent actions](configuration.md#agent-actions). They don't change the
 remembered defaults, the remembered setup or the prompt history.
+
+### Reorganising a bookmark
+
+`:reorganise` opens the unsupervised launch form for the highlighted bookmark
+(or the one marked bookmark, or the bookmark named after the command). The
+form is pre-filled to rebuild the changes in `main..bookmark` as a series of
+smaller commits, each aligned with a task of the specification or plan they
+implement (an OpenSpec change, a Markdown checklist, or the commit
+descriptions). The run goes to a new bookmark, `bookmark-reorganised` by
+default (numbered `-reorganised-2`, … when taken), created from main, so the
+original commits stay unchanged. The agent is asked to leave a final tree equal
+to the original bookmark's.
+
+Choose the setup as in any launch form: a persona with its provider, a saved
+profile or custom settings, and the level. The prompt can be edited; it follows
+the bookmark field until you change it. `esc` keeps an edited prompt as a draft
+for the next `:reorganise` of the same bookmark. The bookmark being reorganised
+cannot be the target, and the working copy and main cannot be reorganised.
+Like agent actions, these runs do not change the remembered launch choices or
+the prompt history. The agent needs to create jj commits, so levels with
+read-only or hidden VCS access (4 and 5) cannot complete it.
+Compare the result with [diff review](#diff-review) before replacing the
+original bookmark.
 
 ### Leader key
 

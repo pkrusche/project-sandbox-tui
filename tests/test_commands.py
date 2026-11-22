@@ -26,6 +26,8 @@ CONFIGURED = {"test": "uv run pytest", "lint": "uv run ruff check ."}
         ("doctor", "doctor", ""),
         ("update-models", "update-models", ""),
         ("reload", "reload", ""),
+        ("reorganise", "reorganise", ""),
+        ("reorganize", "reorganise", ""),
     ],
 )
 def test_parse(line: str, builtin: str, script: str) -> None:
@@ -49,11 +51,21 @@ def test_parse(line: str, builtin: str, script: str) -> None:
         ("&doctor", "cannot run in the background"),
         ("update-models one two", "accepts one optional source"),
         ('update-models ""', "accepts one optional source"),
+        ("reorganise a b", "takes at most one bookmark"),
+        ("*reorganise", "cannot run per workspace"),
+        ("&reorganise a", "cannot run in the background"),
     ],
 )
 def test_parse_errors(line: str, message: str) -> None:
     with pytest.raises(cmd.CommandError, match=message):
         cmd.parse(line, CONFIGURED)
+
+
+def test_parse_reorganise_bookmark() -> None:
+    assert cmd.parse(":reorganise  feature/x ", {}).argv == ("feature/x",)
+    assert cmd.parse("reorganise", {}).argv == ()
+    with pytest.raises(cmd.CommandError, match="built-in command"):
+        cmd.validate({"reorganise": "true"}, "", {})
 
 
 def test_parse_host_agent_arguments() -> None:

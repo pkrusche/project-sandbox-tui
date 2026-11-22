@@ -8,6 +8,8 @@
   sandbox run on each target bookmark, with ``ARGS`` appended to the prompt.
 - Built-in commands control the TUI itself (:data:`BUILTINS`).
 - ``:host AGENT [ARGS]`` runs an agent CLI directly in each target workspace.
+- ``:reorganise [BOOKMARK]`` opens an unsupervised launch form that rebuilds
+  ``main..BOOKMARK`` as smaller, task-aligned commits on a new bookmark.
 - A leading ``*`` runs a shell command once in each target workspace instead
   of once in the repository: ``:*!pytest -x``, ``:*test``. Actions run per
   target anyway, so ``*`` changes nothing for them.
@@ -36,12 +38,13 @@ BUILTINS: dict[str, str] = {
     "update-models": "refresh model suggestions: :update-models [SOURCE]",
     "host": "run a host agent: :host AGENT [ARGS...]",
     "workflow": "start a configured workflow: :workflow NAME [TOPIC...]",
+    "reorganise": "split main..BOOKMARK into task-aligned commits: :reorganise [BOOKMARK]",
     "quit": "quit (asks while runs continue)",
     "refresh": "refresh the bookmark list",
     "reload": "reload configuration",
     "config-profiles": "configure saved agent profiles",
 }
-ALIASES = {"q": "quit"}  # not offered by completion
+ALIASES = {"q": "quit", "reorganize": "reorganise"}  # not offered by completion
 NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 
 
@@ -91,6 +94,11 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
                 return Command(line, builtin=builtin)
             workflow, *topic = args.split(maxsplit=1)
             return Command(line, builtin=builtin, argv=(workflow,), args=topic[0] if topic else "")
+        if builtin == "reorganise":
+            names = tuple(args.split())
+            if len(names) > 1:
+                raise CommandError(f":{name} takes at most one bookmark")
+            return Command(line, builtin=builtin, argv=names)
         if builtin in ("host", "update-models"):
             try:
                 argv = tuple(shlex.split(args))

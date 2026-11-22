@@ -1059,3 +1059,97 @@ def test_doctor_shows_capability_sections(
         assert "auto selects docker" in report.body
 
     run_app(repo, cfg, scenario)
+
+
+def test_reorganise_prompt_and_result_name() -> None:
+    from project_sandbox_tui import reorganise
+
+    assert reorganise.result_name("feature/x", {"main"}) == "feature/x-reorganised"
+    taken = {"feature/x-reorganised", "feature/x-reorganised-2"}
+    assert reorganise.result_name("feature/x", taken) == "feature/x-reorganised-3"
+    text = reorganise.prompt("fix-", "main", "fix--reorganised")
+    assert "main..fix- into a series of smaller commits" in text
+    assert """jj log -r '"main".."fix-"'""" in text  # revset quoting survives the shell
+    assert """jj diff --from '"fix-"' --to '"fix--reorganised"'""" in text
+
+
+def test_reorganise_opens_a_prefilled_unsupervised_form(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from textual.widgets import TextArea
+
+    from project_sandbox_tui.config import LastUsed
+    from project_sandbox_tui.screens.launch import LaunchScreen
+    from project_sandbox_tui.widgets import CycleField
+
+    cfg = fake_cfg()
+    cfg.defaults.agent = "bash"
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        # Refused without a bookmark with commits ahead of main.
+        names = [r.branch.name for r in app.visible_rows()]
+        for name in ("@", "main"):
+            app.table.move_cursor(row=names.index(name))
+            await type_line(pilot, "reorganise")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.screen is app.main
+        assert any("needs a bookmark, not the working copy" in m for m in messages(app))
+        assert any("select a bookmark to reorganise against main" in m for m in messages(app))
+
+        await type_line(pilot, "reorganise feature/x")
+        await pilot.press("enter")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        assert form.mode == "background"
+        assert "reorganise main..feature/x" in str(form.query_one("#title", Static).render())
+        branch = form.query_one("#branch", Input)
+        assert branch.value == "feature/x-reorganised"
+        assert "created from main" in str(form.query_one("#branch-hint", Static).render())
+        # The setup (persona, profile or custom) stays selectable.
+        assert form.query_one("#profile", CycleField).display
+        area = form.query_one("#prompt", TextArea)
+        assert "main..feature/x into a series of smaller commits" in area.text
+        assert "commits on the bookmark feature/x-reorganised," in area.text
+
+        # The prompt follows the bookmark field until it is edited.
+        branch.value = "feature/x-split"
+        await pilot.pause()
+        assert "the bookmark feature/x-split" in area.text
+        # Reorganising into the source bookmark is refused.
+        branch.value = "feature/x"
+        await pilot.pause()
+        area.text = "exit:0"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert isinstance(app.screen, LaunchScreen) and not app.jobs.jobs
+
+        branch.value = "feature/x-split"
+        await pilot.pause()
+        assert area.text == "exit:0"  # edited: no longer regenerated
+        await pilot.press("ctrl+s")
+        await wait_until(pilot, lambda: "feature/x-split" in app.jobs.jobs)
+        job = app.jobs.jobs["feature/x-split"]
+        assert job.mode == "background" and job.spec.prompt_text == "exit:0"
+        assert "--branch=feature/x-split" in job.argv
+        assert "feature/x" not in app.jobs.jobs
+        backend = app.backend
+        assert backend._bookmark_commit("feature/x-split") == backend._bookmark_commit("main")
+        assert app.prompt_history.newest_first() == []  # not a typed prompt
+        assert LastUsed.load(repo).agent == ""  # nor remembered launch choices
+
+        # feature/x-split does not take the default name; an edited prompt is kept on esc.
+        await wait_until(pilot, lambda: not app.jobs.running_count(), timeout=15)
+        await type_line(pilot, "reorganise feature/x")
+        await pilot.press("enter")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        assert form.query_one("#branch", Input).value == "feature/x-reorganised"
+        form.query_one("#prompt", TextArea).text = "edited"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert any(":reorganise feature/x brings it back" in m for m in messages(app))
+        await type_line(pilot, "reorganise feature/x")
+        await pilot.press("enter")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        assert form.query_one("#prompt", TextArea).text == "edited"
+
+    run_app(repo, cfg, scenario)

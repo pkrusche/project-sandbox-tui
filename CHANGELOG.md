@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `:reorganise [BOOKMARK]` (alias `:reorganize`) opens the unsupervised launch
+  form with a selectable persona, profile or custom setup and a pre-filled
+  prompt to rebuild `main..BOOKMARK` as smaller commits aligned with its
+  specification or implementation tasks, on a new `BOOKMARK-reorganised`
+  bookmark created from main. `reorganise` is now a built-in name, so
+  `[commands]` and `[actions]` entries cannot use it. See
+  [reorganising a bookmark](docs/usage.md#reorganising-a-bookmark).
 - Model catalogue, personas and security levels. Launch forms select a setup
   by **persona** (a provider row such as Codex, Claude Code, Gateway/Anthropic
   or Copilot/OpenAI plus a persona such as planner, checker, implementer,
