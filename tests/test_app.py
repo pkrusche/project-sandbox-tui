@@ -2319,7 +2319,7 @@ def test_diff_viewer_failure_recovers(
     ]
 
     def viewer(argv: list[str], *, cwd: Path) -> int:
-        base, target = (f'"{c}"' for c in commits)
+        base, target = (f'commit_id("{c}")' for c in commits)
         assert argv[:7] == ["jj", "diff", "--from", base, "--to", target, 'root-file:"b.txt"']
         assert "--config=ui.paginate=auto" in argv
         assert cwd == repo

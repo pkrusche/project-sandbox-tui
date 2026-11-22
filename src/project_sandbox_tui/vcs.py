@@ -407,6 +407,7 @@ class JjBackend:
     def _compare_commits(self, base: str, target: str) -> MainComparison:
         if base == target:
             return MainComparison(0, 0, 0)
+        base, target = commit_revset(base), commit_revset(target)
         ahead = int(self._jj("log", "--count", "-r", f"{base}..{target}"))
         behind = int(self._jj("log", "--count", "-r", f"{target}..{base}"))
         # One byte per file, independent of filenames and the user's diff formatter.
@@ -524,7 +525,9 @@ class JjBackend:
     def get_description(self, name: str) -> tuple[str, str]:
         """Return the target commit and its full description, including newlines."""
         commit = self._description_commit(name)
-        return commit, self._jj("log", "--no-graph", "-r", commit, "-T", "description")
+        return commit, self._jj(
+            "log", "--no-graph", "-r", commit_revset(commit), "-T", "description"
+        )
 
     def set_description(self, name: str, description: str, expected: str) -> None:
         """Describe the target only if it still points to the commit the user edited."""
@@ -535,11 +538,13 @@ class JjBackend:
             if name == WORKING_COPY
             else f"bookmarks(exact:{json.dumps(name, ensure_ascii=False)})"
         )
-        self._jj("describe", "-r", f"{target} & {expected}", f"--message={description}")
+        self._jj(
+            "describe", "-r", f"{target} & {commit_revset(expected)}", f"--message={description}"
+        )
 
     def restore_bookmark(self, name: str, commit: str) -> None:
         """Recreate a deleted bookmark at ``commit``, even if it was abandoned since."""
-        self._jj("bookmark", "create", revset_symbol(name), "-r", commit)
+        self._jj("bookmark", "create", revset_symbol(name), "-r", commit_revset(commit))
 
     def move_bookmark(self, name: str, expected: str, to: str) -> None:
         """Move bookmark ``name`` from ``expected`` to ``to``, backwards too (undoing ``f``).
@@ -548,7 +553,9 @@ class JjBackend:
         """
         if self._bookmark_commit(name) != expected:
             raise VcsError(f"{name} has moved since")
-        self._jj("bookmark", "set", revset_symbol(name), "-r", to, "--allow-backwards")
+        self._jj(
+            "bookmark", "set", revset_symbol(name), "-r", commit_revset(to), "--allow-backwards"
+        )
 
     def bookmarked_ancestors(self, commit: str) -> list[list[str]]:
         """Bookmarks on the nearest bookmarked proper ancestors of ``commit``,
@@ -557,7 +564,7 @@ class JjBackend:
             "log",
             "--no-graph",
             "-r",
-            f"heads(::{commit}- & bookmarks())",
+            f"heads(::{commit_revset(commit)}- & bookmarks())",
             "-T",
             'local_bookmarks.map(|b| stringify(b.name())).join("\\x00") ++ "\\n"',
         )
@@ -625,8 +632,16 @@ class JjBackend:
         return [*argv, *overrides]
 
     def diff_files_command(self, base: str, target: str, paths: Collection[str]) -> list[str]:
-        """Interactive diff of some files, as ``diff_command``."""
-        return [*self.diff_command(base, target), " | ".join(map(_file_pattern, paths)) or "none()"]
+        """Interactive diff of selected files between two pinned commit IDs."""
+        return [
+            "jj",
+            "diff",
+            "--from",
+            commit_revset(base),
+            "--to",
+            commit_revset(target),
+            " | ".join(map(_file_pattern, paths)) or "none()",
+        ]
 
     def review_commits(
         self, base: str, target: str, *, snapshot: bool = True, base_is_commit: bool = False
@@ -728,7 +743,9 @@ class JjBackend:
             for name in (base, target)
         )
         return self._changed_files(
-            base_commit, target_commit, ("--from", base_commit, "--to", target_commit)
+            base_commit,
+            target_commit,
+            ("--from", commit_revset(base_commit), "--to", commit_revset(target_commit)),
         )
 
     def _changed_files(
@@ -757,7 +774,9 @@ class JjBackend:
                 lookups += 1
                 with contextlib.suppress(VcsError):
                     pattern = _file_pattern(_decode_path(path))
-                    size = len(self._jj_bytes("file", "show", "-r", target_commit, pattern))
+                    size = len(
+                        self._jj_bytes("file", "show", "-r", commit_revset(target_commit), pattern)
+                    )
             files.append(
                 FileChange(
                     path=_decode_path(path),
@@ -812,6 +831,7 @@ class JjBackend:
         )
         if old == new:
             return False
+        old, new = commit_revset(old), commit_revset(new)
         if self._jj("log", "--no-graph", "-r", f"{new} & conflicts()", "-T", "commit_id"):
             raise VcsError(f"{target} has unresolved file conflicts")
         if not self._jj("log", "--no-graph", "-r", f"{old} & ::{new}", "-T", "commit_id"):
@@ -884,7 +904,7 @@ class JjBackend:
                 # Snapshots that workspace first, which may move target with it.
                 _run(["jj", "--no-pager", "--color=never", "new"], root)
             commit = self._bookmark_commit(target)
-        destination = f"bookmarks(exact:{json.dumps(target)}) & {commit}"
+        destination = f"bookmarks(exact:{json.dumps(target)}) & {commit_revset(commit)}"
         old_commit, change = (
             self._jj("log", "--no-graph", "-r", "@", "-T", 'commit_id ++ "\\x00" ++ change_id')
             .strip()
@@ -903,7 +923,12 @@ class JjBackend:
         if old_commit not in local.values() and (
             not main_commit
             or not self._jj(
-                "log", "--no-graph", "-r", f"{old_commit} & ::{main_commit}", "-T", "commit_id"
+                "log",
+                "--no-graph",
+                "-r",
+                f"{commit_revset(old_commit)} & ::{commit_revset(main_commit)}",
+                "-T",
+                "commit_id",
             )
         ):
             base = f"saved/{change[:8]}"
@@ -921,7 +946,7 @@ class JjBackend:
                     "create",
                     saved,
                     "-r",
-                    f"@ & {old_commit}",
+                    f"@ & {commit_revset(old_commit)}",
                 ],
                 self.root,
             )

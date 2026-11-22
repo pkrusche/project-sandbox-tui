@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from project_sandbox_tui.vcs import revset_symbol, validate_branch_name
+from project_sandbox_tui.vcs import commit_revset, revset_symbol, validate_branch_name
 
 Operation = Literal["merge", "rebase"]
 OPERATIONS: tuple[str, ...] = ("merge", "rebase")
@@ -213,8 +213,8 @@ def _merge(repo: Path, plan: OctopusPlan) -> OctopusState:
     if len(created) != 1:
         raise OctopusError("could not identify the new merge commit")
     merge = created[0]
-    _jj(repo, "bookmark", "create", revset_symbol(plan.result), "-r", merge)
-    conflicts = _jj_conflicted_paths(repo, merge)
+    _jj(repo, "bookmark", "create", revset_symbol(plan.result), "-r", commit_revset(merge))
+    conflicts = _jj_conflicted_paths(repo, commit_revset(merge))
     state = OctopusState(plan, clean=not conflicts, conflicts=conflicts)
     state.steps.append(
         f"Created merge commit {merge[:12]} of {', '.join(f'`{i}`' for i in plan.inputs)}"
@@ -253,27 +253,29 @@ def _resolve_base(repo: Path, base: str) -> str:
 
 def _rebase(repo: Path, plan: OctopusPlan) -> OctopusState:
     base = tip = _resolve_base(repo, plan.base)
+    base_rev = commit_revset(base)
     state = OctopusState(plan, clean=True)
     done: list[str] = []
     for name in plan.inputs:
-        own = f"({base}..{revset_symbol(name)})"
+        own = f"({base_rev}..{revset_symbol(name)})"
         if done:  # skip commits an earlier input already brought in
             own += " ~ ::(" + " | ".join(done) + ")"
         if not _jj_ids(repo, own):
             state.steps.append(f"`{name}` has no commits of its own on top of `{plan.base}`.")
             done.append(revset_symbol(name))
             continue
-        before = set(_jj_ids(repo, f"heads(descendants({tip}))"))
-        _jj_duplicate(repo, own, tip)
-        created = _jj_new_heads(repo, before, f"descendants({tip})")
+        tip_rev = commit_revset(tip)
+        before = set(_jj_ids(repo, f"heads(descendants({tip_rev}))"))
+        _jj_duplicate(repo, own, tip_rev)
+        created = _jj_new_heads(repo, before, f"descendants({tip_rev})")
         if len(created) != 1:
             raise OctopusError(f"could not identify the duplicates of {name}")
-        count = len(_jj_ids(repo, f"{tip}..{created[0]}"))
+        count = len(_jj_ids(repo, f"{tip_rev}..{commit_revset(created[0])}"))
         state.steps.append(f"Duplicated {count} commit(s) of `{name}` onto {tip[:12]}.")
         tip = created[0]
         done.append(revset_symbol(name))
-    _jj(repo, "bookmark", "create", revset_symbol(plan.result), "-r", tip)
-    conflicted = _jj_ids(repo, f"{base}::{tip} & conflicts()")
+    _jj(repo, "bookmark", "create", revset_symbol(plan.result), "-r", commit_revset(tip))
+    conflicted = _jj_ids(repo, f"{base_rev}::{commit_revset(tip)} & conflicts()")
     state.conflicts = [c[:12] for c in conflicted]
     state.clean = not conflicted
     state.steps.append(f"Bookmark `{plan.result}` points at {tip[:12]}.")

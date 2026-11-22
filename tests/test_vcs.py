@@ -1010,6 +1010,25 @@ def test_review_commits_with_nul_in_ancestor_description(repo: Path) -> None:
     assert all(len(c.commit) == 40 for c in commits)
 
 
+def test_pinned_bookmark_operations_ignore_bookmarks_named_after_commits(repo: Path) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    feature = backend._bookmark_commit("feature/x")
+    main = backend._bookmark_commit("main")
+    jj(repo, "bookmark", "create", feature, "-r", "main")
+    assert backend.get_description("feature/x") == (feature, "add b\n")
+    compared = {b.name: b.comparison for b in backend.list_branches(compare_to_main="main")}
+    assert compared["feature/x"] == vcs.MainComparison(1, 0, 1)
+    (change,) = backend.changed_files("main", "feature/x").files
+    assert change.path == "b.txt"
+    assert backend.fast_forward("main", "feature/x")
+    assert backend._bookmark_commit("main") == feature
+    backend.move_bookmark("main", feature, main)
+    backend.restore_bookmark("restored", feature)
+    assert backend._bookmark_commit("restored") == feature
+
+
 def test_commit_file_keys_are_independent_and_diffs_are_filtered(repo: Path) -> None:
     from tests.conftest import jj, run
 
