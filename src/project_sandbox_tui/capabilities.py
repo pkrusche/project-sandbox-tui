@@ -414,7 +414,7 @@ def load(path: Path) -> Capabilities | None:
         if path.stat().st_size > MAX_CACHE_BYTES:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
         return None
@@ -479,7 +479,7 @@ def is_fresh(
         return False
     if version is not None and caps.version != version:
         return False
-    return (now or datetime.now(UTC)) - caps.discovered_at < MAX_AGE
+    return timedelta(0) <= (now or datetime.now(UTC)) - caps.discovered_at < MAX_AGE
 
 
 def cached(command: Sequence[str], repo: Path | None = None) -> Capabilities:

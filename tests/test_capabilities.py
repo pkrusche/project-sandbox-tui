@@ -218,7 +218,14 @@ def test_cache_round_trip(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "content", ["{", "[]", '{"version": 99}', '{"version": 1, "command": "ps"}']
+    "content",
+    [
+        "{",
+        "[]",
+        '{"version": 99}',
+        '{"version": 1, "command": "ps"}',
+        pytest.param("[" * 2000 + "]" * 2000, id="deeply-nested"),
+    ],
 )
 def test_corrupt_cache_is_ignored(tmp_path: Path, content: str) -> None:
     path = tmp_path / "c.json"
@@ -239,6 +246,7 @@ def test_staleness() -> None:
     assert not caps_mod.is_fresh(caps, ["uvx", "ps"], now=now)
     assert not caps_mod.is_fresh(caps, ["ps"], version="0.5.0", now=now)
     assert not caps_mod.is_fresh(caps, ["ps"], now=now + timedelta(hours=25))
+    assert not caps_mod.is_fresh(caps, ["ps"], now=now - timedelta(hours=25))
     assert not caps_mod.is_fresh(None, ["ps"], now=now)
 
 
