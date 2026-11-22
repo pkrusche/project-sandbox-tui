@@ -613,6 +613,18 @@ def test_resolve_action_settings() -> None:
     assert (same_agent.agent, same_agent.model, same_agent.effort) == ("pi", "pi-model", "low")
 
 
+def test_bash_gateway_model_survives_profile_and_custom_action_resolution() -> None:
+    cfg = c.Config()
+    cfg.network.agent_proxy = "http://localhost:4000/v1"
+    cfg.profiles["shell"] = c.AgentProfile("bash", "gateway-model", gateway=True)
+    last = c.LastUsed(
+        agent="bash", model_by_agent={"bash": "gateway-model"}, gateway_by_agent={"bash": True}
+    )
+    for choice in (c.CUSTOM, c.StepChoice("profile", "shell")):
+        settings = c.resolve_action_settings(cfg, last, c.Action("run"), choice)
+        assert settings.model == "gateway-model" and settings.gateway
+
+
 @pytest.mark.parametrize(
     "text",
     [

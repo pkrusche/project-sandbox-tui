@@ -1545,7 +1545,7 @@ def resolve_action_settings(
     if choice.kind == "profile" and (profile := cfg.profiles.get(choice.profile)):
         return ActionSettings(
             agent=profile.agent,
-            model=profile.model if profile.agent != "bash" else "",
+            model=profile.model if profile.agent != "bash" or profile.gateway else "",
             effort=profile.effort,
             fast=profile.fast and profile.agent in FAST_AGENTS,
             timeout=timeout,
@@ -1565,7 +1565,7 @@ def resolve_action_settings(
         )
     return ActionSettings(
         agent=defaults.agent,
-        model=defaults.model if defaults.agent != "bash" else "",
+        model=defaults.model if defaults.agent != "bash" or defaults.gateway else "",
         effort=defaults.effort,
         fast=defaults.fast,
         timeout=timeout,
