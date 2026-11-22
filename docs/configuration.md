@@ -141,22 +141,35 @@ keeping current settings on error; running sessions retain their launch settings
 
 ```toml
 [commit_review]
-profile = "Deep review"
+provider = "claude-code"     # or: profile = "Deep review"
 ```
 
-`profile` selects an existing named agent profile for **Summarize commits**.
-If omitted, the built-in `commit-summary` profile uses Codex with the agent's
-default model, low effort, and fast mode off. This selection leaves the
-remembered profile for other launches unchanged. A missing profile or a Bash
-profile produces a launch error when the action is invoked.
+**Summarize commits** runs the internal `commit-reviewer` persona (fast tier,
+low effort, fast mode off) on `commit_review.provider`, Codex by default: with
+Codex that is `gpt-6-luna`, with Claude Code `claude-haiku-5-5`. `profile`
+instead selects an existing named agent profile and cannot be combined with
+`provider`. Either way the remembered launch selection stays unchanged. A
+missing profile, a Bash profile, or a provider that cannot serve the persona
+(for example a gateway row without `network.agent_proxy`) produces an error
+when the action is invoked.
 
 Commit summaries run in a disposable `python:3.12-slim` sandbox with a
 read-only mount for the staged patches and a separate feedback output mount.
-The launch uses the configured runtime, resources, network, credentials, and
+The workspace is an empty directory, so no repository metadata is visible.
+Isolation is pinned at [level 3](#security-levels) whatever the project's level,
+network settings or selected profile: the run gets only the egress backend's
+API-only flag (`--egress=sidecar` or, with `security.egress = "firewall"`,
+`--egress=firewall`) and never `--no-firewall`, `--extra-domain`,
+`--allow-github` or `--pi-ollama`. This also applies to projects without
+`[security]`. The default sidecar backend must be set up with
+`project-sandbox-egress`; otherwise summaries fail and `sbx-tui doctor` reports
+the egress backend with both fixes. Corporate proxy and CA settings still apply.
+The launch uses the configured runtime, resources, credentials, and
 background timeout. Commit summaries always enable run feedback. Shared and
 profile `extra_args` can override `--memory`, `--cpus`, or `--shm-size`.
 Other extra arguments are rejected, except a shared `--dry-run` that previews
-the summary run. Move those options into profiles used for ordinary launches
+the summary run; a profile with a network or VCS flag such as `--allow-github` is
+reported as widening commit review access. Move those options into profiles used for ordinary launches
 if they prevent summaries from starting. Put resource overrides in `extra_args`
 when using a `sandbox.command` prefix such as `uvx project-sandbox`; arguments
 after `project-sandbox` in that command are rejected. Custom launcher scripts
@@ -177,7 +190,7 @@ and merge or rebase launch forms. To create one in the TUI:
    shell expressions are passed literally. Unclosed quotes prevent saving or
    launching until corrected.
 4. Press `ctrl+s` or click **save**. Then open a launch form with `i` or `r`,
-   choose `Deep review` in the **profile** field, and check the command preview.
+   choose `Deep review` in the **setup** field, and check the command preview.
    Background runs still need a prompt and can have a timeout.
 
 The editor writes to the project's `.project-sandbox-tui.toml`, preserving
@@ -235,9 +248,10 @@ using a named profile preserves those Custom arguments. Switching to Custom does
 not copy the selected profile into the controls. To adapt a profile, save a copy
 in `:config-profiles`.
 
-The profile selected for that launch or submission (including Custom) is
-remembered per repository; before the first choice, the first available profile
-is selected.
+The setup selected for that launch or submission (a persona with its provider,
+a profile, or Custom) is remembered per repository; before the first choice, the
+first available profile is selected, or persona `implementer` on the default
+provider when no profile is configured.
 If a remembered profile is removed, the form falls back to Custom.
 Prompts and timeouts are not saved in profiles; timeouts use the usual remembered
 launch defaults. Cancelling a launch or editing the queue in `L` does not change
@@ -303,6 +317,118 @@ Before this change, `network.agent_proxy` was added to every launch, which made
 Claude and Codex launches fail. Existing configurations now need `gateway = true`
 on the profiles (or `defaults.gateway`) that should use the gateway.
 
+## Model catalogue and personas
+
+The launch forms' **persona** setup, persona actions and workflow steps pick a
+provider row and a persona; see [models, providers and personas](models.md) for
+the built-in rows, tier models and personas.
+
+```toml
+[catalogue]
+default_provider = "claude-code"   # "" = the first available provider
+gateway_agent = "pi"               # agent of the gateway rows: pi | opencode
+
+[catalogue.models.anthropic]       # a vendor: openai | anthropic | google
+frontier = "claude-fable-5-2"
+
+[catalogue.models.gateway-anthropic]  # a provider row; wins over its vendor
+high = "claude-opus-5"
+frontier = ""                      # empty: the tier is unavailable for this row
+
+[personas.reviewer]                # override fields of a built-in persona
+tier = "frontier"
+
+[personas.triage]                  # or define a new one; tier is required
+tier = "fast"
+effort = "low"                     # "" or low | medium | high | xhigh | max
+fast = false
+level = 3                          # starting security level 1-5; unset = project default
+```
+
+`[catalogue.models.<vendor>]` changes the tier for every row of that vendor,
+including Copilot rows, and `[catalogue.models.<row>]` for that row only. An
+unknown vendor, row or tier is a load error naming the key, as is a
+`gateway_agent` other than `pi` or `opencode`. Overridden personas keep their
+built-in values for unset fields. Persona names use lowercase letters, digits
+and dashes; `commit-reviewer` is internal and cannot be used by actions.
+`catalogue.default_provider` names the provider a selection starts with when
+none is remembered; `sbx-tui doctor` fails when it names an unavailable provider.
+
+## Security levels
+
+`[security] level` gives the project a default isolation level on a linear scale.
+A higher level means more isolation. sbx-tui compiles each level to launcher
+flags:
+
+| Level | Flags |
+| --- | --- |
+| 1 | `--no-firewall` |
+| 2 | `--egress=firewall`, `--extra-domain` for the package sources of `project.build` and then each `network.extra_domains` entry, and `--allow-github` with `network.allow_github` |
+| 3 | the egress backend only: `--egress=sidecar`, or `--egress=firewall` with no extra domains |
+| 4 | level 3 plus `--vcs-access=read-only` |
+| 5 | level 3 plus `--vcs-access=hidden` |
+
+Level 2's package sources are `pypi.org` and `files.pythonhosted.org` for
+`python-uv`; `crates.io`, `index.crates.io` and `static.crates.io` for
+`rust-cargo`; and `registry.npmjs.org` for `node-npm`. A Dockerfile or base
+image adds none. With `network.internet_proxy` set, level 2 adds no
+`--extra-domain` (the launcher rejects it) and its preview says the proxy's
+policy decides which hosts are reachable. Levels 4 and 5 restrict repository
+metadata; source files stay writable.
+
+```toml
+# .project-sandbox-tui.toml
+[security]
+level = 3
+
+# ~/.config/project-sandbox-tui/config.toml
+[security]
+egress = "sidecar"      # sidecar (default) | firewall: the backend of levels 3-5
+
+[network]
+internet_proxy = "http://proxy.example:3128"
+ca_certs = ["/etc/ssl/corp-root.pem"]
+build_proxy = "http://proxy.example:3128"    # --build-proxy (image builds only)
+build_no_proxy = [".corp.example"]           # --build-no-proxy …
+build_ca_certs = ["/etc/ssl/corp-root.pem"]  # --build-ca-cert …
+```
+
+The sidecar backend routes traffic through the runtime's global Squid sidecar,
+whose `$XDG_CONFIG_HOME/project-sandbox/egress.toml` decides the allowed hosts
+for every project on that runtime; set it up with `project-sandbox-egress`.
+`sbx-tui doctor` lists the hosts it can read and never changes the file. A
+selected backend that the launcher does not offer fails the launch; sbx-tui
+never switches backends. Level 3 is the launcher's minimum, not a guarantee:
+it is as open as the sidecar policy.
+
+Each job's level starts at the action's `level`, else its persona's level, else
+the project default, and can be changed per job in the `i` / `r` launch forms
+and the workflow picker. A level below the project default is shown in red, and
+`:NAME` asks for confirmation before running an action below it. Levels are not
+remembered. A level the discovered launcher cannot run (no `--egress` for levels
+2 to 5, a missing backend for 3 to 5, no `--vcs-access` for 4 and 5) is marked
+unavailable and refused; a launcher that could not be probed restricts nothing.
+Tasks queued before a project opted in run at its default level when they start.
+
+When a level is in effect, it is the only source of network and VCS flags:
+
+- `--no-firewall`, `--egress`, `--extra-domain`, `--allow-github`,
+  `--vcs-access`, `--pi-ollama`, `--internet-proxy`,
+  `--no-internet-proxy-preflight`, `--ca-cert`, `--build-proxy`,
+  `--build-no-proxy` and `--build-ca-cert` in `sandbox.extra_args`, profile
+  `extra_args` or custom CLI args refuse the launch, naming the setting.
+  Doctor reports them per config key. Use `network.extra_domains` with level 2
+  instead of `--extra-domain`, and level 1 for jobs that need no firewall.
+- `network.no_firewall` is ignored; doctor warns about it.
+- `network.internet_proxy`, `no_internet_proxy_preflight`, `ca_certs`,
+  `build_proxy`, `build_no_proxy` and `build_ca_certs` may only be set in the
+  global config: a project config that sets them fails to load. `security.egress`
+  is global-only in every project, since it describes the machine's runtime.
+
+Corporate proxy and CA settings apply at every level. Persona and action
+launches can carry a level even in projects without `security.level`; all other
+launches there keep the network flags they had before levels existed.
+
 ## From the command line
 
 ```sh
@@ -342,7 +468,9 @@ fast mode are remembered per repository after an interactive launch or an
 accepted `r` submission, including queued prompts. A named-profile submission also
 updates these agent choices; the profile's fields take precedence when it is
 selected. Profile selection and Custom CLI arguments are remembered separately;
-see [agent profiles](#agent-profiles).
+see [agent profiles](#agent-profiles). A persona launch remembers only its
+provider and persona (and an `r` timeout), never the custom agent settings,
+CLI arguments or per-agent gateway choices. Security levels are never remembered.
 
 ```toml
 [defaults]
@@ -355,12 +483,27 @@ timeout = 0             # seconds for unsupervised runs, 0 = none
 
 [network]
 internet_proxy = ""                            # --internet-proxy
+no_internet_proxy_preflight = false            # --no-internet-proxy-preflight
 agent_proxy = ""                               # --agent-proxy, for launches with gateway = true
 agent_proxy_key_env = ""
 ca_certs = []                                  # --ca-cert …
-extra_domains = []                             # --extra-domain …
-allow_github = false
-no_firewall = false
+build_proxy = ""                               # --build-proxy (image builds)
+build_no_proxy = []                            # --build-no-proxy …
+build_ca_certs = []                            # --build-ca-cert …
+extra_domains = []                             # --extra-domain …; level 2 only with [security]
+allow_github = false                           # level 2 only with [security]
+no_firewall = false                            # ignored with [security]
+
+[security]              # see "Security levels"
+level = 3               # project default 1-5; unset = earlier network behaviour
+egress = "sidecar"      # global config only: sidecar | firewall
+
+[catalogue]             # see "Model catalogue and personas"
+default_provider = ""
+gateway_agent = "pi"
+
+[commit_review]
+provider = ""           # "" = codex; or profile = "NAME"
 
 [sandbox]
 command = "project-sandbox"   # or "uvx project-sandbox"
@@ -405,7 +548,10 @@ T = "*test"             # in each selected workspace
 
 [actions.review]        # :review starts the prompt on each selected bookmark
 prompt = "Review {bookmark} against {main} and fix what you find."
-effort = "high"         # agent, model, effort, timeout: launch defaults if unset
+persona = "reviewer"    # or profile, or agent / model / effort; timeout, level
+
+[personas.reviewer]     # tier, effort, fast, level over the built-in persona
+tier = "frontier"
 
 [models]                # extra launch-form suggestions, listed first
 claude = ["opus", "sonnet"]
@@ -493,19 +639,32 @@ rc = "chores"
 
 `prompt` is required. `{bookmark}` and `{main}` are replaced; other braces stay
 as written. Names follow the `[commands]` rules and must not repeat a
-`[commands]` name. An action chooses its agent settings in one of three ways:
+`[commands]` name. An action chooses its agent settings in one of four ways:
 
+- `persona = "NAME"` runs it as a built-in or configured
+  [persona](#model-catalogue-and-personas) on the repository's remembered
+  provider, or `catalogue.default_provider` when none is remembered. It adds no
+  profile or custom CLI args and cannot be combined with `profile`, `agent`,
+  `model` or `effort`; an unknown persona is a load error. With
+  `persona = "reviewer"` and Claude Code remembered, `:review` runs
+  `--agent=claude --model=claude-opus-5-5 --effort=high` at level 4.
 - `profile = "NAME"` runs it with the [agent profile](#agent-profiles)'s agent,
   model, effort, fast mode and CLI args. It cannot be combined with `agent`,
   `model` or `effort`, and `custom` is not a profile name.
 - `agent`, `model` or `effort` set on the action apply directly; unset ones take
   the launch defaults, and a `model` is only taken from the defaults for the same
   agent. No profile CLI args are added.
-- With neither, the action uses the profile that the `i` / `r` launch forms would
-  select: the remembered profile, or the first configured one before any choice.
-  When that is **custom**, the remembered custom agent settings and CLI args apply.
+- With none of these, the action uses a remembered persona selection, else the
+  profile that the `i` / `r` launch forms would select: the remembered profile,
+  or the first configured one before any choice. When that is **custom**, the
+  remembered custom agent settings and CLI args apply.
 
-`timeout` applies in every case; unset, it takes the launch default. If `profile`
+`timeout` applies in every case; unset, it takes the launch default. `level`
+(1 to 5) sets the run's [security level](#security-levels); unset, it takes the
+persona's level, else the project default. It also works without
+`security.level`. When the resolved level is below the project default, `:NAME`
+asks for confirmation naming both levels before launching or queueing, and
+nothing starts if you decline. If `profile`
 names a profile that is not configured, for example after deleting it in
 `:config-profiles`, sbx-tui asks before launching or queuing the action with the
 fallback profile. The prompt names the missing profile and shows the replacement
@@ -523,6 +682,8 @@ timeout = 1800
 sbx-tui config set --project actions.chores.prompt 'Tidy up {bookmark}.'
 sbx-tui config set --project actions.chores.effort low
 sbx-tui config set --project actions.deep-review.profile 'Deep review'
+sbx-tui config set --project actions.review.persona reviewer
+sbx-tui config set --project actions.e2e.level 1
 ```
 
 ## State directory

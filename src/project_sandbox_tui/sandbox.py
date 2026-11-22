@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui import feedback_transport
+from project_sandbox_tui import feedback_transport, security
 from project_sandbox_tui.config import FAST_AGENTS, Config, ConfigError
 from project_sandbox_tui.vcs import WORKING_COPY, workspace_path
 
@@ -41,6 +41,9 @@ class LaunchSpec:
     profile: str = ""
     extra_args: list[str] = field(default_factory=list)
     gateway: bool = False  # through network.agent_proxy (pi, opencode, bash)
+    persona: str = ""  # persona selection, for display
+    provider: str = ""  # provider row of a persona selection, for display
+    level: int | None = None  # security level; None = the project default at dispatch
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +61,9 @@ class LaunchSpec:
             "profile": self.profile,
             "extra_args": list(self.extra_args),
             "gateway": self.gateway,
+            "persona": self.persona,
+            "provider": self.provider,
+            "level": self.level,
         }
 
     @classmethod
@@ -80,6 +86,9 @@ class LaunchSpec:
             gateway=raw.get("gateway") is True,
             profile=str(raw.get("profile") or ""),
             extra_args=[str(arg) for arg in raw.get("extra_args") or [] if isinstance(arg, str)],
+            persona=str(raw.get("persona") or ""),
+            provider=str(raw.get("provider") or ""),
+            level=level if type(level := raw.get("level")) is int and 1 <= level <= 5 else None,
         )
 
     @property
@@ -97,7 +106,8 @@ class LaunchSpec:
             parts.append("fast")
         if self.gateway:
             parts.append("gateway")
-        return "/".join(parts)
+        text = "/".join(parts)
+        return f"{text}/L{self.level}" if self.level else text
 
 
 @dataclass
@@ -209,9 +219,12 @@ def build_argv(
     if spec.fast and spec.agent in FAST_AGENTS:
         argv.append("--fast")
 
-    # network
+    # network: corporate settings for every launch, then the level's flags (or,
+    # without a security level, the [network] flags as before levels existed)
     if n.internet_proxy:
         argv.append(f"--internet-proxy={n.internet_proxy}")
+    if n.no_internet_proxy_preflight:
+        argv.append("--no-internet-proxy-preflight")
     if spec.gateway:  # only launches that opt in; claude and codex never use it
         if not n.agent_proxy:
             raise ConfigError("this launch uses the agent gateway but network.agent_proxy is empty")
@@ -220,12 +233,22 @@ def build_argv(
             argv.append(f"--agent-proxy-key-env={n.agent_proxy_key_env}")
     for cert in n.ca_certs:
         argv.append(f"--ca-cert={cfg.resolve_path(cert, repo)}")
-    for domain in n.extra_domains:
-        argv.append(f"--extra-domain={domain}")
-    if n.allow_github:
-        argv.append("--allow-github")
-    if n.no_firewall:
-        argv.append("--no-firewall")
+    if n.build_proxy:
+        argv.append(f"--build-proxy={n.build_proxy}")
+    for hosts in n.build_no_proxy:
+        argv.append(f"--build-no-proxy={hosts}")
+    for cert in n.build_ca_certs:
+        argv.append(f"--build-ca-cert={cfg.resolve_path(cert, repo)}")
+    level = security.effective_level(cfg, spec)
+    if level is not None:
+        argv += security.level_flags(cfg, level, spec.agent)
+    else:
+        for domain in n.extra_domains:
+            argv.append(f"--extra-domain={domain}")
+        if n.allow_github:
+            argv.append("--allow-github")
+        if n.no_firewall:
+            argv.append("--no-firewall")
 
     # credentials
     if s.no_forward_credentials:

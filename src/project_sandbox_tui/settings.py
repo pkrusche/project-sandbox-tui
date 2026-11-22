@@ -21,6 +21,7 @@ from typing import Any
 import tomlkit
 import tomlkit.items
 
+from project_sandbox_tui import catalogue
 from project_sandbox_tui.config import (
     _SECTIONS,
     ACTION_KEYS,
@@ -54,10 +55,15 @@ class Key:
     @property
     def path(self) -> list[str]:
         """Table names from the document root to the value."""
-        if self.section in ("actions", "profiles", "workflows"):
+        if self.section in NAMED_SECTIONS:
             entry, _, name = self.name.rpartition(".")
             return [self.section, entry, name]
+        if self.section == "catalogue" and self.name.startswith("models."):
+            return [self.section, *self.name.split(".", 2)]
         return [self.section, self.name]
+
+
+NAMED_SECTIONS = ("actions", "profiles", "workflows", "personas")
 
 
 def parse_key(text: str) -> Key:
@@ -73,6 +79,22 @@ def parse_key(text: str) -> Key:
         if action and field in ACTION_KEYS:
             return Key(section, name, ACTION_KEYS[field])
         raise ConfigError(f"unknown key {text!r}: use actions.<name>.<{'|'.join(ACTION_KEYS)}>")
+    if section == "personas":
+        persona, _, field = name.rpartition(".")
+        if persona and field in catalogue.PERSONA_KEYS:
+            return Key(section, name, catalogue.PERSONA_KEYS[field])
+        keys = "|".join(catalogue.PERSONA_KEYS)
+        raise ConfigError(f"unknown key {text!r}: use personas.<name>.<{keys}>")
+    if section == "catalogue":
+        if name in ("default_provider", "gateway_agent"):
+            return Key(section, name, "")
+        table, _, tier = name.removeprefix("models.").partition(".")
+        if name.startswith("models.") and table and tier in catalogue.TIERS:
+            return Key(section, name, "")
+        raise ConfigError(
+            f"unknown key {text!r}: use catalogue.default_provider, catalogue.gateway_agent "
+            f"or catalogue.models.<vendor|provider>.<{'|'.join(catalogue.TIERS)}>"
+        )
     if section == "profiles":
         profile, _, field = name.rpartition(".")
         defaults = dataclasses.asdict(AgentProfile())
@@ -131,8 +153,15 @@ def flatten(data: dict[str, Any]) -> list[tuple[str, Any]]:
         if not isinstance(table, dict):
             continue
         for name, value in table.items():
-            if section in ("actions", "profiles", "workflows") and isinstance(value, dict):
+            if section in NAMED_SECTIONS and isinstance(value, dict):
                 out += [(f"{section}.{name}.{k}", v) for k, v in value.items()]
+            elif section == "catalogue" and name == "models" and isinstance(value, dict):
+                out += [
+                    (f"catalogue.models.{row}.{tier}", model)
+                    for row, tiers in value.items()
+                    if isinstance(tiers, dict)
+                    for tier, model in tiers.items()
+                ]
             else:
                 out.append((f"{section}.{name}", value))
     return out
@@ -150,7 +179,19 @@ def effective(cfg: Config) -> dict[str, Any]:
         name: dataclasses.asdict(workflow) for name, workflow in cfg.workflows.items()
     }
     data["workspace_skills"] = [dataclasses.asdict(skill) for skill in cfg.workspace_skills]
+    data["catalogue"] = dataclasses.asdict(cfg.catalogue)
+    data["personas"] = {
+        name: {
+            key: value
+            for key, value in dataclasses.asdict(cfg.personas[name]).items()
+            if key in CATALOGUE_PERSONA_FIELDS and value is not None
+        }
+        for name in cfg.persona_config
+    }
     return data
+
+
+CATALOGUE_PERSONA_FIELDS = tuple(catalogue.PERSONA_KEYS)
 
 
 # ---------------------------------------------------------------- editing
@@ -211,12 +252,14 @@ class Editor:
     def set(self, key: Key, value: Any) -> None:
         with self._edit() as doc:
             table: Any = doc
-            for part in key.path[:-1]:
+            # Tables that only hold other tables, so no empty [x] header is written.
+            supers = {0: (*NAMED_SECTIONS, "catalogue"), 1: ("models",)}
+            for depth, part in enumerate(key.path[:-1]):
                 inner = table.get(part)
                 if not isinstance(inner, dict):
-                    inner = tomlkit.table(
-                        is_super_table=part in ("actions", "profiles", "workflows")
-                    )
+                    nested = key.path[0] == "catalogue" or depth == 0
+                    is_super = nested and part in supers.get(depth, ()) and len(key.path) > 3
+                    inner = tomlkit.table(is_super_table=is_super or part in NAMED_SECTIONS)
                     table[part] = inner
                 table = inner
             table[key.path[-1]] = value

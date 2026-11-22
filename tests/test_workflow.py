@@ -645,7 +645,7 @@ def test_workflow_picker_choices_initial_values_and_cancel(
         return [
             (field.options, field.value)
             for field in picker.query(CycleField)
-            if (field.id or "").startswith("stage-")
+            if (field.id or "").removeprefix("stage-").isdigit()  # the setup fields
         ]
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:

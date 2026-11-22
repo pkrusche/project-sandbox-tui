@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Literal
 
-from project_sandbox_tui import capabilities, initialization, launchers, notify
+from project_sandbox_tui import (
+    capabilities,
+    catalogue,
+    initialization,
+    launchers,
+    notify,
+    security,
+)
 from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.capabilities import Capabilities
 from project_sandbox_tui.config import (
@@ -363,6 +372,140 @@ def check_capabilities(cfg: Config, caps: Capabilities, home: Path | None = None
     return checks
 
 
+# ---------------------------------------------------------------- security levels
+
+
+def egress_policy_path() -> Path:
+    """The egress sidecar's policy: global per container runtime, managed outside sbx-tui."""
+    configured = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(configured) if configured.startswith("/") else Path.home() / ".config"
+    return base / "project-sandbox" / "egress.toml"
+
+
+def egress_hosts(path: Path) -> list[str] | None:
+    """Best-effort list of hosts in the sidecar policy; None when it cannot be read.
+
+    The file's structure is project-sandbox's: every string in a list under a key
+    that names hosts or domains (``allow``, ``hosts``, ``domains``…) counts. The
+    file is only read, never changed.
+    """
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    found: list[str] = []
+
+    def walk(value: object, hosty: bool) -> None:
+        if isinstance(value, dict):
+            for key, inner in value.items():
+                walk(inner, hosty or bool(re.search(r"allow|host|domain", str(key), re.I)))
+        elif isinstance(value, list):
+            for item in value:
+                if hosty and isinstance(item, str):
+                    found.append(item)
+                else:
+                    walk(item, hosty)
+
+    walk(data, False)
+    return list(dict.fromkeys(found))
+
+
+def check_security(cfg: Config, caps: Capabilities, home: Path | None = None) -> list[Check]:
+    """Level conflicts, the egress backend and provider availability."""
+    checks: list[Check] = []
+    if cfg.security.level:
+        sources = [("sandbox.extra_args", cfg.sandbox.extra_args)]
+        sources += [(f"profiles.{n}.extra_args", p.extra_args) for n, p in cfg.profiles.items()]
+        for key, args in sources:
+            if flags := security.managed_conflicts(args):
+                message = security.conflict_message(key, flags)
+                detail, _, hint = message.partition("; ")
+                checks.append(Check(key, "fail", detail, hint))
+        if cfg.network.no_firewall:
+            checks.append(
+                Check(
+                    "network.no_firewall",
+                    "warn",
+                    "ignored while security levels are in effect",
+                    "use level 1 for the jobs that need no firewall",
+                )
+            )
+    checks += _check_egress(cfg, caps)
+    checks += _check_providers(cfg, caps, home)
+    return checks
+
+
+def _check_egress(cfg: Config, caps: Capabilities) -> list[Check]:
+    backend = cfg.security.egress
+    name = "egress backend"
+    who = capabilities.launcher_name(caps)
+    hint = (
+        "set up the sidecar with project-sandbox-egress, or set "
+        'security.egress = "firewall" in the global config'
+    )
+    if caps.discovered and backend not in caps.egress_modes:
+        supported = ", ".join(caps.egress_modes) or "no --egress option"
+        return [
+            Check(
+                name,
+                "fail",
+                f"{backend} (security.egress) is not supported by {who}: {supported}; "
+                "levels 3 to 5 and commit review need it",
+                hint if caps.egress_modes else "upgrade project-sandbox",
+            )
+        ]
+    if backend != "sidecar":
+        return [Check(name, "ok", f"{backend}: agent API hosts only, pinned in the firewall")]
+    path = egress_policy_path()
+    if not path.is_file():
+        return [
+            Check(
+                name,
+                "fail",
+                f"sidecar, but {path} does not exist; levels 3 to 5 and commit review need it",
+                hint,
+            )
+        ]
+    hosts = egress_hosts(path)
+    listed = (
+        f"allows {len(hosts)} host{'s' * (len(hosts) != 1)}: {', '.join(hosts)}"
+        if hosts
+        else f"policy at {path}"
+    )
+    return [
+        Check(
+            name,
+            "ok",
+            f"sidecar · {listed}",
+            f"{path} is shared by all projects on the runtime; sbx-tui never changes it",
+        )
+    ]
+
+
+def _check_providers(cfg: Config, caps: Capabilities, home: Path | None) -> list[Check]:
+    checks: list[Check] = []
+    reasons: dict[str, str] = {}
+    shown = []
+    for row in catalogue.ROWS:
+        result = capabilities.provider_availability(cfg, caps, row, home=home)
+        if result.available is False:
+            reasons[row.id] = result.reason
+            shown.append(f"{row.label} unavailable: {result.reason}")
+        elif result.available is None:
+            shown.append(f"{row.label} unknown")
+        else:
+            shown.append(row.label)
+    checks.append(Check("providers", "ok", "; ".join(shown)))
+    for key, value in (
+        ("catalogue.default_provider", cfg.catalogue.default_provider),
+        ("commit_review.provider", cfg.commit_review.provider),
+    ):
+        if value in reasons:
+            label = catalogue.ROW_BY_ID[value].label
+            checks.append(Check(key, "fail", f"{label} is unavailable: {reasons[value]}"))
+    return checks
+
+
 def _selections(cfg: Config) -> list[tuple[str, AgentProfile]]:
     """Every configured agent selection, keyed by its config table."""
     d = cfg.defaults
@@ -385,8 +528,11 @@ def _selections(cfg: Config) -> list[tuple[str, AgentProfile]]:
         if action.agent
     ]
     if not cfg.commit_review.profile:
-        name, profile = cfg.commit_summary_profile()
-        out.append(("commit review (built-in profile)", profile))
+        try:
+            name, profile = cfg.commit_summary_profile()
+        except ConfigError:
+            return out  # check_security reports the unavailable provider
+        out.append((f"commit review ({name})", profile))
     return out
 
 
@@ -396,9 +542,13 @@ def _model_listed(
     """Whether a Claude/Codex model appears in the suggestions; None = no list to check."""
     if agent not in ("claude", "codex") or not model:
         return None
+    if model in catalogue.models_for_agent(cfg, agent):
+        return True
     if store is None and (agent == "claude" or not models_mod.codex_cache_models()):
         return None  # only aliases or nothing: an unknown full ID proves nothing
-    names = models_mod.suggestions(agent, cfg.models.get(agent), store)
+    names = models_mod.suggestions(
+        agent, cfg.models.get(agent), store, catalogue.models_for_agent(cfg, agent)
+    )
     return model in names if names else None
 
 
@@ -529,6 +679,7 @@ def run_checks(
     if caps.runtime_source != "doctor":
         checks.append(check_runtime(cfg, runner, which))
     checks += check_capabilities(cfg, caps)
+    checks += check_security(cfg, caps)
     checks += check_agent_selections(cfg, caps, models_mod.load_store())
     checks += check_config(cfg, repo)
     checks += check_feedback(cfg, repo, runner, caps)

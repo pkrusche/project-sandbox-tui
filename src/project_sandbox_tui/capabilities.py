@@ -3,7 +3,8 @@
 Sources, all from the launcher that ``sandbox.command`` runs (never the imported
 package, which may be a different installation):
 
-- ``--help``: the ``{…}`` choices of ``--agent``, ``--vcs-access`` and ``--runtime``,
+- ``--help``: the ``{…}`` choices of ``--agent``, ``--vcs-access``, ``--egress`` and
+  ``--runtime``,
   and whether ``--mount`` exists (run feedback);
 - ``doctor --json``: the ``runtimes`` section, with each runtime's status;
 - ``--version``: the cache key, and the gate for the host-availability rules
@@ -29,10 +30,18 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui.config import AGENTS, GATEWAY_AGENTS, RUNTIMES, repo_state_dir, state_home
+from project_sandbox_tui import catalogue
+from project_sandbox_tui.config import (
+    AGENTS,
+    GATEWAY_AGENTS,
+    RUNTIMES,
+    Config,
+    repo_state_dir,
+    state_home,
+)
 
 CACHE_NAME = "capabilities.json"
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: egress modes
 MAX_CACHE_BYTES = 256 * 1024
 MAX_AGE = timedelta(hours=24)
 
@@ -84,6 +93,7 @@ class Capabilities:
     source: Source = "fallback"  # "probe" only when --help listed the agents
     agents: tuple[str, ...] = AGENTS
     vcs_modes: tuple[str, ...] = ()
+    egress_modes: tuple[str, ...] = ()
     runtimes: dict[str, RuntimeStatus] = field(
         default_factory=lambda: {name: RuntimeStatus("unknown") for name in RUNTIMES}
     )
@@ -196,6 +206,7 @@ def discover(command: Sequence[str], runner: Runner | None = None) -> Capabiliti
     if help_ok and agents is None:
         problems.append("`--help` lists no --agent choices")
     vcs_modes = parse_choices(help_text, "--vcs-access") or ()
+    egress_modes = parse_choices(help_text, "--egress") or ()
     runtimes: dict[str, RuntimeStatus] = {}
     auto = ""
     runtime_source: Literal["doctor", "help", "fallback"] = "fallback"
@@ -223,6 +234,7 @@ def discover(command: Sequence[str], runner: Runner | None = None) -> Capabiliti
         source="probe" if agents else "fallback",
         agents=agents or AGENTS,
         vcs_modes=vcs_modes if agents else (),
+        egress_modes=egress_modes if agents else (),
         runtimes=runtimes,
         runtime_source=runtime_source,
         auto_selects=auto,
@@ -365,6 +377,7 @@ def save(caps: Capabilities, path: Path) -> Path:
         "source": caps.source,
         "agents": list(caps.agents),
         "vcs_modes": list(caps.vcs_modes),
+        "egress_modes": list(caps.egress_modes),
         "runtimes": {
             name: {"status": rt.status, "detail": rt.detail, "hint": rt.hint}
             for name, rt in caps.runtimes.items()
@@ -407,12 +420,14 @@ def load(path: Path) -> Capabilities | None:
         return None
     command = data.get("command")
     agents, vcs = _names(data.get("agents")), _names(data.get("vcs_modes"))
+    egress = _names(data.get("egress_modes"))
     raw_runtimes = data.get("runtimes")
     if (
         not isinstance(command, list)
         or not all(isinstance(c, str) for c in command)
         or not agents
         or vcs is None
+        or egress is None
         or not isinstance(raw_runtimes, dict)
         or data.get("source") not in ("probe", "fallback")
         or data.get("runtime_source") not in ("doctor", "help", "fallback")
@@ -440,6 +455,7 @@ def load(path: Path) -> Capabilities | None:
         source=data["source"],
         agents=agents,
         vcs_modes=vcs,
+        egress_modes=egress,
         runtimes=runtimes,
         runtime_source=data["runtime_source"],
         auto_selects=_text(data.get("auto_selects"), 32),
@@ -554,6 +570,46 @@ def launch_problems(
     return problems
 
 
+def level_problems(caps: Capabilities, cfg: Config, level: int | None) -> list[str]:
+    """Why the launcher cannot run ``level``, by discovered capabilities only."""
+    if level is None or not caps.discovered:
+        return []
+    who = launcher_name(caps)
+    problems: list[str] = []
+    if level >= 2 and not caps.egress_modes:
+        problems.append(f"level {level} needs --egress, but {who} has no --egress option")
+    elif level >= 3 and cfg.security.egress not in caps.egress_modes:
+        problems.append(
+            f"level {level}: security.egress = {cfg.security.egress!r} is not supported by "
+            f"{who}; supported egress modes: {', '.join(caps.egress_modes)}"
+        )
+    if level >= 4:
+        mode = "read-only" if level == 4 else "hidden"
+        if not caps.vcs_modes:
+            problems.append(
+                f"level {level} needs --vcs-access, but {who} has no --vcs-access option"
+            )
+        elif mode not in caps.vcs_modes:
+            problems.append(f"level {level}: --vcs-access={mode} is not supported by {who}")
+    return problems
+
+
+def provider_availability(
+    cfg: Config, caps: Capabilities, row: catalogue.ProviderRow, *, home: Path | None = None
+) -> Availability:
+    """Whether a provider row can launch on this host, with the reason when not."""
+    agent = catalogue.row_agent(cfg, row)
+    if row.gateway and not cfg.network.agent_proxy:
+        return Availability(False, reason="no agent gateway is configured (network.agent_proxy)")
+    if caps.discovered and agent not in caps.agents:
+        return Availability(
+            False, reason=f"agent {agent} is not supported by {launcher_name(caps)}"
+        )
+    if row.gateway:
+        return Availability(True, (AGENT_GATEWAY,))
+    return agent_sources(agent, caps, home=home)
+
+
 def gateway_problems(agent: str, model: str, gateway: bool) -> list[str]:
     """project-sandbox's fixed rules for ``--agent-proxy``; apply without discovery."""
     if not gateway:
@@ -586,7 +642,48 @@ def profile_agents(
     return [(agent, result) for agent, result in found if result.available is not False]
 
 
-def setup_summary(caps: Capabilities, *, gateway: bool = False, home: Path | None = None) -> str:
+def _catalogue_summary(cfg: Config, caps: Capabilities, home: Path | None) -> list[str]:
+    from project_sandbox_tui.security import LEVEL_LABELS
+
+    rows = []
+    for row in catalogue.ROWS:
+        result = provider_availability(cfg, caps, row, home=home)
+        state = "available" if result.available else "unavailable"
+        if result.available is None:
+            state = "availability unknown"
+        detail = result.describe()
+        rows.append(f"{row.id} ({row.label}: {state}{f', {detail}' if detail else ''})")
+    supported = [
+        f"{level} ({LEVEL_LABELS[level].split(' · ', 1)[1]})"
+        for level in LEVEL_LABELS
+        if not level_problems(caps, cfg, level)
+    ]
+    personas = "; ".join(
+        f"{name} ({persona.label()})"
+        for name, persona in cfg.personas.items()
+        if not persona.internal
+    )
+    lines = [
+        f"Provider rows for catalogue.default_provider: {'; '.join(rows)}.",
+        "Security levels the launcher supports with security.egress = "
+        f"{cfg.security.egress!r}: {', '.join(supported) or 'none'}.",
+        f"Personas (tier / effort / fast / level) for actions.NAME.persona: {personas}.",
+    ]
+    if caps.discovered and caps.egress_modes and "sidecar" not in caps.egress_modes:
+        lines.append(
+            "The launcher has no sidecar egress: levels 3 to 5 need "
+            'security.egress = "firewall" in the global config.'
+        )
+    return lines
+
+
+def setup_summary(
+    caps: Capabilities,
+    *,
+    gateway: bool = False,
+    home: Path | None = None,
+    cfg: Config | None = None,
+) -> str:
     """Discovered capabilities for the setup agent's prompt."""
     agents = "; ".join(
         f"{agent} ({result.describe()})"
@@ -608,6 +705,8 @@ def setup_summary(caps: Capabilities, *, gateway: bool = False, home: Path | Non
         + ".",
         f"Isolation runtimes: {runtimes}.",
     ]
+    if cfg is not None:
+        lines += _catalogue_summary(cfg, caps, home)
     if not caps.discovered:
         command = " ".join(caps.command) or "project-sandbox"
         lines.append(

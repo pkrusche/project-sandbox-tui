@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from rich.cells import cell_len
 from rich.console import Console, ConsoleOptions, RenderResult
@@ -74,6 +74,7 @@ class CycleField(Widget, can_focus=True):
     DEFAULT_CSS = """
     CycleField { height: 1; width: 1fr; padding: 0 1; }
     CycleField:focus { background: $boost; }
+    CycleField.below-default { color: $error; }
     """
 
     BINDINGS = [
@@ -103,11 +104,13 @@ class CycleField(Widget, can_focus=True):
         *,
         empty_label: str = "default",
         id: str | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(id=id)
         self.label = label
         self.options = list(options)
         self.empty_label = empty_label
+        self.labels = dict(labels or {})  # shown instead of the option value
         initial = self.options.index(value) if value in self.options else 0
         self.set_reactive(CycleField.index, initial)
 
@@ -128,7 +131,7 @@ class CycleField(Widget, can_focus=True):
         self.post_message(self.Changed(self, self.value))
 
     def render(self) -> Text:
-        shown = self.value or self.empty_label
+        shown = self.labels.get(self.value, self.value) or self.empty_label
         text = Text()
         text.append(f"{self.label:<9}", style="dim")
         text.append("‹ ", style="dim")

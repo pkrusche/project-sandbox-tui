@@ -266,11 +266,12 @@ prompt filled in. Words after the name are appended to the prompt, e.g.
 `:review focus on error handling`. Busy targets and targets with pending or paused
 queues receive a queued prompt; the protected main
 bookmark is skipped. `@` runs in the current checkout.
-sbx-tui asks first for several eligible targets. Action runs use the action's
-`profile` or its own agent, model and effort; otherwise they use the profile the
-launch forms would select. See [agent actions](configuration.md#agent-actions).
-They don't change the remembered defaults, the remembered profile or the prompt
-history.
+sbx-tui asks first for several eligible targets, and before an action runs below
+the project's security level. Action runs use the action's `persona` (on the
+remembered or default provider), its `profile`, or its own agent, model and
+effort; otherwise they use the setup the launch forms would select. See
+[agent actions](configuration.md#agent-actions). They don't change the
+remembered defaults, the remembered setup or the prompt history.
 
 ### Leader key
 
@@ -502,7 +503,7 @@ not snapshotted are recorded first and can be recovered via `jj op log`), and
 | Key | Action |
 |---|---|
 | `tab` | Next field (`j`/`k` on choice fields) |
-| `h` `l` | Cycle profile, or agent, gateway, model, effort and fast mode under Custom |
+| `h` `l` | Cycle the setup, provider, persona and level, or agent, gateway, model, effort and fast mode under Custom |
 | `enter` | Launch interactive session; newline in a background prompt |
 | `ctrl+s` / `ctrl+enter` | Submit a background prompt (or click the submit button): run or queue from `r`, save or add from `L`; `ctrl+enter` requires terminal support |
 | `esc` | Cancel; `r` keeps an edited background prompt as a draft |
@@ -512,8 +513,22 @@ repository; see [defaults and precedence](configuration.md#settings-reference).
 A bookmark name that does not exist yet is flagged under the field: submitting creates it
 from the highlighted bookmark.
 
-Choose a saved [agent profile](configuration.md#agent-profiles), or **custom**
-to show the agent, model, effort, fast mode and extra CLI arguments.
+The **setup** field selects how the agent is chosen:
+
+- **persona** shows a **provider** and a **persona** field. sbx-tui resolves them
+  with its [model catalogue](models.md): for example provider Gateway/Anthropic
+  with persona planner shows `pi/claude-opus-5-5/high/gateway · level 3`. Persona
+  launches add no profile or custom CLI arguments; `sandbox.extra_args` still
+  apply. A provider that cannot run here, or that lacks the persona's tier, is
+  labelled with the reason, and the form refuses to launch it.
+- A saved [agent profile](configuration.md#agent-profiles) launches with its
+  agent, model, effort, fast mode and extra arguments.
+- **custom** shows the agent, model, effort, fast mode and extra CLI arguments.
+
+The form starts with the remembered setup. Before any choice it selects the
+first configured profile, or persona `implementer` on the default provider when
+no profile is configured. A persona launch remembers its provider and persona
+without touching the remembered custom settings.
 Use `:config-profiles` to name and save profiles for this project.
 Named profiles show a settings summary; the command preview includes their extra
 arguments. To edit the profile, close the launch form and use `:config-profiles`.
@@ -543,6 +558,13 @@ and background runs. It requires project-sandbox 0.3.1 or later and adds `--fast
 to the command preview. Other agents hide the field and do not receive the flag.
 Named profiles use their own `fast` setting. Agent actions use the remembered
 preference or defaults.
+
+When a [security level](configuration.md#security-levels) is in effect, every
+setup also shows a **level** field. It starts at the persona's level or the
+project default, is never remembered, and applies to this job only. A level
+below the project default is shown in red. The hint under it lists the level's
+egress backend and compiled flags, notes when a Copilot provider also allows
+GitHub hosts, and marks levels the launcher cannot run; the form refuses those.
 
 An edited background prompt cancelled from `r`, or whose submission failed, comes
 back the next time `r` opens on the same bookmark (or the same merge inputs),

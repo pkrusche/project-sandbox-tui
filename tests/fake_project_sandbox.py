@@ -2,7 +2,9 @@
 """Stand-in for the project-sandbox CLI used by the tests.
 
 Understands just enough of the real CLI: the positional repo, --branch,
---worktree-dir, --agent, --prompt-text, --log, --json-summary. Behaviour is
+--worktree-dir, --agent, --prompt-text, --log, --json-summary, and records the
+isolation flags --egress, --vcs-access, --build-proxy, --build-no-proxy and
+--build-ca-cert in the session record and JSON summary (``isolation``). Behaviour is
 driven by the prompt text: ``sleep:<seconds>``, ``exit:<code>`` and
 ``ignore-signals`` (ignore SIGINT/SIGTERM) tokens.
 Writes a session record the same way project-sandbox does, so the TUI's
@@ -43,7 +45,21 @@ def main() -> int:
     p.add_argument("--prompt-text")
     p.add_argument("--log")
     p.add_argument("--json-summary")
+    p.add_argument("--egress", choices=("firewall", "sidecar"))
+    p.add_argument("--vcs-access", choices=("full", "read-only", "hidden"))
+    p.add_argument("--build-proxy")
+    p.add_argument("--build-no-proxy", action="append", default=[])
+    p.add_argument("--build-ca-cert", action="append", default=[])
     args, _unknown = p.parse_known_args()
+    if args.build_no_proxy and not args.build_proxy:
+        p.error("--build-no-proxy requires --build-proxy")
+    isolation = {
+        "egress": args.egress,
+        "vcs_access": args.vcs_access,
+        "build_proxy": args.build_proxy,
+        "build_no_proxy": args.build_no_proxy,
+        "build_ca_certs": args.build_ca_cert,
+    }
 
     repo = Path(args.project)
     workspace = path_for(repo, args.branch, args.worktree_dir) if args.branch else repo
@@ -119,6 +135,7 @@ def main() -> int:
         "started_at": datetime.now(UTC).isoformat(),
         "ended_at": None,
         "exit_code": None,
+        "isolation": isolation,
     }
     record_path.write_text(json.dumps(record))
     print(f"fake project-sandbox: {' '.join(sys.argv[1:])}", flush=True)
@@ -163,6 +180,7 @@ def main() -> int:
                     "agent": args.agent,
                     "bookmark": args.branch,
                     "exit_code": code,
+                    "isolation": isolation,
                 }
             )
         )

@@ -30,7 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui import commands
+from project_sandbox_tui import catalogue, commands
+from project_sandbox_tui.catalogue import BUILTIN_PERSONAS, Persona
 from project_sandbox_tui.launchers import TERMINALS, fill_command
 
 # Fallbacks for when the launcher's --help cannot be read (see capabilities.py);
@@ -41,6 +42,8 @@ GATEWAY_AGENTS: tuple[str, ...] = ("pi", "opencode", "bash")  # --agent-proxy
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 RUNTIMES: tuple[str, ...] = ("auto", "apple-container", "docker", "podman", "colima", "chroot")
 GENERATED_BUILDS: tuple[str, ...] = ("", "python-uv", "rust-cargo", "node-npm")
+LEVELS: tuple[int, ...] = (1, 2, 3, 4, 5)  # security levels, more isolation upwards
+EGRESS_BACKENDS: tuple[str, ...] = ("sidecar", "firewall")
 
 PROJECT_CONFIG_NAME = ".project-sandbox-tui.toml"
 TRUSTED_CONFIG_NAME = "trusted-project-config.toml"  # in the repo's state directory
@@ -109,6 +112,21 @@ def validate_profile_name(name: str) -> None:
 @dataclass
 class CommitReview:
     profile: str = ""
+    provider: str = ""  # provider row for the commit-reviewer persona ("" = codex)
+
+
+@dataclass
+class Security:
+    level: int = 0  # project default security level 1-5; 0 = not set (earlier behaviour)
+    egress: str = "sidecar"  # backend for levels 3-5: sidecar | firewall (global config only)
+
+
+@dataclass
+class Catalogue:
+    default_provider: str = ""  # provider row selections start with ("" = first available)
+    gateway_agent: str = "pi"  # agent of the gateway rows: pi | opencode
+    # [catalogue.models.<vendor|row>] tier = "model"; "" disables the tier
+    models: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -120,6 +138,22 @@ class Network:
     extra_domains: list[str] = field(default_factory=list)  # --extra-domain (repeatable)
     allow_github: bool = False  # --allow-github
     no_firewall: bool = False  # --no-firewall
+    no_internet_proxy_preflight: bool = False  # --no-internet-proxy-preflight
+    build_proxy: str = ""  # --build-proxy URL (image builds only)
+    build_no_proxy: list[str] = field(default_factory=list)  # --build-no-proxy (repeatable)
+    build_ca_certs: list[str] = field(default_factory=list)  # --build-ca-cert PATH (repeatable)
+
+
+# Corporate network settings: read only from the global config while a project
+# security level is in effect (security.egress always is).
+GLOBAL_ONLY_NETWORK: tuple[str, ...] = (
+    "internet_proxy",
+    "no_internet_proxy_preflight",
+    "ca_certs",
+    "build_proxy",
+    "build_no_proxy",
+    "build_ca_certs",
+)
 
 
 @dataclass
@@ -221,7 +255,9 @@ class Action:
     model: str = ""  # "" = launch default for the agent
     effort: str = ""  # "" = launch default
     timeout: int | None = None  # None = launch default
-    profile: str = ""  # [profiles.NAME]; excludes agent, model and effort
+    profile: str = ""  # [profiles.NAME]; excludes agent, model, effort and persona
+    persona: str = ""  # [personas.NAME] or a built-in persona; excludes agent, model, effort
+    level: int | None = None  # security level 1-5; None = the persona's, else the project's
 
     @property
     def has_own_settings(self) -> bool:
@@ -238,10 +274,15 @@ class Action:
         """The keys a config file sets, for ``sbx-tui config list``."""
         out: dict[str, Any] = {"prompt": self.prompt}
         out.update(
-            {k: v for k in ("agent", "model", "effort", "profile") if (v := getattr(self, k))}
+            {
+                k: v
+                for k in ("agent", "model", "effort", "profile", "persona")
+                if (v := getattr(self, k))
+            }
         )
-        if self.timeout is not None:
-            out["timeout"] = self.timeout
+        for key in ("timeout", "level"):
+            if (value := getattr(self, key)) is not None:
+                out[key] = value
         return out
 
 
@@ -304,6 +345,8 @@ ACTION_KEYS: dict[str, Any] = {
     "effort": "",
     "timeout": 0,
     "profile": "",
+    "persona": "",
+    "level": 0,
 }
 
 # [commands] every configuration starts with; config files can redefine them.
@@ -338,6 +381,11 @@ class Config:
     prompts: Prompts = field(default_factory=Prompts)
     feedback: Feedback = field(default_factory=Feedback)
     commit_review: CommitReview = field(default_factory=CommitReview)
+    security: Security = field(default_factory=Security)
+    catalogue: Catalogue = field(default_factory=Catalogue)
+    # Built-in personas merged field by field with [personas.NAME] (see catalogue.py).
+    personas: dict[str, Persona] = field(default_factory=lambda: dict(BUILTIN_PERSONAS))
+    persona_config: dict[str, dict[str, Any]] = field(default_factory=dict)  # as configured
     models: dict[str, list[str]] = field(default_factory=dict)  # extra suggestions (models.py)
     commands: dict[str, str] = field(  # :name -> shell command (commands.py)
         default_factory=lambda: dict(DEFAULT_COMMANDS)
@@ -355,9 +403,30 @@ class Config:
     # ---------------------------------------------------------- helpers
 
     def commit_summary_profile(self) -> tuple[str, AgentProfile]:
+        """The commit reviewer's agent settings: ``commit_review.profile``, else the
+        internal commit-reviewer persona on ``commit_review.provider`` (Codex)."""
         name = self.commit_review.profile
         if not name:
-            return "commit-summary", AgentProfile(agent="codex", effort="low")
+            row = catalogue.ROW_BY_ID[self.commit_review.provider or "codex"]
+            persona = self.personas[catalogue.COMMIT_REVIEWER]
+            model = catalogue.model_for(self, row, persona.tier)
+            if model is None:
+                raise ConfigError(
+                    f"commit_review.provider: {catalogue.tier_problem(self, row, persona.tier)}"
+                    " for the commit reviewer; select another provider"
+                )
+            if row.gateway and not self.network.agent_proxy:
+                raise ConfigError(
+                    f"commit_review.provider {row.id!r} uses the agent gateway, "
+                    "but network.agent_proxy is empty"
+                )
+            return f"{catalogue.COMMIT_REVIEWER} on {row.label}", AgentProfile(
+                agent=catalogue.row_agent(self, row),
+                model=model,
+                effort=persona.effort if row.effort else "",
+                fast=persona.fast and row.fast,
+                gateway=row.gateway,
+            )
         profile = self.profiles.get(name)
         if profile is None:
             raise ConfigError(
@@ -459,6 +528,22 @@ class Config:
                 )
             if action.timeout is not None and action.timeout < 0:
                 raise ConfigError(f"actions.{name}.timeout must be >= 0")
+            if action.level is not None and action.level not in LEVELS:
+                raise ConfigError(f"actions.{name}.level must be between 1 and 5")
+            if action.persona:
+                persona = self.personas.get(action.persona)
+                if persona is None or persona.internal:
+                    offered = ", ".join(catalogue.offered_personas(self.personas))
+                    raise ConfigError(
+                        f"actions.{name}.persona: unknown persona {action.persona!r}; "
+                        f"choose one of {offered} or define [personas.{action.persona}]"
+                    )
+                fields = [k for k in ("profile", "agent", "model", "effort") if getattr(action, k)]
+                if fields:
+                    raise ConfigError(
+                        f"[actions.{name}] sets persona and {', '.join(fields)}: "
+                        "use either a persona, a profile or the action's own agent settings"
+                    )
             if action.profile:
                 # Existence is checked where the profile is used: profiles can be
                 # deleted at runtime, and a missing one warns and falls back.
@@ -472,12 +557,49 @@ class Config:
                         f"[actions.{name}] sets profile and {', '.join(fields)}: "
                         "use either a profile or the action's own agent settings"
                     )
+        self._validate_security()
         self._validate_workflows()
         self._validate_workspace_skills()
         try:
             commands.validate(self.commands, self.ui.leader, self.leader, self.actions)
         except commands.CommandError as exc:
             raise ConfigError(str(exc)) from exc
+
+    def _validate_security(self) -> None:
+        sec, cat, review = self.security, self.catalogue, self.commit_review
+        if sec.level and sec.level not in LEVELS:
+            raise ConfigError("security.level must be between 1 and 5")
+        if sec.egress not in EGRESS_BACKENDS:
+            raise ConfigError(f"security.egress must be one of {', '.join(EGRESS_BACKENDS)}")
+        rows = ", ".join(catalogue.ROW_BY_ID)
+        for key, value in (
+            ("catalogue.default_provider", cat.default_provider),
+            ("commit_review.provider", review.provider),
+        ):
+            if value and value not in catalogue.ROW_BY_ID:
+                raise ConfigError(f"{key}: unknown provider {value!r}; choose one of {rows}")
+        if review.provider and review.profile:
+            raise ConfigError(
+                "commit_review sets profile and provider: use either a profile or a provider"
+            )
+        if cat.gateway_agent not in catalogue.GATEWAY_CHOICES:
+            raise ConfigError(
+                f"catalogue.gateway_agent must be one of {', '.join(catalogue.GATEWAY_CHOICES)}"
+            )
+        for key, tiers in cat.models.items():
+            where = f"catalogue.models.{key if key.isprintable() else repr(key)}"
+            if key not in catalogue.VENDORS and key not in catalogue.ROW_BY_ID:
+                raise ConfigError(
+                    f"{where}: unknown vendor or provider; use one of "
+                    f"{', '.join(catalogue.VENDORS)}, {rows}"
+                )
+            for tier, model in tiers.items():
+                if tier not in catalogue.TIERS:
+                    raise ConfigError(
+                        f"{where}.{tier}: unknown tier; use {', '.join(catalogue.TIERS)}"
+                    )
+                if any(ch.isspace() for ch in model):
+                    raise ConfigError(f"{where}.{tier}: invalid model name {model!r}")
 
     def _validate_workflows(self) -> None:
         if self.workflows and not self.feedback.enabled:
@@ -546,7 +668,10 @@ TABLES: dict[str, str] = {
     "actions": "must be a table of [actions.NAME] tables with a prompt",
     "workflows": "must be a table of [workflows.NAME] tables",
     "workspace_skills": "must be an array of [[workspace_skills]] tables with source and targets",
+    "personas": "must be a table of [personas.NAME] tables",
+    "catalogue": "must be a table with default_provider, gateway_agent and [catalogue.models.*]",
 }
+CATALOGUE_KEYS: dict[str, Any] = {"default_provider": "", "gateway_agent": "pi", "models": {}}
 
 _SECTIONS: dict[str, type[Any]] = {
     "defaults": Defaults,
@@ -557,9 +682,11 @@ _SECTIONS: dict[str, type[Any]] = {
     "prompts": Prompts,
     "feedback": Feedback,
     "commit_review": CommitReview,
+    "security": Security,
 }
 _NAMED_SECTION_KEYS = {
     "actions": set(ACTION_KEYS),
+    "personas": set(catalogue.PERSONA_KEYS),
     "profiles": {f.name for f in dataclasses.fields(AgentProfile)},
     "workflows": {f.name for f in dataclasses.fields(Workflow)},
 }
@@ -677,6 +804,10 @@ def _check_config_keys(
                 )
                 for entry, table in tables.items()
             }
+    if "catalogue" in result:
+        result["catalogue"] = check(
+            result["catalogue"], set(CATALOGUE_KEYS), "[catalogue] has unknown key(s)"
+        )
     skills = result.get("workspace_skills")
     if isinstance(skills, list):
         keys = set(WORKSPACE_SKILL_KEYS)
@@ -695,8 +826,28 @@ def merge_config(
     warnings: list[str] = []
     project_data = _check_config_keys(project_data, warnings.append)
     cfg = from_dict(deep_merge(global_data, project_data))
+    _check_global_only(cfg, project_data)
     cfg.warnings = [f"{project_source}: {warning} (ignored)" for warning in warnings]
     return cfg
+
+
+def _check_global_only(cfg: Config, project_data: dict[str, Any]) -> None:
+    """Corporate network settings describe this machine, not the repository."""
+    security = project_data.get("security")
+    if isinstance(security, dict) and "egress" in security:
+        raise ConfigError(
+            "security.egress describes this machine's container runtime: "
+            "set it in the global config, not the project config"
+        )
+    network = project_data.get("network")
+    if not cfg.security.level or not isinstance(network, dict):
+        return
+    for key in GLOBAL_ONLY_NETWORK:
+        if key in network:
+            raise ConfigError(
+                f"network.{key} is a corporate network setting: with security.level set, "
+                "set it in the global config, not the project config"
+            )
 
 
 def from_dict(data: dict[str, Any]) -> Config:
@@ -720,6 +871,19 @@ def from_dict(data: dict[str, Any]) -> Config:
         raise ConfigError(f"[actions] {TABLES['actions']}")
     for name, table in actions.items():
         cfg.actions[name] = _build_action(name, table)
+    security = data.get("security")
+    if isinstance(security, dict) and security.get("level") == 0:
+        raise ConfigError("security.level must be between 1 and 5")
+    catalogue_table = data.get("catalogue", {})
+    if not isinstance(catalogue_table, dict):
+        raise ConfigError(f"[catalogue] {TABLES['catalogue']}")
+    cfg.catalogue = _build_catalogue(catalogue_table)
+    personas = data.get("personas", {})
+    if not isinstance(personas, dict):
+        raise ConfigError(f"[personas] {TABLES['personas']}")
+    for name, table in personas.items():
+        cfg.personas[name] = _build_persona(name, table)
+        cfg.persona_config[name] = dict(table)
     workflows = data.get("workflows", {})
     if not isinstance(workflows, dict):
         raise ConfigError(f"[workflows] {TABLES['workflows']}")
@@ -740,6 +904,46 @@ def from_dict(data: dict[str, Any]) -> Config:
         values = {k: _coerce(where, k, v, WORKSPACE_SKILL_KEYS[k]) for k, v in table.items()}
         cfg.workspace_skills.append(WorkspaceSkill(**values))
     return cfg
+
+
+def _build_catalogue(data: dict[str, Any]) -> Catalogue:
+    out = Catalogue()
+    for key in ("default_provider", "gateway_agent"):
+        if key in data:
+            setattr(out, key, _coerce("catalogue", key, data[key], ""))
+    models = data.get("models", {})
+    if not isinstance(models, dict):
+        raise ConfigError("[catalogue.models] must be a table of [catalogue.models.NAME] tables")
+    for key, tiers in models.items():
+        where = f"catalogue.models.{key if key.isprintable() else repr(key)}"
+        if not isinstance(tiers, dict):
+            raise ConfigError(f'[{where}] must be a table of tier = "model"')
+        out.models[key] = {tier: _coerce(where, tier, value, "") for tier, value in tiers.items()}
+    return out
+
+
+def _build_persona(name: str, data: Any) -> Persona:
+    """``[personas.NAME]`` over the built-in persona of that name, field by field."""
+    where = f"personas.{name if isinstance(name, str) and name.isprintable() else repr(name)}"
+    if not valid_name(name):
+        raise ConfigError(f"{where}: persona names use lowercase letters, digits and dashes")
+    if not isinstance(data, dict):
+        raise ConfigError(f'[{where}] must be a table, e.g. [{where}] tier = "high"')
+    values = {k: _coerce(where, k, v, catalogue.PERSONA_KEYS[k]) for k, v in data.items()}
+    base = BUILTIN_PERSONAS.get(name)
+    if base is None and "tier" not in values:
+        raise ConfigError(
+            f"{where}.tier is required for a new persona: {', '.join(catalogue.TIERS)}"
+        )
+    if "tier" in values and values["tier"] not in catalogue.TIERS:
+        raise ConfigError(f"{where}.tier must be one of {', '.join(catalogue.TIERS)}")
+    if values.get("effort", "") and values["effort"] not in EFFORTS:
+        raise ConfigError(f"{where}.effort must be empty or one of {', '.join(EFFORTS)}")
+    if "level" in values and values["level"] not in LEVELS:
+        raise ConfigError(f"{where}.level must be between 1 and 5")
+    if base is None:
+        return Persona(**values)
+    return dataclasses.replace(base, **values)
 
 
 def _build_action(name: str, data: Any) -> Action:
@@ -990,6 +1194,9 @@ class LastUsed:
     host_command: list[str] = field(default_factory=list)
     profile: str | None = None  # None = never chosen; "" = custom
     extra_args: list[str] = field(default_factory=list)  # custom launch switches
+    selection: str | None = None  # "persona" = provider + persona; None = profile / custom
+    provider: str = ""  # provider row of the last persona launch
+    persona: str = ""
 
     @classmethod
     def load(cls, repo: Path) -> LastUsed:
@@ -1007,6 +1214,12 @@ class LastUsed:
         out = cls()
         if isinstance(raw.get("profile"), str):
             out.profile = raw["profile"]
+        if raw.get("selection") == "persona":
+            out.selection = "persona"
+        if raw.get("provider") in catalogue.ROW_BY_ID:
+            out.provider = raw["provider"]
+        if valid_name(raw.get("persona")):
+            out.persona = raw["persona"]
         extra_args = raw.get("extra_args")
         if isinstance(extra_args, list) and all(
             isinstance(arg, str) and "\0" not in arg for arg in extra_args
@@ -1121,15 +1334,48 @@ def remembered_profile(cfg: Config, last: LastUsed) -> str:
     return name if name in cfg.profiles else ""
 
 
+def remembered_selection(cfg: Config, last: LastUsed) -> StepChoice:
+    """The setup the launch forms select first: a remembered persona selection, a
+    remembered profile or custom; before any choice the first configured profile,
+    else persona implementer."""
+    if last.selection == "persona":
+        persona = cfg.personas.get(last.persona)
+        if persona is not None and not persona.internal:
+            return StepChoice("persona", persona=last.persona)
+        return StepChoice("persona", persona=catalogue.IMPLEMENTER)
+    if last.profile is None and not cfg.profiles:
+        return StepChoice("persona", persona=catalogue.IMPLEMENTER)
+    profile = remembered_profile(cfg, last)
+    return StepChoice("profile", profile) if profile else CUSTOM
+
+
+def remembered_provider(
+    cfg: Config, last: LastUsed, available: Callable[[str], bool] | None = None
+) -> str:
+    """The provider persona selections start with: the remembered one, else
+    ``catalogue.default_provider``, else the first available row."""
+    ok = available or (lambda _row: True)
+    if last.provider in catalogue.ROW_BY_ID and ok(last.provider):
+        return last.provider
+    if cfg.catalogue.default_provider:
+        return cfg.catalogue.default_provider
+    return next((row.id for row in catalogue.ROWS if ok(row.id)), catalogue.ROWS[0].id)
+
+
 @dataclass(frozen=True)
 class StepChoice:
     """How an action run or workflow step picks its agent settings."""
 
-    kind: Literal["profile", "action", "custom"]
+    kind: Literal["profile", "action", "custom", "persona"]
     profile: str = ""  # for kind "profile"
+    persona: str = ""  # for kind "persona"
 
     def label(self) -> str:
-        return self.profile if self.kind == "profile" else ACTION_CHOICE_LABELS[self.kind]
+        if self.kind == "profile":
+            return self.profile
+        if self.kind == "persona":
+            return f"persona {self.persona}"
+        return ACTION_CHOICE_LABELS[self.kind]
 
 
 ACTION_CHOICE_LABELS = {"action": "action settings", "custom": "custom"}
@@ -1142,15 +1388,22 @@ def initial_choice(
 ) -> tuple[StepChoice, str]:
     """The choice an action starts with, and a warning when its profile is missing.
 
-    The action's profile comes first, then its own agent settings, then the profile
-    the launch forms would select (Custom when that is none)."""
+    The action's persona comes first, then its profile, then its own agent settings,
+    then a remembered persona selection, then the profile the launch forms would
+    select (Custom when that is none)."""
     warning = ""
+    if action.persona:
+        return StepChoice("persona", persona=action.persona), ""
     if action.profile:
         if action.profile in cfg.profiles:
             return StepChoice("profile", action.profile), ""
         warning = f"actions.{name} refers to unknown profile {action.profile!r}"
     elif action.has_own_settings:
         return ACTION_SETTINGS, ""
+    if last.selection == "persona":
+        choice = remembered_selection(cfg, last)
+        if choice.kind == "persona":
+            return choice, warning
     profile = remembered_profile(cfg, last)
     return (StepChoice("profile", profile) if profile else CUSTOM), warning
 
@@ -1177,6 +1430,107 @@ class ActionSettings:
             "gateway" if self.gateway else "",
         ]
         return "/".join(part for part in parts if part)
+
+
+@dataclass(frozen=True)
+class Selection:
+    """A launch setup choice with its per-job provider (persona kind only) and level."""
+
+    choice: StepChoice
+    provider: str = ""
+    level: int | None = None  # None = the starting level
+
+
+@dataclass
+class ResolvedSetup(ActionSettings):
+    """Fully resolved settings for one launch, action run or workflow step."""
+
+    persona: str = ""
+    provider: str = ""  # provider row id for persona selections
+    level: int | None = None  # None = no security level: earlier network behaviour
+    start_level: int | None = None  # what the level field starts at
+    problem: str = ""  # why this cannot launch, e.g. a tier the provider lacks
+    effort_note: str = ""  # e.g. that the provider default effort applies
+
+    def label(self) -> str:
+        text = super().label()
+        if self.effort_note:
+            text += f" ({self.effort_note})"
+        if self.level is not None:
+            text += f" · level {self.level}"
+        return text
+
+
+def project_level(cfg: Config) -> int | None:
+    return cfg.security.level or None
+
+
+def resolve_selection(
+    cfg: Config, last: LastUsed, selection: Selection, action: Action | None = None
+) -> ResolvedSetup:
+    """Agent settings and level for ``selection``; one resolver for launch forms,
+    action runs, workflow steps, dry runs and commit review.
+
+    A provider that lacks the persona's tier gives a result with ``problem`` set:
+    callers show it and refuse to launch, there is no fallback model.
+    """
+    action = action or Action()
+    choice = selection.choice
+    default = project_level(cfg)
+    if choice.kind == "persona":
+        return _resolve_persona(cfg, last, selection, action)
+    settings = resolve_action_settings(cfg, last, action, choice)
+    start = default if choice.kind == "custom" else (action.level or default)
+    return ResolvedSetup(
+        **dataclasses.asdict(settings),
+        level=selection.level if selection.level is not None else start,
+        start_level=start,
+    )
+
+
+def _resolve_persona(
+    cfg: Config, last: LastUsed, selection: Selection, action: Action
+) -> ResolvedSetup:
+    name = selection.choice.persona
+    persona = cfg.personas.get(name)
+    provider = selection.provider or remembered_provider(cfg, last)
+    row = catalogue.ROW_BY_ID.get(provider)
+    defaults = resolve_launch_defaults(cfg, last)
+    timeout = action.timeout if action.timeout is not None else defaults.timeout
+    start = action.level or (persona.level if persona else None) or project_level(cfg)
+    level = selection.level if selection.level is not None else start
+    if persona is None or row is None:
+        what = f"persona {name!r}" if persona is None else f"provider {provider!r}"
+        return ResolvedSetup(
+            agent="",
+            model="",
+            effort="",
+            fast=False,
+            timeout=timeout,
+            persona=name,
+            provider=provider,
+            level=level,
+            start_level=start,
+            problem=f"unknown {what}",
+        )
+    model = catalogue.model_for(cfg, row, persona.tier)
+    problem = "" if model is not None else catalogue.tier_problem(cfg, row, persona.tier)
+    if row.gateway and not cfg.network.agent_proxy and not problem:
+        problem = f"{row.label}: no agent gateway is configured (network.agent_proxy)"
+    return ResolvedSetup(
+        agent=catalogue.row_agent(cfg, row),
+        model=model or "",
+        effort=persona.effort if row.effort else "",
+        fast=persona.fast and row.fast,
+        timeout=timeout,
+        gateway=row.gateway,
+        persona=name,
+        provider=row.id,
+        level=level,
+        start_level=start,
+        problem=problem,
+        effort_note="" if row.effort else "provider default effort",
+    )
 
 
 def resolve_action_settings(
@@ -1230,15 +1584,23 @@ def remember(
     gateway: bool = False,
     profile: str = "",
     extra_args: list[str] | None = None,
+    provider: str = "",
+    persona: str = "",
 ) -> None:
+    """Remember an accepted launch. A persona launch (``persona`` set) remembers only
+    the selection and timeout: custom agent settings and arguments stay as they are."""
     with contextlib.suppress(OSError), LastUsed.edit(repo) as last:
+        if timeout is not None:
+            last.timeout = timeout
+        if persona:
+            last.selection, last.provider, last.persona = "persona", provider, persona
+            return
+        last.selection = None
         last.profile = profile
         if not profile:
             last.extra_args = list(extra_args or [])
         last.agent = agent
         last.effort = effort
-        if timeout is not None:
-            last.timeout = timeout
         last.model_by_agent[agent] = model
         if agent in FAST_AGENTS:
             last.fast_by_agent[agent] = fast

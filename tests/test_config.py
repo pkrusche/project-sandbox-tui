@@ -33,8 +33,8 @@ def test_defaults_without_files(tmp_path: Path) -> None:
 def test_commit_summary_profile() -> None:
     cfg = c.from_dict({"defaults": {"agent": "claude", "effort": "high"}})
     assert cfg.commit_summary_profile() == (
-        "commit-summary",
-        c.AgentProfile(agent="codex", effort="low"),
+        "commit-reviewer on Codex",
+        c.AgentProfile(agent="codex", model="gpt-6-luna", effort="low"),
     )
     cfg = c.from_dict(
         {
@@ -661,3 +661,116 @@ def test_gateway_resolution_and_memory(tmp_path: Path) -> None:
     last = c.LastUsed.load(tmp_path)
     assert last.gateway_by_agent == {"pi": False}
     assert not c.resolve_gateway(cfg, last, "pi")
+
+
+def test_personas_merge_across_files(tmp_path: Path) -> None:
+    global_path = write(tmp_path / "g.toml", '[personas.reviewer]\ntier = "frontier"\n')
+    write(c.project_config_path(tmp_path / "repo"), "[personas.reviewer]\nlevel = 5\n")
+    c.ProjectTrust.check(tmp_path / "repo").trust(tmp_path / "repo")
+    cfg = c.load(tmp_path / "repo", global_path)
+    assert (cfg.personas["reviewer"].tier, cfg.personas["reviewer"].level) == ("frontier", 5)
+    assert cfg.personas["reviewer"].effort == "high"  # unset fields keep built-in values
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('[personas.triage]\neffort = "low"\n', "personas.triage.tier"),
+        ("[personas.reviewer]\nlevel = 6\n", "personas.reviewer.level"),
+        ('[catalogue.models.gateway-mistral]\nhigh = "x"\n', "catalogue.models.gateway-mistral"),
+        ('[catalogue]\ngateway_agent = "codex"\n', "catalogue.gateway_agent"),
+        ('[actions.review]\nprompt = "x"\npersona = "auditor"\n', "actions.review.persona"),
+        (
+            '[actions.review]\nprompt = "x"\npersona = "commit-reviewer"\n',
+            "actions.review.persona",
+        ),
+        (
+            '[actions.review]\nprompt = "x"\npersona = "reviewer"\nprofile = "deep"\n',
+            r"\[actions.review\] sets persona and profile",
+        ),
+        (
+            '[actions.review]\nprompt = "x"\npersona = "reviewer"\nmodel = "m"\n',
+            r"\[actions.review\] sets persona and model",
+        ),
+        ('[actions.review]\nprompt = "x"\nlevel = 6\n', "actions.review.level"),
+        ('[commit_review]\nprofile = "a"\nprovider = "codex"\n', "commit_review"),
+        ('[commit_review]\nprovider = "mistral"\n', "commit_review.provider"),
+    ],
+)
+def test_invalid_persona_and_catalogue_config(tmp_path: Path, text: str, message: str) -> None:
+    path = write(tmp_path / "g.toml", text)
+    with pytest.raises(c.ConfigError, match=message):
+        c.load(tmp_path, path)
+
+
+def test_action_persona_with_level_loads(tmp_path: Path) -> None:
+    path = write(
+        tmp_path / "g.toml", '[actions.review]\nprompt = "x"\npersona = "reviewer"\nlevel = 5\n'
+    )
+    action = c.load(tmp_path, path).actions["review"]
+    assert (action.persona, action.level) == ("reviewer", 5)
+    assert action.to_dict() == {"prompt": "x", "persona": "reviewer", "level": 5}
+
+
+def test_older_last_used_loads_without_selection(tmp_path: Path) -> None:
+    path = c.repo_state_dir(tmp_path) / "last_used.json"
+    write(path, json.dumps({"agent": "codex", "profile": "", "extra_args": ["--memory=12g"]}))
+    last = c.LastUsed.load(tmp_path)
+    assert (last.selection, last.provider, last.persona) == (None, "", "")
+    assert last.agent == "codex" and last.extra_args == ["--memory=12g"]
+    write(path, json.dumps({"selection": "x", "provider": "mistral", "persona": 7}))
+    last = c.LastUsed.load(tmp_path)
+    assert (last.selection, last.provider, last.persona) == (None, "", "")
+
+
+def test_remembered_selection() -> None:
+    cfg = c.Config()
+    implementer = c.StepChoice("persona", persona="implementer")
+    assert c.remembered_selection(cfg, c.LastUsed()) == implementer
+    remembered = c.LastUsed(selection="persona", provider="claude-code", persona="debugger")
+    assert c.remembered_selection(cfg, remembered) == c.StepChoice("persona", persona="debugger")
+    assert c.remembered_provider(cfg, remembered) == "claude-code"
+    cfg.profiles["deep"] = c.AgentProfile(agent="codex")
+    assert c.remembered_selection(cfg, c.LastUsed()) == c.StepChoice("profile", "deep")
+    assert c.remembered_selection(cfg, c.LastUsed(profile="")) == c.CUSTOM
+    gone = c.LastUsed(selection="persona", persona="gone")
+    assert c.remembered_selection(cfg, gone) == implementer
+
+
+def test_default_provider() -> None:
+    cfg = c.from_dict({"catalogue": {"default_provider": "claude-code"}})
+    assert c.remembered_provider(cfg, c.LastUsed()) == "claude-code"
+    assert c.remembered_provider(c.Config(), c.LastUsed()) == "codex"
+    unavailable = {"codex", "claude-code"}
+    assert (
+        c.remembered_provider(c.Config(), c.LastUsed(), lambda row: row not in unavailable)
+        == "gateway-openai"
+    )
+
+
+def test_persona_launch_keeps_custom_settings(tmp_path: Path) -> None:
+    c.remember(tmp_path, "pi", "gpt-5-mini", "low", 60, gateway=False, extra_args=["--memory=12g"])
+    c.remember(
+        tmp_path,
+        "pi",
+        "gpt-6-luna",
+        "medium",
+        90,
+        gateway=True,
+        extra_args=[],
+        provider="gateway-openai",
+        persona="implementer",
+    )
+    last = c.LastUsed.load(tmp_path)
+    assert (last.selection, last.provider, last.persona) == (
+        "persona",
+        "gateway-openai",
+        "implementer",
+    )
+    assert last.extra_args == ["--memory=12g"] and last.profile == ""
+    assert last.gateway_by_agent == {"pi": False}
+    assert last.model_by_agent == {"pi": "gpt-5-mini"} and last.effort == "low"
+    assert last.timeout == 90
+    c.remember(tmp_path, "codex", "", "", None, profile="")
+    last = c.LastUsed.load(tmp_path)
+    assert last.selection is None and last.provider == "gateway-openai"  # provider kept

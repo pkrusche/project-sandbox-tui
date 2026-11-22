@@ -6,6 +6,38 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Model catalogue, personas and security levels. Launch forms select a setup
+  by **persona** (a provider row such as Codex, Claude Code, Gateway/Anthropic
+  or Copilot/OpenAI plus a persona such as planner, checker, implementer,
+  debugger, chore-runner or reviewer), a named profile, or custom settings.
+  sbx-tui resolves the provider's tier model, effort and fast mode; a provider
+  without the persona's tier is shown unavailable and never substituted.
+  `[catalogue]` sets `default_provider`, the gateway rows' `gateway_agent` (pi
+  or opencode) and `[catalogue.models.*]` tier overrides; `[personas.NAME]`
+  overrides or adds personas. Catalogue models also lead the custom-mode model
+  suggestions. See [models](docs/models.md).
+- `[security] level` (1 to 5) compiles a project's isolation to launcher flags:
+  1 no firewall, 2 firewall plus `project.build` package sources and
+  `network.extra_domains`, 3 agent API only through `security.egress` (sidecar
+  by default, or firewall), 4 and 5 add `--vcs-access=read-only` / `hidden`.
+  Launch forms and the workflow picker show a per-job level field, red below the
+  project default; `:NAME` asks before running an action below it. Levels the
+  launcher cannot run are marked and refused. See
+  [security levels](docs/configuration.md#security-levels).
+- Actions accept `persona` and `level`. Workflow steps take their persona from
+  the action, and the picker asks for a provider and level per step, so a
+  workflow moves to another provider without config edits. Dry runs show each
+  step's persona, provider, level and compiled flags.
+- `network.build_proxy`, `build_no_proxy`, `build_ca_certs` and
+  `no_internet_proxy_preflight` pass the launcher's build-proxy, build CA and
+  proxy preflight flags at every level. `commit_review.provider` selects the
+  commit reviewer's provider.
+- Discovery reads the launcher's `--egress` modes (capabilities cache version 2;
+  older caches refresh). Doctor reports level conflicts per config key, the
+  egress backend and the sidecar's allowed hosts, and each provider's
+  availability; the setup wizard's prompt lists providers, supported levels and
+  personas, and the bundled skills describe them.
+
 - The setup wizard uses the new `sbx-tui-safety` skill to discuss sandbox
   access for each task. Initialization and bookmark workspaces install it
   alongside `sbx-tui-config`.
@@ -70,6 +102,26 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Breaking for projects that set `[security] level`:** network and VCS flags
+  come only from the level. `--no-firewall`, `--egress`, `--extra-domain`,
+  `--allow-github`, `--vcs-access`, `--pi-ollama` and proxy or CA flags in
+  `sandbox.extra_args`, profile or custom arguments are refused before launch
+  instead of appended, `network.no_firewall` is ignored, and
+  `network.internet_proxy`, `ca_certs`, the build-proxy settings and
+  `security.egress` must be set in the global config. Projects without
+  `[security]` keep their launcher commands.
+- **Breaking:** commit summaries now run the commit-reviewer persona (Codex
+  `gpt-6-luna`, low effort by default) pinned at API-only egress, whatever the
+  network settings: the default `security.egress = "sidecar"` needs the egress
+  sidecar set up with `project-sandbox-egress`, or set `security.egress =
+  "firewall"` in the global config. Shared `--extra-domain`, `--allow-github`
+  and `--no-firewall` no longer reach them; corporate proxy and CA settings do.
+- Without profiles or a remembered choice, launch forms start in persona mode
+  with persona implementer on the default provider instead of custom settings.
+  The form's **profile** field is now **setup**.
+- The project's example workflow drops the `spec-commits` step and its
+  `commits` result key, since jj keeps each step's work in distinct changes, and
+  its actions name personas.
 - **BREAKING (agent gateway):** `network.agent_proxy` is used only by launches
   that opt in with `gateway = true` (profiles, the launch form or
   `defaults.gateway`), and only for `pi`, `opencode` and `bash`. Claude and Codex

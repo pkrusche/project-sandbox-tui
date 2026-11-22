@@ -40,6 +40,15 @@ def by_name(checks: list[doctor.Check]) -> dict[str, doctor.Check]:
     return {c.name: c for c in checks}
 
 
+@pytest.fixture
+def egress_policy() -> Path:
+    """A sidecar policy, so a healthy host reports no egress failure."""
+    path = doctor.egress_policy_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('allow = ["api.openai.com", "api.anthropic.com"]\n')
+    return path
+
+
 def test_healthy(repo: Path) -> None:
     # The fake runner serves Docker; don't auto-detect a runtime on the test host.
     (repo / ".project-sandbox-tui.toml").write_text(
@@ -124,7 +133,10 @@ def test_runtime_checks() -> None:
 
 
 def test_outside_a_repository_and_main(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    egress_policy: Path,
 ) -> None:
     monkeypatch.setattr(doctor, "run", runner({**HEALTHY, "project-sandbox --version": None}))
     monkeypatch.setattr(doctor.shutil, "which", lambda c: f"/bin/{c}")
@@ -145,7 +157,10 @@ def test_probe_timeout_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_warnings_do_not_fail_doctor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    egress_policy: Path,
 ) -> None:
     monkeypatch.setattr(doctor, "run", runner(HEALTHY))
     monkeypatch.setattr(doctor.shutil, "which", lambda cmd: f"/bin/{cmd}")
@@ -156,7 +171,10 @@ def test_warnings_do_not_fail_doctor(
 
 
 def test_unknown_action_profiles_warn(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    egress_policy: Path,
 ) -> None:
     from project_sandbox_tui.config import ProjectTrust
 
@@ -406,7 +424,7 @@ def test_selections_include_actions_and_commit_review(home: Path) -> None:
     cfg.actions = {"go": Action(prompt="x", agent="gpt")}
     found = problems(doctor.check_agent_selections(cfg, caps(agents=("claude", "bash")), home=home))
     assert found["actions.go.agent"].status == "fail"
-    assert "commit review (built-in profile).agent" in found  # built-in codex profile
+    assert "commit review (commit-reviewer on Codex).agent" in found  # built-in persona
 
 
 def test_fallback_snapshot_reports_nothing_unsupported(home: Path) -> None:
@@ -414,3 +432,106 @@ def test_fallback_snapshot_reports_nothing_unsupported(home: Path) -> None:
     cfg.defaults.agent = "newagent"
     found = problems(doctor.check_agent_selections(cfg, capabilities.fallback(), home=home))
     assert "defaults.agent" not in found  # unknown support and availability never fail
+
+
+# ---------------------------------------------------------------- security levels
+
+
+def discovered(**fields: Any) -> capabilities.Capabilities:
+    defaults: dict[str, Any] = {
+        "command": ("project-sandbox",),
+        "version": "0.4.1",
+        "discovered_at": datetime.now(UTC),
+        "source": "probe",
+        "agents": ("claude", "codex", "pi", "copilot", "bash"),
+        "vcs_modes": ("full", "read-only", "hidden"),
+        "egress_modes": ("firewall", "sidecar"),
+    }
+    return capabilities.Capabilities(**{**defaults, **fields})
+
+
+def test_level_conflicts_per_config_key(egress_policy: Path) -> None:
+    cfg = Config()
+    cfg.security.level = 3
+    cfg.sandbox.extra_args = ["--no-firewall", "--memory=8g"]
+    cfg.profiles = {
+        "web": AgentProfile(agent="claude", extra_args=["--extra-domain=example.org"]),
+        "plain": AgentProfile(agent="claude", extra_args=["--memory=16g"]),
+    }
+    cfg.network.no_firewall = True
+    checks = by_name(doctor.check_security(cfg, discovered()))
+    shared = checks["sandbox.extra_args"]
+    assert shared.status == "fail" and "--no-firewall" in shared.detail
+    assert "level 1 for the jobs that need it" in shared.hint
+    web = checks["profiles.web.extra_args"]
+    assert web.status == "fail" and "network.extra_domains with level 2" in web.hint
+    assert "profiles.plain.extra_args" not in checks
+    ignored = checks["network.no_firewall"]
+    assert (
+        ignored.status == "warn" and "ignored while security levels are in effect" in ignored.detail
+    )
+
+
+def test_no_level_conflicts_without_security_levels(egress_policy: Path) -> None:
+    cfg = Config()
+    cfg.sandbox.extra_args = ["--no-firewall"]
+    cfg.network.no_firewall = True
+    checks = by_name(doctor.check_security(cfg, discovered()))
+    assert "sandbox.extra_args" not in checks and "network.no_firewall" not in checks
+
+
+def test_sidecar_policy_present(egress_policy: Path) -> None:
+    check = by_name(doctor.check_security(Config(), discovered()))["egress backend"]
+    assert check.status == "ok"
+    assert "sidecar" in check.detail and "allows 2 hosts" in check.detail
+    assert "api.openai.com, api.anthropic.com" in check.detail
+    assert "shared by all projects on the runtime" in check.hint
+    before = egress_policy.read_text()
+    doctor.check_security(Config(), discovered())
+    assert egress_policy.read_text() == before  # never modified
+
+
+def test_sidecar_policy_with_nested_tables(egress_policy: Path) -> None:
+    egress_policy.write_text(
+        '[[rules]]\nhosts = ["a.example"]\n[policy]\ndomains = ["b.example"]\n'
+    )
+    assert doctor.egress_hosts(egress_policy) == ["a.example", "b.example"]
+    egress_policy.write_text("not toml [")
+    check = by_name(doctor.check_security(Config(), discovered()))["egress backend"]
+    assert check.status == "ok" and str(egress_policy) in check.detail
+
+
+def test_sidecar_not_set_up() -> None:
+    check = by_name(doctor.check_security(Config(), discovered()))["egress backend"]
+    assert check.status == "fail" and "egress.toml does not exist" in check.detail
+    assert "project-sandbox-egress" in check.hint
+    assert 'security.egress = "firewall" in the global config' in check.hint
+
+
+def test_egress_backend_not_offered_by_the_launcher() -> None:
+    cfg = Config()
+    check = by_name(doctor.check_security(cfg, discovered(egress_modes=("firewall",))))
+    assert check["egress backend"].status == "fail"
+    assert "not supported" in check["egress backend"].detail
+    cfg.security.egress = "firewall"
+    check = by_name(doctor.check_security(cfg, discovered(egress_modes=("firewall",))))
+    assert check["egress backend"].status == "ok"
+
+
+def test_provider_availability(egress_policy: Path) -> None:
+    cfg = Config()
+    cfg.catalogue.default_provider = "gateway-anthropic"
+    checks = by_name(doctor.check_security(cfg, discovered()))
+    assert (
+        "Gateway/Anthropic unavailable: no agent gateway is configured"
+        in checks["providers"].detail
+    )
+    failure = checks["catalogue.default_provider"]
+    assert failure.status == "fail" and "no agent gateway is configured" in failure.detail
+    cfg.catalogue.default_provider = ""
+    cfg.commit_review.provider = "gateway-openai"
+    checks = by_name(doctor.check_security(cfg, discovered()))
+    assert checks["commit_review.provider"].status == "fail"
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    checks = by_name(doctor.check_security(cfg, discovered()))
+    assert "commit_review.provider" not in checks

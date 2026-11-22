@@ -1,4 +1,5 @@
-"""Launch form: saved profiles or custom settings, with unsupervised prompts."""
+"""Launch form: a provider and persona, a saved profile or custom settings, with
+a per-job security level and unsupervised prompts."""
 
 from __future__ import annotations
 
@@ -14,20 +15,38 @@ from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Button, Input, Static, TextArea
 
+from project_sandbox_tui import capabilities as caps_mod
+from project_sandbox_tui import catalogue
 from project_sandbox_tui import octopus as octopus_mod
 from project_sandbox_tui.config import (
+    CUSTOM,
     AgentProfile,
     Config,
     ConfigError,
     LastUsed,
     LaunchDefaults,
-    remembered_profile,
+    ResolvedSetup,
+    Selection,
+    StepChoice,
+    remembered_provider,
+    remembered_selection,
+    resolve_selection,
 )
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.sandbox import LaunchSpec, Mode, validate_launch_target
 from project_sandbox_tui.screens.agent import CUSTOM_MODEL as CUSTOM_MODEL
 from project_sandbox_tui.screens.agent import AgentControls
 from project_sandbox_tui.screens.history import HistorySearchScreen
+from project_sandbox_tui.screens.selection import (
+    LEVEL_OPTIONS,
+    PERSONA_SETUP,
+    app_capabilities,
+    describe_level,
+    level_labels,
+    provider_available,
+    provider_labels,
+    show_level,
+)
 from project_sandbox_tui.vcs import session_target_error, validate_branch_name
 from project_sandbox_tui.widgets import CycleField, KeyHints, PromptArea, modifier_key
 
@@ -117,7 +136,12 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.cfg = cfg
         self.last = last
         self.defaults = defaults
-        self.initial_profile = remembered_profile(cfg, last)
+        initial = remembered_selection(cfg, last)
+        self.initial_profile = initial.profile if initial.kind == "profile" else ""
+        self.initial_setup = (
+            PERSONA_SETUP if initial.kind == "persona" else self.initial_profile or "custom"
+        )
+        self.initial_persona = initial.persona or catalogue.IMPLEMENTER
         self.preview_fn = preview
         self.initial_prompt = draft or prompt_text
         self._baseline_prompt = prompt_text  # what the prompt shows without edits
@@ -188,17 +212,43 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                     )
                 yield Static("", classes="prompt-hint", id="branch-hint")
             yield CycleField(
-                "profile",
-                [*self.cfg.profiles, "custom"],
-                self.initial_profile or "custom",
+                "setup",
+                [PERSONA_SETUP, *self.cfg.profiles, "custom"],
+                self.initial_setup,
+                labels={PERSONA_SETUP: "persona"},
                 id="profile",
             )
+            caps = self._caps()
+            persona_mode = self.initial_setup == PERSONA_SETUP
+            provider = CycleField(
+                "provider",
+                [row.id for row in catalogue.ROWS],
+                remembered_provider(self.cfg, self.last, provider_available(self.cfg, caps)),
+                labels=provider_labels(self.cfg, caps, self._tier(self.initial_persona)),
+                id="provider",
+            )
+            provider.display = persona_mode
+            yield provider
+            persona = CycleField(
+                "persona",
+                catalogue.offered_personas(self.cfg.personas),
+                self.initial_persona,
+                id="persona",
+            )
+            persona.display = persona_mode
+            yield persona
             yield Static("", classes="prompt-hint", id="profile-hint")
             controls = AgentControls(
                 self.cfg, self.last, self.defaults, extra_args=self.last.extra_args
             )
-            controls.display = not self.initial_profile
+            controls.display = self.initial_setup == "custom"
             yield controls
+            level = CycleField(
+                "level", LEVEL_OPTIONS, labels=level_labels(self.cfg, caps), id="level"
+            )
+            level.display = False  # until the selection's starting level is known
+            yield level
+            yield Static("", classes="prompt-hint", id="level-hint")
             if self.mode == "background":
                 with Horizontal(classes="field"):
                     yield Static("timeout", classes="field-label")
@@ -273,10 +323,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             result,
             base if operation == "rebase" else "",
         )
-        name = self._selected_profile()
-        agent = (
-            self.cfg.profiles[name].agent if name else self._value("#agent", self.defaults.agent)
-        )
+        agent = self._agent()
         if agent == "bash":
             return octopus_mod.bash_prompt(plan, self.octopus.existing)
         return octopus_mod.render_prompt(self.octopus.templates[operation], plan)
@@ -307,6 +354,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         target = "#prompt" if self.mode == "background" else "#profile"
         self.query_one(target).focus()
         self._profile_changed()
+        self._reset_level()
         self._update_preview()
         self._update_prompt_hint()
         self._update_branch_hint()
@@ -342,22 +390,139 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
 
     # ------------------------------------------------------------ state
 
+    def _caps(self) -> caps_mod.Capabilities:
+        return app_capabilities(self)
+
+    def _setup_value(self) -> str:
+        try:
+            return self.query_one("#profile", CycleField).value
+        except Exception:
+            return self.initial_setup
+
+    def _persona_mode(self) -> bool:
+        return self._setup_value() == PERSONA_SETUP
+
     def _selected_profile(self) -> str:
-        name = self._value("#profile", self.initial_profile or "custom")
+        name = self._setup_value()
         return name if name in self.cfg.profiles else ""
 
+    def _tier(self, persona: str) -> str:
+        found = self.cfg.personas.get(persona)
+        return found.tier if found else ""
+
+    def _level(self) -> int | None:
+        try:
+            field = self.query_one("#level", CycleField)
+        except Exception:
+            return None
+        return int(field.value) if field.display else None
+
+    def _selection(self, *, level: bool = True) -> Selection:
+        if self._persona_mode():
+            choice = StepChoice("persona", persona=self._value("#persona", self.initial_persona))
+        elif name := self._selected_profile():
+            choice = StepChoice("profile", name)
+        else:
+            choice = CUSTOM
+        provider = self._value("#provider", "") if self._persona_mode() else ""
+        return Selection(choice, provider, self._level() if level else None)
+
+    def _resolved(self) -> ResolvedSetup:
+        return resolve_selection(self.cfg, self.last, self._selection())
+
+    def _agent(self) -> str:
+        if self._persona_mode():
+            return self._resolved().agent
+        if name := self._selected_profile():
+            return self.cfg.profiles[name].agent
+        return self._value("#agent", self.defaults.agent)
+
     def _current_profile(self) -> AgentProfile:
+        if self._persona_mode():
+            setup = self._resolved()
+            return AgentProfile(
+                setup.agent, setup.model, setup.effort, setup.fast, [], setup.gateway
+            )
         if name := self._selected_profile():
             return self.cfg.profiles[name]
         return self.query_one(AgentControls).current_profile()
 
+    def _reset_level(self) -> None:
+        """Start the level field at the selection's level: levels are never remembered."""
+        start = resolve_selection(self.cfg, self.last, self._selection(level=False)).start_level
+        field = self.query_one("#level", CycleField)
+        with self.prevent(CycleField.Changed):
+            field.display = start is not None
+            if start is not None:
+                field.value = str(start)
+        self._level_changed()
+
+    @on(CycleField.Changed, "#level")
+    def _level_changed(self) -> None:
+        field = self.query_one("#level", CycleField)
+        hint = self.query_one("#level-hint", Static)
+        hint.display = field.display
+        level = self._level()
+        show_level(field, self.cfg, level)
+        if field.display:
+            hint.update(Text(describe_level(self.cfg, self._caps(), level, self._agent())))
+        self._update_preview()
+
+    def capabilities_changed(self) -> None:
+        """Relabel provider and level choices from a refreshed snapshot."""
+        caps = self._caps()
+        level = self.query_one("#level", CycleField)
+        level.labels = level_labels(self.cfg, caps)
+        level.refresh()
+        self._relabel_providers()
+        self._profile_changed()
+        self._level_changed()
+
+    def _relabel_providers(self) -> None:
+        provider = self.query_one("#provider", CycleField)
+        persona = self._value("#persona", self.initial_persona)
+        provider.labels = provider_labels(self.cfg, self._caps(), self._tier(persona))
+        provider.refresh()
+
+    @on(CycleField.Changed, "#persona")
+    def _persona_changed(self) -> None:
+        self._relabel_providers()
+        self._profile_changed()
+        self._reset_level()
+
+    @on(CycleField.Changed, "#provider")
+    def _provider_changed(self) -> None:
+        self._profile_changed()
+        self._level_changed()
+
+    def _persona_hint(self) -> Text:
+        setup = self._resolved()
+        if setup.problem:
+            return Text(setup.problem, "red")
+        text = Text(setup.label())
+        row = catalogue.ROW_BY_ID.get(setup.provider)
+        if row is not None:
+            result = caps_mod.provider_availability(self.cfg, self._caps(), row)
+            if result.available is False:
+                text.append(f" · {row.label}: unavailable — {result.reason}", "yellow")
+        return text
+
     @on(CycleField.Changed, "#profile")
+    def _setup_changed(self) -> None:
+        self._profile_changed()
+        self._reset_level()
+
     def _profile_changed(self) -> None:
         name = self._selected_profile()
-        self.query_one(AgentControls).display = not name
+        persona_mode = self._persona_mode()
+        self.query_one(AgentControls).display = not name and not persona_mode
+        for selector in ("#provider", "#persona"):
+            self.query_one(selector).display = persona_mode
         hint = self.query_one("#profile-hint", Static)
-        hint.display = bool(name)
-        if name:
+        hint.display = bool(name) or persona_mode
+        if persona_mode:
+            hint.update(self._persona_hint())
+        elif name:
             profile = self.cfg.profiles[name]
             text = " / ".join(
                 value
@@ -407,6 +572,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             gateway=profile.gateway,
             extra_args=list(profile.extra_args),
             profile=self._selected_profile(),
+            persona=self._value("#persona", "") if self._persona_mode() else "",
+            provider=self._value("#provider", "") if self._persona_mode() else "",
+            level=self._level(),
         )
 
     def _update_preview(self) -> None:
@@ -427,7 +595,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     @on(AgentControls.Changed)
     @on(Input.Changed)
     @on(TextArea.Changed)
-    def _changed(self) -> None:
+    def _changed(self, event: object = None) -> None:
+        if isinstance(event, AgentControls.Changed):
+            self._level_changed()  # the hint's agent caveats follow the agent
         self._octopus_changed()
         self.query_one("#launch-hint", Static).update(KeyHints(self.default_hint))
         self._update_preview()
@@ -502,6 +672,14 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 self.notify(error, severity="warning")
                 self.query_one("#branch").focus()
                 return
+        if self._persona_mode() and (problem := self._resolved().problem):
+            self.notify(problem, severity="warning")
+            self.query_one("#provider").focus()
+            return
+        if problems := caps_mod.level_problems(self._caps(), self.cfg, self._level()):
+            self.notify("; ".join(problems), severity="warning")
+            self.query_one("#level").focus()
+            return
         try:
             spec = self.current_spec()
             validate_launch_target(self.cfg, spec)
@@ -514,7 +692,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
                 "the agent gateway requires a model: choose one of the gateway's models",
                 severity="warning",
             )
-            if not self._selected_profile():
+            if not self._selected_profile() and not self._persona_mode():
                 custom = self.query_one("#custom-model-row").display
                 self.query_one("#custom-model" if custom else "#model").focus()
             return

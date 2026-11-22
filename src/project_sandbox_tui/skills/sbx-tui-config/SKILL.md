@@ -81,7 +81,8 @@ again. If the config is already invalid, edit the related TOML keys together.
 
 Use `[sandbox]` and `[network]` for shared settings such as runtime, memory,
 CPUs, proxies, and extra domains. Use `sandbox.extra_args` for shared CLI flags
-without a dedicated setting. Check the version and `--help` of the command in
+without a dedicated setting. With a project security level (below), network
+and VCS flags come only from the level: keep them out of every `extra_args`. Check the version and `--help` of the command in
 `sandbox.command` before adding flags. For runtime support, build options, and
 network restrictions, see the [project-sandbox usage guide](https://github.com/pkrusche/project-sandbox/blob/main/docs/usage.md),
 [runtimes](https://github.com/pkrusche/project-sandbox/blob/main/docs/runtimes.md),
@@ -99,13 +100,69 @@ launcher supports, even one that is not installed on the host. Run
   `no credentials needed` (bash), or `unavailable` with the reason;
 - `vcs access`: the `--vcs-access` modes for profile `extra_args` (for example
   `--vcs-access=read-only` for a review profile);
-- `runtimes`: which isolation runtimes are usable and what `auto` selects.
+- `runtimes`: which isolation runtimes are usable and what `auto` selects;
+- `providers`: each provider row and whether it can run here;
+- `egress backend`: `security.egress`, whether the launcher supports it and, for
+  the sidecar, the hosts its global `egress.toml` allows.
 
 When doctor warns that capabilities could not be discovered, read the launcher's
 `--help` yourself. Combine sources freely, for example Claude with host
 credentials for implementation and Pi through the agent gateway for cheap checks.
 An unavailable agent can still run with `--no-forward-credentials` in its
 profile's `extra_args`: the user logs in inside the sandbox each time.
+
+### Choose a security level, providers and personas
+
+`[security] level` sets the project's default isolation on a 1–5 scale; a
+higher level isolates more. sbx-tui compiles it to launcher flags:
+
+| Level | Flags | Use for |
+| --- | --- | --- |
+| 1 | `--no-firewall` | jobs that need open internet; avoid as a default |
+| 2 | `--egress=firewall` plus `--extra-domain` for `project.build`'s package sources and `network.extra_domains` (and `--allow-github` with `network.allow_github`) | implementing and testing with dependency downloads |
+| 3 | the egress backend only: agent API hosts | planning and work without downloads |
+| 4 | level 3 plus `--vcs-access=read-only` | reviews that need history |
+| 5 | level 3 plus `--vcs-access=hidden` | source-only reviews |
+
+Levels 3 to 5 use `security.egress` from the global config: `sidecar` (default,
+needs `project-sandbox-egress` set up) or `firewall`. sbx-tui never switches
+backends. With `network.internet_proxy` set, level 2 adds no `--extra-domain`:
+the proxy's policy decides. Levels 4 and 5 keep source files writable. With a
+level in effect, `--no-firewall`, `--egress`, `--extra-domain`, `--allow-github`,
+`--vcs-access`, `--pi-ollama` and proxy or CA flags in `sandbox.extra_args`,
+profile or custom arguments are refused; `network.no_firewall` is ignored; and
+`network.internet_proxy`, `ca_certs`, `build_proxy`, `build_no_proxy`,
+`build_ca_certs`, `no_internet_proxy_preflight` and `security.egress` may only be
+set in the global config. Without `[security]`, launches keep their earlier flags.
+
+Provider rows pick the agent and model IDs: `codex`, `claude-code`,
+`gateway-openai`, `gateway-anthropic`, `gateway-gemini` (through
+`network.agent_proxy` with `catalogue.gateway_agent`, `pi` or `opencode`),
+`copilot-openai`, `copilot-anthropic` and `copilot-gemini`. Set
+`catalogue.default_provider` to one that `sbx-tui doctor` lists as available.
+Personas choose tier, effort, fast mode and starting level:
+
+| Persona | Tier | Effort | Fast | Level |
+| --- | --- | --- | --- | --- |
+| planner | high | high | off | 3 |
+| checker | medium | low | on | 2 |
+| implementer | medium | medium | off | 2 |
+| debugger | frontier | xhigh | off | 2 |
+| chore-runner | fast | medium | on | 2 |
+| reviewer | high | high | off | 4 |
+
+`[personas.NAME]` overrides fields of a built-in persona or adds one (`tier` is
+then required). `[catalogue.models.<vendor|row>] TIER = "model"` pins a model;
+an empty value disables that tier. A provider without the tier is shown as
+unavailable, never replaced by another model. Copilot rows imply GitHub hosts.
+
+```toml
+[security]
+level = 3
+
+[catalogue]
+default_provider = "claude-code"
+```
 
 ### Use the agent gateway
 
@@ -208,17 +265,22 @@ its mapping.
 
 ### Choose agent profiles for actions and workflow steps
 
-Each action gets its agent settings in one of three ways. Pick one per action:
+Each action gets its agent settings in one of four ways. Pick one per action:
 
 | Action sets | Agent, model, effort, fast | Extra CLI args |
 | --- | --- | --- |
+| `persona = "NAME"` | the persona on the remembered or default provider | none |
 | `profile = "NAME"` | from `[profiles.NAME]` | the profile's `extra_args` |
 | `agent`, `model` or `effort` | those fields; unset ones from the launch defaults | none |
 | neither | the profile the `i`/`r` launch forms would select | that profile's, or the remembered Custom args |
 
-`profile` cannot be combined with `agent`, `model` or `effort`; config
-validation rejects it, as it does the reserved name `custom`. `timeout` applies
-in every case. In the third row, the launch forms select the remembered profile,
+`profile` cannot be combined with `agent`, `model`, `effort` or `persona`, and
+`persona` cannot be combined with `agent`, `model` or `effort`; config
+validation rejects it, as it does the reserved name `custom` and unknown
+personas. `timeout` applies in every case. `level = 1..5` sets the action's
+security level, else the persona's, else the project's; a run below the
+project default asks for confirmation. Prefer personas for unattended work:
+workflows then move to another provider without config edits. In the third row, the launch forms select the remembered profile,
 or the first configured profile before the user has chosen one. Prefer an
 explicit `profile` for unattended work so its setup doesn't depend on the last
 interactive launch. Use a profile to set `fast` or extra CLI flags for an action.
@@ -232,17 +294,13 @@ agent = "codex"
 effort = "high"
 extra_args = ["--memory=16g"]
 
-[profiles.quick]
-agent = "claude"
-effort = "low"
-
 [actions.spec-plan]
 prompt = "Plan {bookmark}; report state.spec_path."
-profile = "deep"
+persona = "planner"
 
 [actions.spec-check]
 prompt = "Check the spec at previous_state.spec_path."
-profile = "quick"
+persona = "checker"
 
 [actions.spec-implement]
 prompt = "Implement the spec at previous_state.spec_path."
@@ -257,11 +315,13 @@ pass_state_keys = ["spec_path"]
 
 Workflows require `feedback.enabled` (the default), and every referenced action
 must exist. Before anything starts, `:workflow NAME [TOPIC]` shows a picker with
-a profile field for each agent action. Each field starts at the
-action's profile, then **action settings** for an action with its own fields,
-then the launch forms' profile. The user can change any field for that run;
-choices are not remembered, so put lasting choices in the action's `profile`.
-Steps keep the settings chosen at start even if profiles change later.
+a setup field for each agent action. Each field starts at the action's persona
+(with a provider field), then its profile, then **action settings** for an
+action with its own fields, then the launch forms' selection. With a security
+level in effect each step also has a level field, red below the project default.
+The user can change any field for that run; choices are not remembered, so put
+lasting choices in the action. Steps keep the settings chosen at start even if
+profiles or the catalogue change later.
 
 `host:test` runs `test` from `[commands]`. Config loading verifies the command
 name and inserts `human-review` immediately before it unless that stage already
@@ -294,7 +354,8 @@ settings and the default working-copy command. To verify a named profile, open
 preview before submitting. Use `esc` to close the form after inspection.
 To check workflow step profiles without launching anything, run `sbx-tui
 --dry-run`, select a bookmark, run `:workflow NAME`, and press `enter` in the
-picker: the preview lists each step's profile and agent settings.
+picker: the preview lists each step's persona and provider or profile, its agent
+settings, and its level with the flags it compiles to.
 `sbx-tui doctor` checks dependencies, runtime, and configuration, including
 actions that name unknown profiles.
 

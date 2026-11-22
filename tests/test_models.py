@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from textual.widgets import Input, Static
 
+from project_sandbox_tui import catalogue, config
 from project_sandbox_tui import models as m
 from project_sandbox_tui.cli import main
 from project_sandbox_tui.config import AGENTS, Config
@@ -536,6 +537,8 @@ def run_form(repo: Path, cfg: Config, check: Any, size: tuple[int, int] = (120, 
 
     cfg.ui.bell = False
     cfg.ui.notify_command = "true"
+    if not (config.repo_state_dir(repo) / "last_used.json").exists():
+        config.LastUsed(profile="").save(repo)  # custom settings, as chosen before
     app = SandboxTUI(repo, detect(repo), cfg)
 
     async def scenario() -> None:
@@ -559,7 +562,9 @@ def test_launch_form_suggests_downloaded_models(repo: Path, fake_cfg: Any, tmp_p
         model = form.query_one("#model", CycleField)
         assert model.value == ""
         assert "claude-sonnet-5-5" in model.options
-        assert model.options.index("sonnet") < model.options.index("claude-sonnet-5-5")
+        # catalogue models come before the aliases and the downloaded catalog
+        assert model.options.index("claude-sonnet-5-5") < model.options.index("sonnet")
+        assert model.options.index("sonnet") < model.options.index("claude-haiku-4-5")
         model.focus()
         await pilot.press("right")
         assert form.current_spec().model == model.options[1]
@@ -655,3 +660,39 @@ def test_configured_gateway_models_come_first(tmp_path: Path) -> None:
         "claude-sonnet-5-5",
     ]
     assert m.suggestions("opencode", ["gpt-5-mini"], None) == ["gpt-5-mini"]
+
+
+def test_catalogue_models_follow_configured_ones() -> None:
+    cfg = Config()
+    catalogue_models = catalogue.models_for_agent(cfg, "codex")
+    assert m.suggestions("codex", None, None, catalogue_models)[:4] == [
+        "gpt-6-luna",
+        "gpt-6.1-terra",
+        "gpt-6.2-sol",
+        "gpt-6.2-astra",
+    ]
+    assert m.suggestions("codex", ["mine"], None, catalogue_models)[:2] == ["mine", "gpt-6-luna"]
+    assert catalogue.models_for_agent(cfg, "copilot")[:3] == [
+        "gpt-6-luna",
+        "gpt-6.1-terra",
+        "gpt-6.2-sol",
+    ]
+    assert "claude-sonnet-5.5" in catalogue.models_for_agent(cfg, "copilot")
+    assert "claude-sonnet-5.5" not in catalogue.models_for_agent(cfg, "claude")
+
+
+def test_catalogue_models_in_custom_mode(repo: Path, fake_cfg: Any) -> None:
+    async def check(form: LaunchScreen, pilot: Any) -> None:
+        form.query_one("#agent", CycleField).value = "codex"
+        await pilot.pause()
+        options = form.query_one("#model", CycleField).options
+        assert options[1:5] == ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"]
+
+    run_form(repo, fake_cfg(), check)
+
+
+def test_doctor_accepts_catalogue_models() -> None:
+    from project_sandbox_tui.doctor import _model_listed
+
+    assert _model_listed(Config(), "claude", "claude-fable-5-2", None) is True
+    assert _model_listed(Config(), "codex", "gpt-6.2-sol", None) is True

@@ -35,6 +35,7 @@ from textual.widgets.data_table import ColumnKey
 
 from project_sandbox_tui import (
     capabilities,
+    catalogue,
     commands,
     commit_summary,
     doctor,
@@ -42,6 +43,7 @@ from project_sandbox_tui import (
     launchers,
     notify,
     octopus,
+    security,
     terminal,
 )
 from project_sandbox_tui import models as models_mod
@@ -63,15 +65,18 @@ from project_sandbox_tui.config import (
     LastUsed,
     LaunchDefaults,
     ProjectTrust,
+    Selection,
     StepChoice,
     Workflow,
     command_warning,
     initial_choice,
     load,
     load_candidate,
+    project_level,
     remember,
-    resolve_action_settings,
+    remembered_provider,
     resolve_launch_defaults,
+    resolve_selection,
     trusted_config_path,
 )
 from project_sandbox_tui.history import PromptHistory
@@ -112,6 +117,7 @@ from project_sandbox_tui.screens.oplog import OpLogScreen
 from project_sandbox_tui.screens.profiles import ProfileEdit, ProfilesScreen
 from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen, ReviewPosition
+from project_sandbox_tui.screens.selection import provider_available
 from project_sandbox_tui.screens.tasks import TasksScreen
 from project_sandbox_tui.screens.workflow import Stage, WorkflowProfilesScreen
 from project_sandbox_tui.settings import Editor
@@ -1444,7 +1450,8 @@ class SandboxTUI(App[None]):
                 span += f" → {commit_ids[-1][:12]}"
             noun = "commit" if len(commits) == 1 else "commits"
             self.notify(
-                f"Dry run · {spec.profile} ({spec.label()}) · {len(commits)} pinned {noun} · {span}"
+                f"Dry run · {spec.profile or f'persona {spec.persona} on {spec.provider}'}"
+                f" ({spec.label()}) · {len(commits)} pinned {noun} · {span}"
             )
             return
         self._pending_summaries.add(commit_ids)
@@ -2028,6 +2035,8 @@ class SandboxTUI(App[None]):
                 gateway=spec.gateway,
                 profile=spec.profile,
                 extra_args=spec.extra_args,
+                provider=spec.provider,
+                persona=spec.persona,
             )
             self.main.update_help_layout()
         self.call_later(self.refresh_data)
@@ -3185,6 +3194,8 @@ class SandboxTUI(App[None]):
         for screen in self.screen_stack:
             for controls in screen.query(AgentControls):
                 controls.set_capabilities(caps)
+            if isinstance(screen, LaunchScreen):
+                screen.capabilities_changed()
 
     @work(group="models")
     async def _update_models(self, source: str = models_mod.DEFAULT_SOURCE) -> None:
@@ -3405,17 +3416,35 @@ class SandboxTUI(App[None]):
             go,
         )
 
+    def _initial_selection(self, last: LastUsed, choice: StepChoice) -> Selection:
+        """A step's selection: persona choices start at the remembered or default provider."""
+        if choice.kind != "persona":
+            return Selection(choice)
+        available = provider_available(self.cfg, self.capabilities)
+        return Selection(choice, remembered_provider(self.cfg, last, available))
+
+    def _level_line(self, spec: LaunchSpec) -> str:
+        """The level a spec runs at and the flags it compiles to; "" without levels."""
+        level = security.effective_level(self.cfg, spec)
+        if level is None:
+            return ""
+        return f"level {level} · {' '.join(security.level_flags(self.cfg, level, spec.agent))}"
+
     def _action_spec(
         self,
         action: Action,
         name: str,
         last: LastUsed,
-        choice: StepChoice,
+        selection: Selection,
         *,
         mode: Mode = "background",
         extra: str = "",
     ) -> LaunchSpec:
-        settings = resolve_action_settings(self.cfg, last, action, choice)
+        """The launch spec of an action run or workflow step; ConfigError when the
+        selection cannot launch (e.g. the provider lacks the persona's tier)."""
+        settings = resolve_selection(self.cfg, last, selection, action)
+        if settings.problem:
+            raise ConfigError(settings.problem)
         return LaunchSpec(
             branch=name,
             agent=settings.agent,
@@ -3428,6 +3457,9 @@ class SandboxTUI(App[None]):
             timeout=settings.timeout,
             extra_args=settings.extra_args,
             profile=settings.profile,
+            persona=settings.persona,
+            provider=settings.provider,
+            level=settings.level,
         )
 
     def _run_workflow(self, command: commands.Command) -> None:
@@ -3477,13 +3509,18 @@ class SandboxTUI(App[None]):
             mode = "background"
             if index == 0:
                 mode = "interactive" if workflow.first_step_interactive else "queued"
-            stages.append(Stage(action, self.cfg.actions[action], mode, choice))
+            stages.append(
+                Stage(action, self.cfg.actions[action], mode, self._initial_selection(last, choice))
+            )
 
-        def chosen(choices: list[StepChoice] | None) -> None:
+        def chosen(choices: list[Selection] | None) -> None:
             if choices is not None:
-                self._start_workflow(
-                    name, workflow, branch, last, choices, command.args, review_base
-                )
+                try:
+                    self._start_workflow(
+                        name, workflow, branch, last, choices, command.args, review_base
+                    )
+                except ConfigError as exc:
+                    self.notify(str(exc), severity="error", timeout=8)
 
         self.push_screen(
             WorkflowProfilesScreen(f"workflow {name} on {branch}", self.cfg, last, stages),
@@ -3496,7 +3533,7 @@ class SandboxTUI(App[None]):
         workflow: Workflow,
         branch: str,
         last: LastUsed,
-        choices: list[StepChoice],
+        choices: list[Selection],
         topic: str,
         review_base: str,
     ) -> None:
@@ -3530,18 +3567,28 @@ class SandboxTUI(App[None]):
             last_agent.prompt_text += f"\nInclude these keys in the final report state: {keys}.\n"
         if self._sandbox_dry_run():
 
-            def chosen_label(stage: LaunchSpec, choice: StepChoice) -> str:
+            def chosen_label(stage: LaunchSpec, selection: Selection) -> str:
+                if stage.persona:
+                    row = catalogue.ROW_BY_ID.get(stage.provider)
+                    return (
+                        f"persona {stage.persona} · provider {row.label if row else stage.provider}"
+                    )
                 # A profile deleted while the picker was open resolves as Custom.
-                return stage.profile or ("action settings" if choice.kind == "action" else "custom")
+                kind = selection.choice.kind
+                return "profile " + (
+                    stage.profile or ("action settings" if kind == "action" else "custom")
+                )
 
             agent_choices = iter(choices)
             preview = []
             for action, stage in [(workflow.planning_action, spec), *steps]:
                 if isinstance(stage, LaunchSpec):
-                    profile = chosen_label(stage, next(agent_choices))
+                    chosen = chosen_label(stage, next(agent_choices))
+                    level = self._level_line(stage)
                     preview.append(
-                        f"{action} ({stage.mode}) · profile {profile} · {stage.label()}\n"
-                        f"{stage.prompt_text}"
+                        f"{action} ({stage.mode}) · {chosen} · {stage.label()}\n"
+                        + (f"{level}\n" if level else "")
+                        + stage.prompt_text
                     )
                 elif isinstance(stage, str):
                     preview.append(
@@ -3580,9 +3627,15 @@ class SandboxTUI(App[None]):
             return
         last = LastUsed.load(self.repo)
         choice, warning = initial_choice(self.cfg, last, command.action, action)
-        specs = [
-            self._action_spec(action, name, last, choice, extra=command.args) for name in eligible
-        ]
+        selection = self._initial_selection(last, choice)
+        try:
+            specs = [
+                self._action_spec(action, name, last, selection, extra=command.args)
+                for name in eligible
+            ]
+        except ConfigError as exc:
+            self.notify(f":{command.action}: {exc}", severity="error", timeout=8)
+            return
 
         def go() -> None:
             self.clear_branch_selection()
@@ -3591,18 +3644,30 @@ class SandboxTUI(App[None]):
                 self.call_after_refresh(self._start_launch, spec, remember_defaults=False)
 
         profile = f" with profile {specs[0].profile}" if specs[0].profile else ""
+        if specs[0].persona:
+            profile = f" as persona {specs[0].persona}"
         body = (
             f"Each starts or queues :{command.action} as an unsupervised "
             f"{specs[0].label()} run{profile}."
         )
+        level, default = security.effective_level(self.cfg, specs[0]), project_level(self.cfg)
+        below = level is not None and default is not None and level < default
+        if level is not None:
+            body += f"\n{self._level_line(specs[0])}"
+        if below:
+            body = f"This run uses level {level}, below the project default {default}.\n\n{body}"
         if warning:
             body = f"{warning}. Use {choice.label()} for this run?\n\n{body}"
             if specs[0].extra_args:
                 body += f"\nProfile arguments: {shlex.join(specs[0].extra_args)}"
-        elif len(eligible) == 1:
+        elif len(eligible) == 1 and not below:
             go()
             return
         title = f"start :{command.action} on {len(eligible)} bookmark{'s' * (len(eligible) != 1)}?"
+        if below:
+            title = (
+                f"start :{command.action} at level {level}, below the project default {default}?"
+            )
         self._confirm_targets(eligible, title, body, "start", go)
 
     async def action_quit(self) -> None:

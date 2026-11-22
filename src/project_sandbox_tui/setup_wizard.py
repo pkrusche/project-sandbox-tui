@@ -20,7 +20,7 @@ from textual.widgets import Button, Checkbox, Label, Select, SelectionList, Text
 
 from project_sandbox_tui import capabilities
 from project_sandbox_tui.capabilities import Capabilities
-from project_sandbox_tui.config import SAFETY_SKILL, ConfigError, load
+from project_sandbox_tui.config import SAFETY_SKILL, Config, ConfigError, load
 from project_sandbox_tui.initialization import skill_template
 from project_sandbox_tui.vcs import VcsError, detect
 
@@ -67,12 +67,15 @@ What the configured project-sandbox supports here:
 {self.summary or "unknown; run sbx-tui doctor to see it."}
 
 Inspect the project instructions, manifests and existing .project-sandbox-tui.toml.
-Ask me one question at a time and wait for my answers. Ask which tasks I run, then
-suggest named agent profiles for those tasks. For each profile ask what VCS access
-and internet egress it needs, including required domains, and map the choices to
-profile extra_args using only the modes listed above. Ask how I plan, implement,
-test and review changes, then suggest actions and workflow steps grounded in the
-project's own commands.
+Ask me one question at a time and wait for my answers. Ask which tasks I run and
+which internet access and VCS access they need, then propose a project
+security.level from the supported levels above (explain levels 2 and 3 when tests
+need package sources), a catalogue.default_provider from the available provider
+rows, and a persona for each action. Keep network and VCS flags out of extra_args:
+levels own them. Corporate proxy and CA settings belong in the global config.
+Suggest named agent profiles only for setups the provider rows do not cover.
+Ask how I plan, implement, test and review changes, then suggest actions and
+workflow steps grounded in the project's own commands.
 
 Use the bundled safety skill below to discuss the scenarios that apply. It is
 included here so you can use it before this project has been initialized.
@@ -110,10 +113,13 @@ class SetupDialog(App[Interview]):
         *,
         gateway_configured: bool = False,
         home: Path | None = None,
+        cfg: Config | None = None,
     ) -> None:
-        """``agents``: setup agents found on PATH; ``caps``: the launcher's capabilities."""
+        """``agents``: setup agents found on PATH; ``caps``: the launcher's capabilities;
+        ``cfg``: the current configuration, for providers, levels and personas."""
         super().__init__()
         self.agents = agents
+        self.cfg = cfg or Config()
         self.caps = caps or capabilities.fallback()
         self.gateway_configured = gateway_configured
         self.home = home
@@ -183,7 +189,9 @@ class SetupDialog(App[Interview]):
                 list(self.query_one("#profiles", SelectionList).selected),
                 self.query_one(TextArea).text,
                 gateway=gateway,
-                summary=capabilities.setup_summary(self.caps, gateway=gateway, home=self.home),
+                summary=capabilities.setup_summary(
+                    self.caps, gateway=gateway, home=self.home, cfg=self.cfg
+                ),
                 sources=dict(self.profile_choices(gateway)),
             )
         )
@@ -220,7 +228,11 @@ def main(argv: list[str] | None = None) -> int:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         parser.error("the setup interview requires an interactive terminal")
     caps, gateway_configured = discover(repo)
-    interview = SetupDialog(list(paths), caps, gateway_configured=gateway_configured).run()
+    try:
+        cfg = load(repo)
+    except ConfigError:
+        cfg = Config()
+    interview = SetupDialog(list(paths), caps, gateway_configured=gateway_configured, cfg=cfg).run()
     if interview is None:
         return 0
     executable = paths[interview.host]

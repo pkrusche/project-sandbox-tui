@@ -53,9 +53,16 @@ It uses no model API or credentials and keeps the firewall enabled.
 Bash produces plain-text logs, so a Markdown transcript is not required.
 
 The commit-summary smoke test runs a second credential-free Bash session with
-the production summary launcher. It reads the pinned patch, checks that the
+the production summary launcher, using its pinned API-only egress with the
+firewall backend. It reads the pinned patch, checks that the
 mount is read-only and the reviewed checkout and jj store are inaccessible, and
 publishes a result through the feedback helper.
+
+The gateway smoke test runs a Bash session through a local fake agent gateway at
+security level 3 with the egress sidecar (`--agent-proxy` with
+`--egress=sidecar`). It needs the sidecar set up with `project-sandbox-egress`
+and reads the user's `$XDG_CONFIG_HOME/project-sandbox/egress.toml` (never
+changing it); without that policy it is skipped with the reason.
 
 Install `project-sandbox` ≥ 0.2.2 and jj ≥ 0.46, start Docker, Podman, or Apple
 Containers, then run:

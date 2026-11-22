@@ -7,11 +7,13 @@ No fake agent, API keys, or calls to a model provider are involved.
 from __future__ import annotations
 
 import contextlib
+import http.server
 import json
 import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -28,6 +30,10 @@ from project_sandbox_tui.workspace_skills import WorkspacePreparer
 from tests.conftest import run
 
 pytestmark = pytest.mark.container_smoke
+
+# The user's own config directory, read before the per-test XDG isolation: the
+# egress sidecar and its egress.toml policy are global per container runtime.
+REAL_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 
 BRANCH = "smoke/bash"
 SKILL = ".agents/skills/smoke-skill"  # ignored by BRANCH's .gitignore
@@ -300,7 +306,9 @@ def test_real_commit_summary_mount_boundary(
     assert sentinel.is_file() and store.is_dir()
     original_contents = sentinel.read_bytes()
     image = f"sbx-tui-review-smoke-{uuid.uuid4().hex}:test"
+    cfg.security.egress = "firewall"  # pinned API-only egress without needing the sidecar
     cfg, spec = commit_summary.resolve_launch(cfg, repo)
+    assert spec.level == 3
     cfg.project.base_image = pytestconfig.getoption("--container-base-image")
     spec.agent = "bash"
     spec.extra_args = [f"--image-tag={image}"]
@@ -369,3 +377,77 @@ PYTHON
                 else:
                     _runtime(cli, "rm", "--force", record.container_name)
         _runtime(cli, "image", "rm", image)
+
+
+class _FakeGateway(http.server.BaseHTTPRequestHandler):
+    """An OpenAI-compatible gateway stub: lists one model, accepts anything else."""
+
+    def do_GET(self) -> None:
+        body = json.dumps({"object": "list", "data": [{"id": "smoke-model", "object": "model"}]})
+        self._reply(body if self.path.rstrip("/").endswith("/models") else "{}")
+
+    def do_POST(self) -> None:
+        self._reply("{}")
+
+    def _reply(self, body: str) -> None:
+        data = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        pass
+
+
+def test_real_gateway_at_level_3(
+    jj_repo: Path, pytestconfig: pytest.Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Does --agent-proxy work together with --egress=sidecar? (design open question)"""
+    policy = REAL_CONFIG_HOME / "project-sandbox" / "egress.toml"
+    if not policy.is_file():
+        pytest.skip(f"the egress sidecar is not set up ({policy}); see project-sandbox-egress")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(REAL_CONFIG_HOME))  # the launcher finds the sidecar
+    cfg = Config()
+    cfg.sandbox.command = pytestconfig.getoption("--container-command")
+    cfg.sandbox.runtime = pytestconfig.getoption("--container-runtime")
+    cfg.sandbox.no_forward_credentials = True
+    cfg.project.base_image = pytestconfig.getoption("--container-base-image")
+    cfg.security.level = 3
+    for check in (
+        doctor.check_jj(doctor.run),
+        doctor.check_project_sandbox(cfg, doctor.run),
+        doctor.check_runtime(cfg, doctor.run, shutil.which),
+    ):
+        assert check.status == "ok", check.render()
+    cli = runtime_cli(cfg.sandbox.runtime)
+    assert cli is not None
+    cfg.sandbox.runtime = "apple-container" if cli == "container" else cli
+    image = f"sbx-tui-gateway-smoke-{uuid.uuid4().hex}:test"
+    cfg.sandbox.extra_args = [f"--image-tag={image}"]
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeGateway)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    cfg.network.agent_proxy = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    cfg.validate()
+    run("jj", "bookmark", "create", BRANCH, "-r", "main", cwd=jj_repo)
+    manager = JobManager(jj_repo, cfg)
+    report = "python3 /run/sbx-feedback/sbx-report finish --outcome success --summary gateway"
+    spec = LaunchSpec(
+        BRANCH, "bash", "smoke-model", gateway=True, level=3, mode="background",
+        prompt_text=report, timeout=120,
+    )  # fmt: skip
+    print(f"Gateway level-3 smoke: runtime={cfg.sandbox.runtime}, image={image}")
+    try:
+        job = manager.start_background(spec, {})
+        assert (
+            "--egress=sidecar" in job.argv
+            and f"--agent-proxy={cfg.network.agent_proxy}" in job.argv
+        )
+        assert not any(arg.startswith(("--extra-domain", "--no-firewall")) for arg in job.argv)
+        done = _wait(manager, lambda: not manager.jobs[BRANCH].running, BUILD_DEADLINE)
+        assert (done.exit_code, done.status) == (0, "completed"), _diagnostics(done)
+        assert done.reported_success, _diagnostics(done)
+    finally:
+        server.shutdown()
+        _cleanup(manager, cli, image)

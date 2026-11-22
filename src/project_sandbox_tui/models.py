@@ -371,9 +371,16 @@ def codex_cache_models(home: Path | None = None) -> list[str]:
 # ---------------------------------------------------------------- launch form
 
 
-def suggestions(agent: str, configured: list[str] | None, store: Store | None) -> list[str]:
-    """Model names to offer for ``agent``, most preferred first, without duplicates."""
-    names: list[str] = list(configured or [])
+def suggestions(
+    agent: str,
+    configured: list[str] | None,
+    store: Store | None,
+    catalogue: list[str] | None = None,
+) -> list[str]:
+    """Model names to offer for ``agent``, most preferred first, without duplicates:
+    ``[models]`` entries, then the catalogue models of provider rows using ``agent``,
+    then the built-in sources."""
+    names: list[str] = [*(configured or []), *(catalogue or [])]
     if agent == "claude":
         names += CLAUDE_ALIASES
     if agent == "codex":

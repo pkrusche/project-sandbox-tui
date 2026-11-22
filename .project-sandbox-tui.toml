@@ -12,6 +12,7 @@ Look for correctness bugs, regressions, and missing test coverage in the branch'
 changes. Report actionable findings with file and line references, ordered by
 severity, and note any remaining validation gaps. Do not modify files.
 '''
+persona = "reviewer"
 
 [actions.check]
 prompt = '''
@@ -21,6 +22,7 @@ uv run ruff format --check ., uv run ty check, and uv build. Report the result
 of each command and summarize failures or missing prerequisites. Do not modify
 source files or update dependencies.
 '''
+persona = "checker"
 
 [actions.e2e]
 prompt = '''
@@ -32,14 +34,14 @@ Follow the documented temporary-directory isolation rules. Report the outcome
 and any failure log paths; if prerequisites are unavailable, report the blocker
 without claiming the test passed. Do not modify source files.
 '''
+persona = "checker"
 timeout = 3600
 
 [workflows.spec]
 planning_action = "spec-plan"
 first_step_interactive = true
-steps = ["spec-check", "spec-implement", "spec-chores", "spec-commits"]
+steps = ["spec-check", "spec-implement", "spec-chores"]
 pass_state_keys = ["spec_path"]
-result_state_keys = ["commits"]
 
 [actions.spec-plan]
 prompt = '''
@@ -53,6 +55,7 @@ report blocked with the decisions needed if essential information is missing.
 Report success with state.spec_path set to the workspace-relative Markdown file
 or OpenSpec change directory. Leave implementation for the next step.
 '''
+persona = "planner"
 
 [actions.spec-check]
 prompt = '''
@@ -62,6 +65,7 @@ the implementer enough information to start. Report blocked with the exact
 questions or decisions that remain if the spec is incomplete. Report success if
 the spec is ready. Leave the spec and source as you found them.
 '''
+persona = "checker"
 
 [actions.spec-implement]
 prompt = '''
@@ -71,6 +75,7 @@ from any work already on the bookmark. When a decision is needed, record the
 completed work and report blocked with the question that needs an answer. Report
 success once all implementation tasks and their targeted checks are complete.
 '''
+persona = "implementer"
 
 [actions.spec-chores]
 prompt = '''
@@ -81,21 +86,8 @@ Record the checks actually run and their results in the feedback report. Fix
 in-scope failures, and report blocked if a prerequisite or decision is needed.
 Report success once the required checks pass.
 '''
+persona = "chore-runner"
 timeout = 3600
-
-[actions.spec-commits]
-prompt = '''
-Read the spec at previous_state.spec_path in the run feedback context. Use jj to
-organize the changes on {bookmark} since its divergence from {main} into an
-ordered series of reviewable commits aligned with the spec's tasks. Keep the
-final file tree intact and keep all changes on the feature bookmark. Inspect
-the final series and verify the final tree matches the tested tree. Reuse any
-existing commits whose boundaries already match the spec.
-Report state.commits as an array, oldest first, with one object per commit. Each
-object has commit_id (full revision ID), subject, spec_tasks (array of task IDs
-or titles), and summary (what changes in that commit). Report blocked if the
-scope or boundaries of the commit series need a decision.
-'''
 
 [commands]
 test = "scripts/test.sh"

@@ -197,21 +197,26 @@ upstream mount format cannot represent them.
 Use named workflows to run agent actions, human reviews, and host commands on
 one bookmark. Add a workflow to your trusted project config
 (`.project-sandbox-tui.toml`) and define each referenced agent action in `[actions.NAME]`.
-Actions supply the prompts, an optional timeout, and either a `profile` or their
-own agent, model, and effort; see [agent actions](configuration.md#agent-actions).
+Actions supply the prompts, an optional timeout and level, and a `persona`, a
+`profile` or their own agent, model, and effort; see
+[agent actions](configuration.md#agent-actions). With personas a workflow is
+provider-independent: the picker chooses the provider per step.
 Workflow commands support inline and external terminals.
 
 ```toml
 [workflows.spec]
 planning_action = "spec-plan"
 first_step_interactive = true
-steps = ["spec-check", "spec-implement", "spec-chores", "spec-commits"]
+steps = ["spec-check", "spec-implement", "spec-chores"]
 pass_state_keys = ["spec_path"]
-result_state_keys = ["commits"]
+
+[actions.spec-check]
+prompt = "Check the spec at previous_state.spec_path."
+persona = "checker"
 ```
 
 The [project's example configuration](../.project-sandbox-tui.toml) defines all
-five actions. To use it, select an idle feature bookmark and type
+four actions, each with a persona. To use it, select an idle feature bookmark and type
 `:workflow spec Add CSV export`. Type `:workflow` to list the
 configured names. At the start of planning, ask the agent to read
 `/run/sbx-feedback/context.json` and follow its brief. Work together on a plan
@@ -226,19 +231,37 @@ work. Write the planning action so it can run from the supplied topic and report
 `blocked` with the missing decisions when it needs input. In both modes the
 first action supplies the same `pass_state_keys` for the later steps.
 
-Before anything starts, `:workflow` lists every step and shows a **profile** field
+Before anything starts, `:workflow` lists every step and shows a **setup** field
 for each agent action. Use `tab` or `j` / `k` to move between fields and `h` / `l`
-to change a profile; the line below each field shows the resulting agent
-settings and CLI args. Press `enter` to start the workflow or `esc` to cancel
-without starting or queueing anything. Each field offers the configured
-profiles and **custom**, plus **action settings** for an action that sets its
-own agent, model, or effort. A field starts at the action's `profile`, then
-**action settings**, then the profile the `i` / `r` launch forms would select
-(the remembered one, or the first configured one). Choices made here are not
-remembered for the launch forms or the next workflow; set `profile` on the
+to change one; the line below each step shows the resulting agent settings and
+CLI args. Press `enter` to start the workflow or `esc` to cancel without
+starting or queueing anything. Each field offers the action's persona, the
+configured profiles and **custom**, plus **action settings** for an action that
+sets its own agent, model, or effort. A field starts at the action's `persona`,
+then its `profile`, then **action settings**, then the setup the `i` / `r`
+launch forms would select (a remembered persona selection, the remembered
+profile, or the first configured one).
+
+A persona step also has a **provider** field, starting at the remembered or
+default provider. Setting `spec-implement` (persona implementer) and
+`spec-check` (persona checker) to Gateway/Gemini runs both with
+`gemini-4-argon` through the gateway at level 2. A provider without the
+persona's tier, such as Copilot/Anthropic for the frontier debugger, is shown
+with the reason and `enter` is refused until the step changes. When a
+[security level](configuration.md#security-levels) is in effect, every step
+shows a **level** field starting at the action's `level`, else the persona's
+level, else the project default, in red when below the project default: with
+`security.level = 3`, a reviewer step starts at 4.
+
+Choices made here, including providers and levels, are not remembered for the
+launch forms or the next workflow; set `persona`, `profile` or `level` on the
 action to keep one. If an action names a profile that is not configured, the TUI
-warns and starts that field at the launch forms' profile. In `--dry-run` mode,
-`enter` shows each step's profile, agent settings, and prompt instead of starting.
+warns and starts that field at the launch forms' setup. In `--dry-run` mode,
+`enter` shows each step's persona and provider, profile, action settings or
+Custom, its agent settings, its level with the flags it compiles to, and its
+prompt instead of starting, for example
+`review (background) · persona reviewer · provider Codex · codex/gpt-6.2-sol/high/L4`
+followed by `level 4 · --egress=sidecar --vcs-access=read-only`.
 
 Each bookmark runs one workflow at a time. In either mode, `:workflow` is refused
 while another workflow's step is pending, running, awaiting its decision, or
@@ -249,12 +272,9 @@ stopped in a paused queue.
    `blocked` with the question to resolve.
 2. **Implement the spec.** The next task works through the checklist and reports
    `blocked` if a decision prevents it from finishing.
-3. **Run chores and verification.** The next task handles related cleanup and runs
-   the required tests and checks, recording their results.
-4. **Prepare commits for review.** The last task organizes the tested changes into
-   spec-aligned commits and reports `state.commits` in review order. Each entry
-   contains `commit_id`, `subject`, `spec_tasks`, and `summary`. Open the queue
-   with `L` and press `P` on that step to read the full report.
+3. **Run chores and verification.** The last task handles related cleanup and runs
+   the required tests and checks, recording their results. jj keeps each step's
+   work in distinct changes, so no separate commit-preparation step is needed.
 
 Each agent step needs a clean process exit and a valid final `success` report to
 advance. `pass_state_keys` requires those keys in the planner's final `state`
@@ -263,9 +283,9 @@ requires the final agent to report every key in `result_state_keys`. Both lists
 default to empty. The actions define what the state values mean. Workflow steps
 use their own sequence and handoff rules, and run ahead of ordinary prompts
 queued on the same bookmark once its queue is active. The action sequence and
-launch choices, including each step's profile settings, are saved at the start
-so an in-progress workflow can continue after a TUI restart or config reload;
-later profile edits don't change it. Reporting requires `project-sandbox` with
+launch choices, including each step's profile settings, persona, provider and
+level, are saved at the start so an in-progress workflow can continue after a TUI
+restart or config reload; later profile or catalogue edits don't change it. Reporting requires `project-sandbox` with
 `--mount` support.
 
 If a step reports `blocked`, open the queue with `L` and select it. Press `i`

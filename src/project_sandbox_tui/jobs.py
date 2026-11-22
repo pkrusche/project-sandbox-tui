@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from project_sandbox_tui import capabilities, feedback, feedback_transport
+from project_sandbox_tui import capabilities, feedback, feedback_transport, security
 from project_sandbox_tui.config import Config, ConfigError, private_dir, repo_state_dir
 from project_sandbox_tui.processes import reap_later
 from project_sandbox_tui.sandbox import (
@@ -707,12 +707,17 @@ class JobManager:
             command = tuple(self.cfg.sandbox_command())
         except ConfigError:
             return  # build_argv reports the broken command
-        problems = capabilities.gateway_problems(spec.agent, spec.model, spec.gateway)
+        caps = capabilities.cached(command, self.repo)
+        problems = security.security_problems(self.cfg, spec)
+        problems += capabilities.gateway_problems(spec.agent, spec.model, spec.gateway)
         problems += capabilities.launch_problems(
-            capabilities.cached(command, self.repo),
+            caps,
             agent=spec.agent,
             extra_args=[*self.cfg.sandbox.extra_args, *spec.extra_args],
             runtime=self.cfg.sandbox.runtime,
+        )
+        problems += capabilities.level_problems(
+            caps, self.cfg, security.effective_level(self.cfg, spec)
         )
         if problems:
             raise ConfigError("; ".join(problems))

@@ -326,6 +326,8 @@ def test_profile_editor_sources_and_delete(repo: Path) -> None:
 
 
 def test_custom_cli_args_validation_and_memory(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    LastUsed(profile="").save(repo)  # custom settings, chosen before
+
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j", "r")
         form = app.screen

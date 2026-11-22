@@ -1,13 +1,76 @@
-# Model suggestions
+# Models, providers and personas
 
-In a launch form, select **custom** in the **profile** field to show individual
-agent and model controls. The same controls are available when creating or
-editing an [agent profile](configuration.md#agent-profiles) with
-`:config-profiles`. A named profile uses its saved model.
+A launch form's **setup** field selects how the agent is chosen:
 
-Cycle models with `h`/`l` or `←`/`→`. Except for `bash` without the agent
-gateway, **custom (enter model name)** then `tab` lets you type a name. Blank uses
-the agent default.
+- **persona** picks a *provider* and a *persona*. sbx-tui resolves them to the
+  agent, model, effort and fast mode from its built-in model catalogue, and adds
+  no profile or custom CLI arguments.
+- A named [agent profile](configuration.md#agent-profiles) uses its saved settings.
+- **custom** shows individual agent and model controls. The same controls are
+  available when creating or editing a profile with `:config-profiles`.
+
+## Provider rows
+
+A provider is an access route plus a model vendor, with a fixed agent:
+
+| Provider | Agent | Model IDs |
+| --- | --- | --- |
+| Codex (`codex`) | codex | OpenAI |
+| Claude Code (`claude-code`) | claude | Anthropic |
+| Gateway/OpenAI (`gateway-openai`) | `catalogue.gateway_agent` (pi or opencode) | OpenAI, through `network.agent_proxy` |
+| Gateway/Anthropic (`gateway-anthropic`) | as above | Anthropic, through the gateway |
+| Gateway/Gemini (`gateway-gemini`) | as above | Google, through the gateway; no `--effort` |
+| Copilot/OpenAI (`copilot-openai`) | copilot | OpenAI |
+| Copilot/Anthropic (`copilot-anthropic`) | copilot | Copilot's dotted Claude IDs |
+| Copilot/Gemini (`copilot-gemini`) | copilot | Google, fast tier only |
+
+Each persona asks for a *tier*. The built-in tier models are:
+
+| Provider | fast | medium | high | frontier |
+| --- | --- | --- | --- | --- |
+| Codex, Gateway/OpenAI, Copilot/OpenAI | `gpt-6-luna` | `gpt-6.1-terra` | `gpt-6.2-sol` | `gpt-6.2-astra` |
+| Claude Code, Gateway/Anthropic | `claude-haiku-5-5` | `claude-sonnet-5-5` | `claude-opus-5-5` | `claude-fable-5-2` |
+| Copilot/Anthropic | `claude-haiku-5.5` | `claude-sonnet-5.5` | `claude-opus-5.5` | — |
+| Gateway/Gemini | `gemini-4-hydrogen` | `gemini-4-argon` | `gemini-4-neon` | `gemini-4-carbon` |
+| Copilot/Gemini | `gemini-4-hydrogen` | — | — | — |
+
+A provider without the requested tier is shown as unavailable with the reason,
+for example "Copilot/Anthropic has no frontier model", and the form refuses to
+launch. sbx-tui never substitutes another tier or provider. Fast mode is passed
+only on Codex and Claude Code. Gateway/Gemini omits `--effort` and the preview
+says the provider default applies. OpenCode gateway launches name the model as
+`agent-proxy/<id>`. Copilot launches also allow GitHub hosts.
+
+A provider is also unavailable when the launcher does not support its agent,
+when the agent cannot run on this host (for example without `~/.codex`), or,
+for gateway rows, when no agent gateway is configured. `sbx-tui doctor` lists
+every provider with its availability.
+
+Pin or disable models with
+[`[catalogue.models]`](configuration.md#model-catalogue-and-personas). Model
+IDs are used exactly as configured.
+
+## Personas
+
+| Persona | Tier | Effort | Fast | Level |
+| --- | --- | --- | --- | --- |
+| planner | high | high | off | 3 |
+| checker | medium | low | on | 2 |
+| implementer | medium | medium | off | 2 |
+| debugger | frontier | xhigh | off | 2 |
+| chore-runner | fast | medium | on | 2 |
+| reviewer | high | high | off | 4 |
+
+The level is the persona's starting [security level](configuration.md#security-levels).
+`[personas.NAME]` overrides fields or adds personas. Commit review uses an
+internal `commit-reviewer` persona (fast tier, low effort) that the forms do
+not offer.
+
+## Model suggestions
+
+In custom mode, cycle models with `h`/`l` or `←`/`→`. Except for `bash` without
+the agent gateway, **custom (enter model name)** then `tab` lets you type a
+name. Blank uses the agent default.
 
 For agents that use the [agent gateway](configuration.md#agent-gateway) (`pi`,
 `opencode` and `bash` with **gateway** on), list the gateway's plain model IDs
@@ -18,9 +81,12 @@ them. A gateway launch needs a model.
 Suggestion order:
 
 1. Your `[models]` configuration.
-2. Built-in Claude Code aliases.
-3. Codex's `$CODEX_HOME/models_cache.json` (default `~/.codex`).
-4. The downloaded catalog, newest first.
+2. Catalogue models of the provider rows that use the agent, in row and tier
+   order (for `codex`: `gpt-6-luna`, `gpt-6.1-terra`, `gpt-6.2-sol`,
+   `gpt-6.2-astra`). Doctor accepts these as known models.
+3. Built-in Claude Code aliases.
+4. Codex's `$CODEX_HOME/models_cache.json` (default `~/.codex`).
+5. The downloaded catalog, newest first.
 
 ## Updating the catalog
 

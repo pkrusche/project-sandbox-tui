@@ -211,7 +211,10 @@ def test_set_actions(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     code, _, err = cli(capsys, "config", "set", "--global", "actions.review.agent", "codex")
     assert code == 2 and "needs a prompt" in err  # validated before writing
     code, _, err = cli(capsys, "config", "set", "--global", "actions.review.mode", "x")
-    assert code == 2 and "actions.<name>.<prompt|agent|model|effort|timeout|profile>" in err
+    assert (
+        code == 2
+        and "actions.<name>.<prompt|agent|model|effort|timeout|profile|persona|level>" in err
+    )
     prompt = "Review {bookmark}"
     assert cli(capsys, "config", "set", "--global", "actions.review.prompt", prompt)[0] == 0
     assert cli(capsys, "config", "set", "--global", "actions.review.timeout", "60")[0] == 0
@@ -264,3 +267,61 @@ def test_edit_preserves_private_config_permissions(repo: Path, scope: config.Con
     editor.path.chmod(0o600)
     editor.set(s.parse_key("defaults.agent"), "codex")
     assert editor.path.stat().st_mode & 0o777 == 0o600
+
+
+def test_set_catalogue_and_personas(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def set_global(key: str, value: str) -> tuple[int, str, str]:
+        return cli(capsys, "config", "set", "--global", key, value)
+
+    assert set_global("catalogue.default_provider", "claude-code")[0] == 0
+    assert set_global("catalogue.gateway_agent", "opencode")[0] == 0
+    assert set_global("catalogue.models.gateway-anthropic.high", "claude-opus-5")[0] == 0
+    assert set_global("personas.reviewer.tier", "frontier")[0] == 0
+    assert set_global("security.level", "3")[0] == 0
+    text = config.global_config_path().read_text()
+    assert "[catalogue.models.gateway-anthropic]" in text and "[catalogue.models]" not in text
+    assert "[personas.reviewer]" in text and "[personas]\n" not in text
+    assert cli(capsys, "config", "get", "catalogue.models.gateway-anthropic.high")[1] == (
+        "claude-opus-5\n"
+    )
+    listed = cli(capsys, "config", "list")[1]
+    assert 'catalogue.default_provider = "claude-code"' in listed
+    assert 'catalogue.models.gateway-anthropic.high = "claude-opus-5"' in listed
+    assert 'personas.reviewer.tier = "frontier"' in listed
+    assert "personas.reviewer.level = 4" in listed  # built-in fields shown merged
+    assert "personas.planner" not in listed  # only configured personas are listed
+    assert "security.level = 3" in listed
+    code, _, err = set_global("catalogue.models.gateway-mistral.high", "x")
+    assert code == 2 and "catalogue.models.gateway-mistral" in err
+    code, _, err = set_global("catalogue.gateway_agent", "codex")
+    assert code == 2 and "pi, opencode" in err
+    code, _, err = set_global("personas.reviewer.level", "6")
+    assert code == 2 and "personas.reviewer.level" in err
+    code, _, err = set_global("catalogue.models.codex.ultra", "x")
+    assert code == 2 and "unknown key" in err
+    code, _, err = set_global("personas.reviewer.mood", "x")
+    assert code == 2 and "personas.<name>.<tier|effort|fast|level>" in err
+    assert (
+        cli(capsys, "config", "unset", "--global", "catalogue.models.gateway-anthropic.high")[0]
+        == 0
+    )
+    assert "gateway-anthropic" not in config.global_config_path().read_text()
+
+
+def test_set_action_persona_and_level(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    r = ("-R", str(repo))
+    assert cli(capsys, "config", "set", "--project", "actions.review.prompt", "Review", *r)[0] == 0
+    assert (
+        cli(capsys, "config", "set", "--project", "actions.review.persona", "reviewer", *r)[0] == 0
+    )
+    assert cli(capsys, "config", "set", "--project", "actions.review.level", "5", *r)[0] == 0
+    listed = cli(capsys, "config", "list", "--project", *r)[1]
+    assert 'actions.review.persona = "reviewer"' in listed and "actions.review.level = 5" in listed
+    code, _, err = cli(capsys, "config", "set", "--project", "actions.review.agent", "codex", *r)
+    assert code == 2 and "sets persona and agent" in err
+    code, _, err = cli(
+        capsys, "config", "set", "--project", "actions.review.persona", "auditor", *r
+    )
+    assert code == 2 and "actions.review.persona" in err
+    code, _, err = cli(capsys, "config", "set", "--project", "actions.review.level", "0", *r)
+    assert code == 2 and "actions.review.level must be between 1 and 5" in err

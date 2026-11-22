@@ -786,6 +786,8 @@ def test_move_working_copy_keeps_held_workspace_with_session(
 def test_launch_inputs_remain_visible_when_focused(
     repo: Path, fake_cfg: Callable[..., Config], mode: str, multiple: bool
 ) -> None:
+    LastUsed(profile="").save(repo)  # custom settings, chosen before
+
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j")  # select feature/x for sessions
         if multiple:
@@ -831,6 +833,7 @@ def test_launch_form_shows_base_branch(
 def test_launch_form_fast_mode(
     repo: Path, fake_cfg: Callable[..., Config], mode: str, agent: str
 ) -> None:
+    LastUsed(profile="").save(repo)  # custom settings, chosen before
     cfg = fake_cfg()
     cfg.defaults.agent = agent
 
@@ -875,6 +878,7 @@ def test_launch_form_fast_mode(
 
 
 def test_background_run_notifies_and_shows_log(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    LastUsed(profile="").save(repo)  # custom settings, chosen before
     cfg = fake_cfg()
     cfg.models = {"codex": ["gpt-x"]}
 
@@ -978,6 +982,8 @@ def test_quit_confirms_while_runs_continue(
 
 
 def test_launch_rejects_model_name_with_spaces(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    LastUsed(profile="").save(repo)  # custom settings, chosen before
+
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j")  # select feature/x for sessions
         await pilot.press("i")
@@ -2105,6 +2111,7 @@ def test_launch_preview_skips_host_bookmark_changes(
 
 
 def test_octopus_merge_background(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    LastUsed(profile="").save(repo)  # custom settings, chosen before
     from project_sandbox_tui.history import PromptHistory
     from tests.conftest import run
 
@@ -3626,7 +3633,7 @@ def test_commit_summary_dry_run(
         await pilot.press("s")
         messages = [str(notification.message) for notification in app._notifications]
         assert any(
-            "Dry run · review (codex/chosen-model/medium) · 1 pinned commit" in message
+            "Dry run · review (codex/chosen-model/medium/L3) · 1 pinned commit" in message
             and screen.current_commit.commit[:12] in message
             for message in messages
         )

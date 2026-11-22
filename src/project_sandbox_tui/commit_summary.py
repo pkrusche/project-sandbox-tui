@@ -17,13 +17,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from project_sandbox_tui import feedback, feedback_transport
-from project_sandbox_tui.config import Config, ConfigError, Project
+from project_sandbox_tui import capabilities, catalogue, feedback, feedback_transport, security
+from project_sandbox_tui.config import Config, ConfigError, Project, Security
 from project_sandbox_tui.jobs import TIMEOUT_EXIT
 from project_sandbox_tui.sandbox import LaunchSpec, RunPaths, build_argv
 from project_sandbox_tui.vcs import WORKING_COPY, JjBackend, ReviewCommit
 
 INPUT = "/run/sbx-review"
+LEVEL = 3  # pinned: agent API only, whatever the project's level and network settings
 IMAGE = "python:3.12-slim"
 IMAGE_TAG = "sbx-tui-commit-summary:latest"
 RESOURCES = {
@@ -69,6 +70,11 @@ def _resource_args(args: Sequence[str], where: str) -> list[str]:
     result = []
     for token in tokens:
         flag, equals, value = token.partition("=")
+        if security.managed_conflicts([flag]):
+            raise ConfigError(
+                f"{where} option {flag!r} widens commit review access; "
+                "commit review always runs with API-only egress"
+            )
         if flag not in RESOURCES:
             raise ConfigError(
                 f"{where} option {flag!r} is incompatible with isolated commit review"
@@ -82,6 +88,12 @@ def _resource_args(args: Sequence[str], where: str) -> list[str]:
 
 
 def resolve_launch(cfg: Config, repo: Path) -> tuple[Config, LaunchSpec]:
+    """The isolated config and spec of a commit summary run.
+
+    The run is pinned to level 3 (the egress backend's API-only flag): shared
+    network widening is dropped, corporate proxy and CA settings are kept, and the
+    empty workspace has no repository metadata, so no --vcs-access is needed.
+    """
     name, profile = cfg.commit_summary_profile()
     shared = _resource_args(
         [arg for arg in cfg.sandbox.extra_args if arg != "--dry-run"], "sandbox.extra_args"
@@ -115,8 +127,24 @@ def resolve_launch(cfg: Config, repo: Path) -> tuple[Config, LaunchSpec]:
         network=replace(
             cfg.network,
             ca_certs=[str(cfg.resolve_path(path, repo)) for path in cfg.network.ca_certs],
+            build_ca_certs=[
+                str(cfg.resolve_path(path, repo)) for path in cfg.network.build_ca_certs
+            ],
+            extra_domains=[],
+            allow_github=False,
+            no_firewall=False,
         ),
+        security=Security(level=LEVEL, egress=cfg.security.egress),
     )
+    caps = capabilities.cached(isolated.sandbox_command(), repo)
+    if problems := capabilities.level_problems(caps, isolated, LEVEL):
+        raise ConfigError(
+            "commit review runs with API-only egress: "
+            + "; ".join(problems)
+            + ". Set up the sidecar with project-sandbox-egress, or set "
+            'security.egress = "firewall" in the global config'
+        )
+    persona = not cfg.commit_review.profile
     return isolated, LaunchSpec(
         branch=WORKING_COPY,
         agent=profile.agent,
@@ -124,7 +152,10 @@ def resolve_launch(cfg: Config, repo: Path) -> tuple[Config, LaunchSpec]:
         effort=profile.effort,
         fast=profile.fast,
         gateway=profile.gateway,
-        profile=name,
+        profile="" if persona else name,
+        persona=catalogue.COMMIT_REVIEWER if persona else "",
+        provider=(cfg.commit_review.provider or "codex") if persona else "",
+        level=LEVEL,
         extra_args=[f"--image-tag={IMAGE_TAG}", *extra],
         mode="background",
         prompt_text=PROMPT,
@@ -178,7 +209,9 @@ def _prepare(
             api_key_env_file=_copy_launch_files(cfg.sandbox.api_key_env_file, root, "env"),
         ),
         network=replace(
-            cfg.network, ca_certs=_copy_launch_files(cfg.network.ca_certs, root, "crt")
+            cfg.network,
+            ca_certs=_copy_launch_files(cfg.network.ca_certs, root, "crt"),
+            build_ca_certs=_copy_launch_files(cfg.network.build_ca_certs, root, "build.crt"),
         ),
     )
     argv = build_argv(cfg, workspace, spec, paths, root / "feedback")

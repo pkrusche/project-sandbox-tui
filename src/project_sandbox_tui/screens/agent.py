@@ -11,6 +11,7 @@ from textual.message import Message
 from textual.widgets import Input, Static
 
 from project_sandbox_tui import capabilities as caps_mod
+from project_sandbox_tui import catalogue
 from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.capabilities import Capabilities
 from project_sandbox_tui.config import (
@@ -238,7 +239,12 @@ class AgentControls(Vertical):
     def _model_options(self, agent: str, current: str) -> list[str]:
         if agent == "bash" and not self._uses_gateway(agent):
             return [""]
-        models = models_mod.suggestions(agent, self.cfg.models.get(agent), self.model_store)
+        models = models_mod.suggestions(
+            agent,
+            self.cfg.models.get(agent),
+            self.model_store,
+            catalogue.models_for_agent(self.cfg, agent),
+        )
         return list(dict.fromkeys(["", *([current] if current else []), *models, CUSTOM_MODEL]))
 
     @on(CycleField.Changed, "#agent")
