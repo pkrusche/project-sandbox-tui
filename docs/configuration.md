@@ -406,7 +406,8 @@ the project default, and can be changed per job in the `i` / `r` launch forms
 and the workflow picker. A level below the project default is shown in red, and
 `:NAME` asks for confirmation before running an action below it. Levels are not
 remembered. A level the discovered launcher cannot run (no `--egress` for levels
-2 to 5, a missing backend for 3 to 5, no `--vcs-access` for 4 and 5) is marked
+2 to 5, a missing firewall backend for level 2, a missing configured backend
+for levels 3 to 5, or missing VCS access modes for levels 4 and 5) is marked
 unavailable and refused; a launcher that could not be probed restricts nothing.
 Tasks queued before a project opted in run at its default level when they start.
 

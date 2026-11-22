@@ -332,6 +332,9 @@ def test_level_problems() -> None:
     caps = caps_mod.discover(["ps"], fake_runner(REAL))
     cfg = c.Config()
     assert all(caps_mod.level_problems(caps, cfg, level) == [] for level in c.LEVELS)
+    sidecar_only = dataclasses.replace(caps, egress_modes=("sidecar",))
+    assert "--egress=firewall" in caps_mod.level_problems(sidecar_only, cfg, 2)[0]
+    assert caps_mod.level_problems(sidecar_only, cfg, 3) == []
     firewall_only = caps_mod.discover(
         ["ps"],
         fake_runner({**REAL, "--help": (0, HELP.replace("{firewall,sidecar}", "{firewall}"))}),

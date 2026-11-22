@@ -588,6 +588,8 @@ def level_problems(caps: Capabilities, cfg: Config, level: int | None) -> list[s
     problems: list[str] = []
     if level >= 2 and not caps.egress_modes:
         problems.append(f"level {level} needs --egress, but {who} has no --egress option")
+    elif level == 2 and "firewall" not in caps.egress_modes:
+        problems.append(f"level 2 needs --egress=firewall, which is not supported by {who}")
     elif level >= 3 and cfg.security.egress not in caps.egress_modes:
         problems.append(
             f"level {level}: security.egress = {cfg.security.egress!r} is not supported by "
