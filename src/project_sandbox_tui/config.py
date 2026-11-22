@@ -1216,8 +1216,9 @@ class LastUsed:
             out.profile = raw["profile"]
         if raw.get("selection") == "persona":
             out.selection = "persona"
-        if raw.get("provider") in catalogue.ROW_BY_ID:
-            out.provider = raw["provider"]
+        provider = raw.get("provider")
+        if isinstance(provider, str) and provider in catalogue.ROW_BY_ID:
+            out.provider = provider
         if valid_name(raw.get("persona")):
             out.persona = raw["persona"]
         extra_args = raw.get("extra_args")

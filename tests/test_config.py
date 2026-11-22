@@ -425,6 +425,7 @@ def test_last_used_ignores_invalid_fields_without_losing_valid_ones(
                 "agent": "not an agent",
                 "effort": "extreme",
                 "timeout": timeout,
+                "provider": [],
                 "model_by_agent": {"codex": "custom", "claude": 42},
                 "fast_by_agent": {"codex": "true", "claude": 1, "bash": True},
             }
