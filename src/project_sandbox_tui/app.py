@@ -3533,23 +3533,8 @@ class SandboxTUI(App[None]):
         """The launch spec of an action run or workflow step; ConfigError when the
         selection cannot launch (e.g. the provider lacks the persona's tier)."""
         settings = resolve_selection(self.cfg, last, selection, action)
-        if settings.problem:
-            raise ConfigError(settings.problem)
-        return LaunchSpec(
-            branch=name,
-            agent=settings.agent,
-            model=settings.model,
-            effort=settings.effort,
-            fast=settings.fast,
-            gateway=settings.gateway,
-            mode=mode,
-            prompt_text=action.render(name, self.main_name() or "", extra),
-            timeout=settings.timeout,
-            extra_args=settings.extra_args,
-            profile=settings.profile,
-            persona=settings.persona,
-            provider=settings.provider,
-            level=settings.level,
+        return LaunchSpec.from_setup(
+            settings, name, mode, action.render(name, self.main_name() or "", extra)
         )
 
     def _run_workflow(self, command: commands.Command) -> None:

@@ -170,9 +170,13 @@ prompt = "Review {bookmark} against {main} and report the outcome."
 Retries repeat the task with a new run/task ID and an incremented attempt.
 `max_attempts` includes the first attempt. `on_success`, `on_failure`, and
 `on_blocked` name existing `[actions.NAME]` entries. Successor actions inherit
-the parent's launch settings except for explicit action overrides, and increment
-the workflow step. `max_steps` includes the initial task. Both limits must be
-between 1 and 100. Reaching a configured limit pauses the queue. Rules apply to
+the parent's launch settings unless the action overrides them. A named profile
+supplies its agent settings and arguments. A persona resolves its model and
+level using the parent's provider, or the remembered or default provider when
+the parent has none. An explicit action level or timeout takes precedence.
+A missing profile or unavailable persona tier pauses the queue for repair.
+Each successor increments the workflow step. `max_steps` includes the initial task.
+Both limits must be between 1 and 100. Reaching a configured limit pauses the queue. Rules apply to
 each completed task in the chain: in the example, a successful review reaches
 the step limit instead of spawning another review.
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from project_sandbox_tui import feedback, feedback_transport, initialization
-from project_sandbox_tui.config import Action, Config, ConfigError
+from project_sandbox_tui.config import Action, AgentProfile, Config, ConfigError
 from project_sandbox_tui.jobs import JobManager, JobRecord
 from project_sandbox_tui.queue import TaskQueue
 from project_sandbox_tui.sandbox import LaunchSpec, build_argv
@@ -338,6 +338,66 @@ def test_branch_action_and_concurrent_dispatch(repo: Path, fake_cfg: Callable[..
     queue.dispatch(jobs, lambda: {}, lambda _: None)
     assert queue.get("topic").paused and "step limit" in queue.get("topic").error
     assert queue.get("topic").history[-1].description.strip() == "report:success review topic"
+
+
+@pytest.mark.parametrize("named_setup", ["persona", "profile", "level"])
+def test_feedback_successors_apply_configured_launch_overrides(
+    repo: Path, fake_cfg: Callable[..., Config], named_setup: str
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.on_success = "review"
+    cfg.feedback.max_steps = 2
+    action = Action(prompt="report:success {bookmark}")
+    if named_setup == "persona":
+        action.persona = "reviewer"
+    elif named_setup == "profile":
+        action.profile = "local"
+        cfg.profiles["local"] = AgentProfile("codex", "model-local", "medium", True, ["--cpus=2"])
+    else:
+        action.level = 5
+    cfg.actions["review"] = action
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    parent = spec()
+    parent.provider, parent.persona = "claude-code", "checker"
+    parent.operation, parent.inputs, parent.base = "rebase", ["a", "b"], "main"
+    parent.level, parent.timeout = 2, 90
+    queue.add(parent)
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    finish(jobs)
+    [job] = queue.dispatch(jobs, lambda: {}, lambda _: None)
+    assert job.spec.timeout == 90
+    assert (job.spec.operation, job.spec.inputs, job.spec.base) == ("", [], "")
+    if named_setup == "persona":
+        assert (job.spec.provider, job.spec.persona) == ("claude-code", "reviewer")
+        assert job.spec.model == "claude-opus-5-5" and job.spec.level == 4
+    elif named_setup == "profile":
+        assert job.spec.agent_settings() == cfg.profiles["local"]
+        assert job.spec.profile == "local" and not job.spec.persona and job.spec.level == 2
+    else:
+        assert job.spec.persona == "checker" and "--vcs-access=hidden" in job.argv
+    finish(jobs)
+
+
+def test_unresolvable_successor_waits_for_config_repair(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.feedback.on_success = "review"
+    cfg.feedback.max_steps = 2
+    cfg.actions["review"] = Action(prompt="report:success", profile="missing")
+    jobs = JobManager(repo, cfg)
+    queue = TaskQueue(jobs.state_dir)
+    queue.add(spec())
+    queue.dispatch(jobs, lambda: {}, lambda _: None)
+    finish(jobs)
+    assert not queue.dispatch(jobs, lambda: {}, lambda _: None)
+    assert queue.get("topic").paused and "missing" in queue.get("topic").error
+    cfg.profiles["missing"] = AgentProfile("codex")
+    queue.pause("topic", False)
+    [job] = queue.dispatch(jobs, lambda: {}, lambda _: None)
+    assert job.spec.agent == "codex"
+    finish(jobs)
 
 
 def test_init_preserves_user_guidance_and_skill_edits(tmp_path: Path) -> None:

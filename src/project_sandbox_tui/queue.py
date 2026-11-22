@@ -23,9 +23,14 @@ from project_sandbox_tui.config import (
     HOST_STEP_PREFIX,
     HUMAN_REVIEW,
     STATE_VERSION,
+    Action,
     ConfigError,
     Feedback,
+    LastUsed,
+    Selection,
+    StepChoice,
     private_dir,
+    resolve_selection,
     write_state,
 )
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, SessionSource, _now
@@ -808,6 +813,47 @@ class TaskQueue:
             queue.consume(successor.id)
             queue.history.append(successor)
 
+    @staticmethod
+    def _successor_spec(jobs: JobManager, parent: LaunchSpec, action: Action) -> LaunchSpec:
+        cfg = jobs.cfg
+        main = cfg.project.main_branch
+        if "{main}" in action.prompt and not main:
+            branches = detect(jobs.repo).list_branches()
+            main = main_branch([b.name for b in branches]) or ""
+        prompt = action.render(parent.branch, main)
+        timeout = parent.timeout if action.timeout is None else action.timeout
+        level = action.level or parent.level
+        if action.persona or action.profile:
+            if action.persona:
+                selection = Selection(
+                    StepChoice("persona", persona=action.persona), parent.provider
+                )
+            else:
+                if action.profile not in cfg.profiles:
+                    raise ConfigError(f"unknown successor profile {action.profile!r}")
+                selection = Selection(StepChoice("profile", action.profile), level=level)
+            setup = resolve_selection(cfg, LastUsed.load(jobs.repo), selection, action)
+            spec = LaunchSpec.from_setup(setup, parent.branch, "background", prompt)
+            spec.timeout = timeout
+            return spec
+
+        spec = replace(
+            parent,
+            prompt_text=prompt,
+            timeout=timeout,
+            level=level,
+            operation="",
+            inputs=[],
+            base="",
+        )
+        if action.has_own_settings:
+            spec.profile = spec.persona = spec.provider = ""
+            if action.agent and action.agent != parent.agent:
+                spec.agent, spec.model, spec.gateway, spec.fast = action.agent, "", False, False
+            spec.model = action.model or spec.model
+            spec.effort = action.effort or spec.effort
+        return spec
+
     def _decide(self, jobs: JobManager) -> None:
         """Commit successors before launching them; never replay a decision."""
         cfg = jobs.cfg
@@ -856,23 +902,14 @@ class TaskQueue:
                             queue.paused, queue.error = True, "feedback workflow step limit reached"
                             task.decision = queue.error
                         else:
-                            action = cfg.actions[action_name]
-                            spec = copy.deepcopy(task.spec)
-                            main = cfg.project.main_branch
-                            if "{main}" in action.prompt and not main:
-                                try:
-                                    branches = detect(jobs.repo).list_branches()
-                                except (VcsError, OSError) as exc:
-                                    queue.paused, queue.error = True, str(exc)
-                                    task.decision_done = False  # retry the lookup on resume
-                                    continue
-                                main = main_branch([b.name for b in branches]) or ""
-                            spec.prompt_text = action.render(spec.branch, main)
-                            for key in ("agent", "model", "effort"):
-                                if value := getattr(action, key):
-                                    setattr(spec, key, value)
-                            if action.timeout is not None:
-                                spec.timeout = action.timeout
+                            try:
+                                spec = self._successor_spec(
+                                    jobs, task.spec, cfg.actions[action_name]
+                                )
+                            except (ConfigError, VcsError, OSError) as exc:
+                                queue.paused, queue.error = True, f"{action_name}: {exc}"
+                                task.decision_done = False  # retry on resume
+                                continue
                             successor = self._new_task(spec)
                             successor.step = task.step + 1
                             task.decision = f"action {action_name}"

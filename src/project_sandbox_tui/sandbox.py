@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from project_sandbox_tui import feedback_transport, security
-from project_sandbox_tui.config import FAST_AGENTS, AgentProfile, Config, ConfigError
+from project_sandbox_tui.config import FAST_AGENTS, AgentProfile, Config, ConfigError, ResolvedSetup
 from project_sandbox_tui.vcs import WORKING_COPY, workspace_path
 
 Mode = Literal["interactive", "background"]
@@ -48,6 +48,29 @@ class LaunchSpec:
     def agent_settings(self) -> AgentProfile:
         return AgentProfile(
             self.agent, self.model, self.effort, self.fast, list(self.extra_args), self.gateway
+        )
+
+    @classmethod
+    def from_setup(
+        cls, setup: ResolvedSetup, branch: str, mode: Mode, prompt_text: str
+    ) -> LaunchSpec:
+        if setup.problem:
+            raise ConfigError(setup.problem)
+        return cls(
+            branch=branch,
+            mode=mode,
+            prompt_text=prompt_text,
+            agent=setup.agent,
+            model=setup.model,
+            effort=setup.effort,
+            fast=setup.fast,
+            gateway=setup.gateway,
+            timeout=setup.timeout,
+            extra_args=list(setup.extra_args),
+            profile=setup.profile,
+            persona=setup.persona,
+            provider=setup.provider,
+            level=setup.level,
         )
 
     def to_dict(self) -> dict[str, Any]:
