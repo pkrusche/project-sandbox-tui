@@ -359,4 +359,4 @@ def test_other_kinds_reuse_action_settings() -> None:
             expected.effort,
             expected.extra_args,
         )
-        assert setup.level == (None if choice.kind == "custom" else 2)
+        assert setup.level == 2

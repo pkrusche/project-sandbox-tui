@@ -54,7 +54,8 @@ def test_action_below_the_project_default_asks_first(
 ) -> None:
     cfg = fake_cfg()
     cfg.security.level = 3
-    cfg.actions = {"e2e": Action(prompt="e2e {bookmark}", agent="bash", level=1)}
+    cfg.defaults.agent = "bash"
+    cfg.actions = {"e2e": Action(prompt="e2e {bookmark}", level=1)}
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j")

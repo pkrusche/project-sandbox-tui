@@ -106,7 +106,7 @@ kind only) and level (`None` = use the starting level).
 | persona + provider | row agent (`catalogue.gateway_agent` for gateway rows), `model_for(row, tier)`, persona effort unless `row.effort` is False, persona fast only if `row.fast` | `[]` | `action.level`, else persona level |
 | profile | as today | profile's | `action.level`, else project default |
 | action settings | as today | `[]` | `action.level`, else project default |
-| custom | as today | `last.extra_args` | project default |
+| custom | as today | `last.extra_args` | `action.level`, else project default |
 
 A missing tier returns a `ResolvedSetup` with `problem` set. Callers show it
 and refuse to launch. There is no fallback.

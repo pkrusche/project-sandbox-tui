@@ -10,6 +10,7 @@ require a `.jj/` directory.
 |---|---|
 | `cli.py`, `settings.py`, `doctor.py` | Entry point, config commands, dependency checks |
 | `config.py` | Typed TOML loading, validation, trust, state paths and launch defaults |
+| `catalogue.py`, `capabilities.py`, `security.py` | Provider and persona definitions, launcher capability discovery and security level flags |
 | `vcs.py` | Bookmark discovery, creation, changed files, working-copy moves and fast-forwarding |
 | `sandbox.py` | `LaunchSpec`, argv construction and session matching |
 | `jobs.py` | Detached jobs, persistence, polling, adoption and stopping |

@@ -1480,7 +1480,7 @@ def resolve_selection(
     if choice.kind == "persona":
         return _resolve_persona(cfg, last, selection, action)
     settings = resolve_action_settings(cfg, last, action, choice)
-    start = default if choice.kind == "custom" else (action.level or default)
+    start = action.level or default
     return ResolvedSetup(
         **dataclasses.asdict(settings),
         level=selection.level if selection.level is not None else start,
