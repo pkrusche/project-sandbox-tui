@@ -38,11 +38,12 @@ preventing leading `-` characters from becoming options. Bookmark launches add
 `--branch`; background launches add `--prompt-text`, `--log`, `--json-summary`
 and optional `--timeout`.
 
-Launch forms resolve a named profile or Custom controls into a `LaunchSpec`
-containing the profile name, agent, model, effort, fast mode and extra arguments.
-These values are stored in the job record as a snapshot. Argument construction
-uses that snapshot, without looking up the profile again; per-run extra arguments
-follow `sandbox.extra_args`.
+Launch forms resolve the selected persona and provider, named profile, or Custom
+controls into a `LaunchSpec`. Queue and job records store the resolved agent,
+model, effort, fast mode, gateway selection, security level and extra arguments,
+along with the profile or persona and provider that supplied them. Dispatch uses
+the saved settings. A task without a saved level takes the current project
+default. Per-run extra arguments follow `sandbox.extra_args`.
 
 1. **Guard:** defer queued background prompts while busy; reject interactive
    launches into busy workspaces. Then, still under `jobs.lock`,

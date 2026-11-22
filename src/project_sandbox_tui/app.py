@@ -1764,6 +1764,16 @@ class SandboxTUI(App[None]):
         def save(spec: LaunchSpec) -> str | None:
             try:
                 if task and saved_spec:
+                    # The editor exposes the saved launch settings as Custom. Keep their
+                    # original attribution when only the prompt, timeout or level changed.
+                    if (
+                        not spec.profile
+                        and not spec.persona
+                        and spec.agent_settings() == saved_spec.agent_settings()
+                    ):
+                        spec.profile = saved_spec.profile
+                        spec.persona = saved_spec.persona
+                        spec.provider = saved_spec.provider
                     spec.operation, spec.inputs, spec.base = (
                         saved_spec.operation,
                         list(saved_spec.inputs),
@@ -1788,6 +1798,7 @@ class SandboxTUI(App[None]):
             prompt_history=self.prompt_history,
             branches=[name],
             fixed_branch=True,
+            initial_level=saved_spec.level if saved_spec else None,
             submit_label="save" if task else "queue",
             save=save,
         )

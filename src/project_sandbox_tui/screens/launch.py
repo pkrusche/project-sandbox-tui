@@ -122,6 +122,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         draft: str = "",
         submit_label: str = "launch",
         fixed_branch: bool = False,
+        initial_level: int | None = None,
         save: Callable[[LaunchSpec], str | None] | None = None,
         blocked_guidance: str = "",
         heading: str = "",
@@ -139,6 +140,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         self.branch = branch
         self.submit_label = submit_label
         self.fixed_branch = fixed_branch
+        self.initial_level = initial_level
         self.save = save
         self.blocked_guidance = blocked_guidance
         self.mode = mode
@@ -367,7 +369,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
         target = "#prompt" if self.mode == "background" else "#profile"
         self.query_one(target).focus()
         self._profile_changed()
-        self._reset_level()
+        self._reset_level(self.initial_level)
         self._update_preview()
         self._update_prompt_hint()
         self._update_branch_hint()
@@ -473,9 +475,10 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             return self.cfg.profiles[name]
         return self.query_one(AgentControls).current_profile()
 
-    def _reset_level(self) -> None:
+    def _reset_level(self, start: int | None = None) -> None:
         """Start the level field at the selection's level: levels are never remembered."""
-        start = resolve_selection(self.cfg, self.last, self._selection(level=False)).start_level
+        if start is None:
+            start = resolve_selection(self.cfg, self.last, self._selection(level=False)).start_level
         field = self.query_one("#level", CycleField)
         with self.prevent(CycleField.Changed):
             field.display = start is not None

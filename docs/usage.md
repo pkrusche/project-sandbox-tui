@@ -620,6 +620,8 @@ no valid final outcome.
 Adding or editing a task, deleting, reordering, and undo/redo automatically pause
 this bookmark's queue. Press `p` to resume when you are done, even if you cancelled
 the editor. A running session continues, and other bookmarks' queues keep running.
+Editing a pending prompt opens its saved agent settings and security level. A
+prompt-only edit keeps its original profile or persona and provider.
 
 `:workflow NAME [TOPIC]` starts a configured workflow. Its first action runs
 interactively or enters this queue, according to `first_step_interactive`.

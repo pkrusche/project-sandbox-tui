@@ -240,7 +240,7 @@ settings still apply. Profile arguments are appended after `sandbox.extra_args`.
 The selected settings are saved when submitted, so later profile edits do not
 change queued or running tasks.
 
-Launch forms offer the configured profiles plus **custom**. Selecting **custom**
+Launch forms offer personas, configured profiles and **custom**. Selecting **custom**
 shows the individual agent controls and CLI arguments, using remembered launch
 choices and [defaults](#settings-reference). Custom CLI arguments are remembered
 after an interactive launch or accepted `r` submission, including queued prompts;

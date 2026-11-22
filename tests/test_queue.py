@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -21,7 +22,7 @@ from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.vcs import VcsError
-from project_sandbox_tui.widgets import TABLE_PREVIEW_WIDTH
+from project_sandbox_tui.widgets import TABLE_PREVIEW_WIDTH, CycleField
 from tests.conftest import wait_for
 from tests.test_app import run_app, wait_for_screen, wait_until
 
@@ -224,6 +225,44 @@ def test_queue_previews_long_prompts_and_shows_full_text(
         assert app.screen is screen and screen.selected_id() == task.id
 
     run_app(repo, fake_cfg(), scenario)
+
+
+@pytest.mark.parametrize("project_level", [0, 2])
+def test_editing_prompt_keeps_queued_setup(
+    repo: Path, fake_cfg: Callable[..., Config], project_level: int
+) -> None:
+    cfg = fake_cfg()
+    cfg.security.level = project_level
+    saved = LaunchSpec(
+        "feature/x",
+        "claude",
+        model="saved-model",
+        effort="high",
+        persona="reviewer",
+        provider="claude-code",
+        level=4,
+        mode="background",
+        prompt_text="review",
+    )
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.queue.pause(saved.branch, True)
+        app.queue.add(saved)
+        await pilot.press("j", "L")
+        await wait_for_screen(app, pilot, QueueScreen)
+        await pilot.press("e")
+        form = await wait_for_screen(app, pilot, LaunchScreen)
+        level = form.query_one("#level", CycleField)
+        assert level.display and level.value == "4"
+        form.query_one("#prompt", TextArea).text = "updated review"
+        await pilot.press("ctrl+s")
+        await wait_for_screen(app, pilot, QueueScreen)
+        app.queue.load()
+        assert app.queue.get(saved.branch).tasks[0].spec == replace(
+            saved, prompt_text="updated review"
+        )
+
+    run_app(repo, cfg, scenario)
 
 
 def test_busy_run_queues_but_interactive_does_not(

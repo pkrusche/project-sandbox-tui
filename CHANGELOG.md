@@ -155,6 +155,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Editing a queued prompt preserves its saved launch settings and security level.
 - Sandbox launches reject arguments that redirect a workspace outside its
   reservation. Dry-run launches preview host-side bookmark preparation, and a
   shared `--dry-run` leaves pending queue entries available for a live run.

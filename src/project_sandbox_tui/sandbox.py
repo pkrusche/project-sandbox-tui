@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from project_sandbox_tui import feedback_transport, security
-from project_sandbox_tui.config import FAST_AGENTS, Config, ConfigError
+from project_sandbox_tui.config import FAST_AGENTS, AgentProfile, Config, ConfigError
 from project_sandbox_tui.vcs import WORKING_COPY, workspace_path
 
 Mode = Literal["interactive", "background"]
@@ -44,6 +44,11 @@ class LaunchSpec:
     persona: str = ""  # persona selection, for display
     provider: str = ""  # provider row of a persona selection, for display
     level: int | None = None  # security level; None = the project default at dispatch
+
+    def agent_settings(self) -> AgentProfile:
+        return AgentProfile(
+            self.agent, self.model, self.effort, self.fast, list(self.extra_args), self.gateway
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
