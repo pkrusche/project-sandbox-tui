@@ -450,7 +450,8 @@ class JjBackend:
         # otherwise it may be a revset such as @- or trunk(). In particular,
         # ``fix-`` must not silently mean the parents of ``fix``.
         start = start or "@-"
-        if self._jj("bookmark", "list", f"exact:{json.dumps(start)}", "-T", 'if(remote, "", "1")'):
+        pattern = f"exact:{json.dumps(start, ensure_ascii=False)}"
+        if self._jj("bookmark", "list", pattern, "-T", 'if(remote, "", "1")'):
             start = revset_symbol(start)
         # Not --ignore-working-copy: creating a bookmark is a write and should
         # see the latest snapshot of the user's working copy.
@@ -866,7 +867,7 @@ class JjBackend:
         destination = (
             f"@ & {new}"
             if target == WORKING_COPY
-            else f"bookmarks(exact:{json.dumps(target)}) & {new}"
+            else f"bookmarks(exact:{revset_symbol(target)}) & {new}"
         )
         if target == WORKING_COPY:
             _run(
@@ -922,7 +923,7 @@ class JjBackend:
                 # Snapshots that workspace first, which may move target with it.
                 _run(["jj", "--no-pager", "--color=never", "new"], root)
             commit = self._bookmark_commit(target)
-        destination = f"bookmarks(exact:{json.dumps(target)}) & {commit_revset(commit)}"
+        destination = f"bookmarks(exact:{revset_symbol(target)}) & {commit_revset(commit)}"
         old_commit, change = (
             self._jj("log", "--no-graph", "-r", "@", "-T", 'commit_id ++ "\\x00" ++ change_id')
             .strip()
@@ -989,7 +990,7 @@ def tracked_files(workspace: Path, paths: Collection[str]) -> list[str]:
     """
     if not paths:
         return []
-    filesets = [f"root:{json.dumps(path)}" for path in paths]
+    filesets = [f"root:{json.dumps(path, ensure_ascii=False)}" for path in paths]
     out = _run_bytes(
         [
             "jj",

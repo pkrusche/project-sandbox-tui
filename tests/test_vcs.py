@@ -1032,6 +1032,19 @@ def test_pinned_bookmark_operations_ignore_bookmarks_named_after_commits(repo: P
     assert backend._bookmark_commit("restored") == feature
 
 
+def test_unicode_revision_and_path_arguments(repo: Path) -> None:
+    from tests.conftest import jj
+
+    backend = vcs.detect(repo)
+    backend.create_branch("café", "feature/x")
+    backend.create_branch("日本", "café")
+    assert backend.fast_forward("main", "日本")
+    backend.move_working_copy_to("日本")
+    (repo / "日誌").write_text("tracked\n")
+    jj(repo, "status")
+    assert vcs.tracked_files(repo, ["日誌"]) == ["日誌"]
+
+
 def test_commit_file_keys_are_independent_and_diffs_are_filtered(repo: Path) -> None:
     from tests.conftest import jj, run
 
