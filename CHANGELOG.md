@@ -158,7 +158,8 @@ All notable changes to this project are documented in this file.
 - Editing a queued prompt preserves its saved launch settings and security level.
   Feedback-triggered successor actions honor their configured profile, persona and level.
 - Bookmark operations use the recorded commit even when another bookmark has the
-  same name as its hash.
+  same name as its hash. Workspace discovery and cleanup preserve spaces and
+  line breaks in paths.
 - Sandbox launches reject arguments that redirect a workspace outside its
   reservation. Dry-run launches preview host-side bookmark preparation, and a
   shared `--dry-run` leaves pending queue entries available for a live run.

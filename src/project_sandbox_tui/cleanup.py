@@ -21,6 +21,7 @@ from project_sandbox_tui.vcs import (
     main_branch,
     registered_workspace_name,
     revset_symbol,
+    tracked_files,
     workspace_path,
     workspace_store,
 )
@@ -59,26 +60,17 @@ class _Found:
 
 def _jj_workspaces(repo: Path, wd: Path | None, bookmarks: set[str]) -> list[_Found]:
     """Every jj workspace except the current one."""
-    base = ["jj", "--no-pager", "--color=never", "--ignore-working-copy", "workspace", "list"]
-    current = 'if(target.current_working_copy(), "1", "0")'
-    name = "stringify(name)"  # ``name`` alone quotes names like ``fix-``
-    try:
-        out = _run(
-            [*base, "-T", f'{name} ++ "\\x00" ++ root ++ "\\x00" ++ {current} ++ "\\n"'], repo
-        )
-    except VcsError:  # jj without the ``root`` template keyword
-        out = _run([*base, "-T", f'{name} ++ "\\x00\\x00" ++ {current} ++ "\\n"'], repo)
     store = workspace_store(repo)
     # Workspaces are registered under their directory's name (``feature-x-1a2b3c``
     # for ``feature/x``); older ones under the bookmark name.
     by_path = {workspace_path(repo, b, wd).resolve(): b for b in bookmarks}
     found: list[_Found] = []
-    for line in out.splitlines():
-        name, root, is_current = (line.split("\0") + ["", ""])[:3]
-        if is_current == "1":
+    for registration in JjBackend(repo).registered_workspaces():
+        if registration.current:
             continue
+        name = registration.name
         # Unknown root: assume project-sandbox's layout (workspaces are named after bookmarks).
-        path = Path(root) if root else workspace_path(repo, name, wd)
+        path = registration.root or workspace_path(repo, name, wd)
         missing = not path.exists()
         problem = ""
         if missing:
@@ -96,7 +88,7 @@ def _jj(repo: Path, *args: str) -> str:
 
 
 def _revset_str(value: str) -> str:
-    return json.dumps(value)  # a jj string literal
+    return json.dumps(value, ensure_ascii=False)  # a jj string literal
 
 
 def _merged(repo: Path, main: str | None, ws: _Found) -> bool:
@@ -126,7 +118,7 @@ def _dirty(path: Path) -> tuple[str, bool]:
     dirty = "uncommitted changes" if diff.strip() else ""
     if "Refused to snapshot" in warnings:
         dirty = "files too large for jj to snapshot"
-    tracked = set(_run(["jj", "file", "list"], path).splitlines())
+    tracked = set(tracked_files(path, ["."]))
     # jj ignores some files when snapshotting; only removal of a merged workspace loses those.
     ignored = False
 

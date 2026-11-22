@@ -12,6 +12,7 @@ import subprocess
 import tomllib
 from collections.abc import Collection
 from dataclasses import dataclass, replace
+from itertools import batched
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,14 @@ class HeldByWorkspaceError(VcsError):
         super().__init__(f"{target} is the working copy of workspace {names}")
         self.target = target
         self.workspaces = workspaces
+
+
+@dataclass(frozen=True)
+class RegisteredWorkspace:
+    name: str
+    root: Path | None
+    commit: str
+    current: bool
 
 
 @dataclass(frozen=True)
@@ -485,21 +494,37 @@ class JjBackend:
         )
 
     def forget_workspace(self, name: str) -> None:
-        self._jj("workspace", "forget", name)
+        self._jj("workspace", "forget", "--", name)
+
+    def registered_workspaces(self, *, require_roots: bool = False) -> list[RegisteredWorkspace]:
+        """List registrations, preserving separators and whitespace inside paths."""
+        fields = (
+            'stringify(name) ++ "\\x00" ++ target.commit_id() ++ "\\x00" ++ '
+            'if(target.current_working_copy(), "1", "0") ++ "\\x00"'
+        )
+        try:
+            data = self._jj_bytes("workspace", "list", "-T", f'{fields} ++ root ++ "\\x00"')
+        except VcsError:  # jj without the ``root`` template keyword
+            if require_roots:
+                raise
+            data = self._jj_bytes("workspace", "list", "-T", f'{fields} ++ "\\x00"')
+        return [
+            RegisteredWorkspace(
+                os.fsdecode(name),
+                Path(os.fsdecode(root)) if root else None,
+                commit.decode("ascii"),
+                current == b"1",
+            )
+            for name, commit, current, root in batched(data.split(b"\0")[:-1], 4)
+        ]
 
     def workspace_names(self) -> dict[Path, str] | None:
         """Registered workspace roots (resolved) → names; None if jj cannot list roots."""
-        template = 'stringify(name) ++ "\\x00" ++ root ++ "\\n"'
         try:
-            out = self._jj("workspace", "list", "-T", template)
-        except VcsError:  # jj without the ``root`` template keyword
+            workspaces = self.registered_workspaces(require_roots=True)
+        except VcsError:
             return None
-        names: dict[Path, str] = {}
-        for line in out.splitlines():
-            name, _, root = line.partition("\0")
-            if root:
-                names[Path(root).resolve()] = name
-        return names
+        return {ws.root.resolve(): ws.name for ws in workspaces if ws.root}
 
     def git_dir(self) -> Path | None:
         """The Git directory backing the repository (shared by its workspaces), if any."""
@@ -863,18 +888,11 @@ class JjBackend:
 
     def workspaces_at(self, commit: str) -> list[tuple[str, Path | None]]:
         """Other workspaces whose working-copy commit is ``commit``, with their roots."""
-        current = 'if(target.current_working_copy(), "1", "0")'
-        fields = f'stringify(name) ++ "\\x00" ++ target.commit_id() ++ "\\x00" ++ {current}'
-        try:
-            out = self._jj("workspace", "list", "-T", f'{fields} ++ "\\x00" ++ root ++ "\\n"')
-        except VcsError:  # jj without the ``root`` template keyword
-            out = self._jj("workspace", "list", "-T", f'{fields} ++ "\\x00\\n"')
-        held: list[tuple[str, Path | None]] = []
-        for line in out.splitlines():
-            name, at, is_current, root = (line.split("\0") + ["", "", ""])[:4]
-            if at == commit and is_current != "1":
-                held.append((name, Path(root) if root else None))
-        return held
+        return [
+            (ws.name, ws.root)
+            for ws in self.registered_workspaces()
+            if ws.commit == commit and not ws.current
+        ]
 
     def move_working_copy_to(
         self, target: str, *, main: str = "", new_in_holders: bool = False
@@ -972,7 +990,7 @@ def tracked_files(workspace: Path, paths: Collection[str]) -> list[str]:
     if not paths:
         return []
     filesets = [f"root:{json.dumps(path)}" for path in paths]
-    out = _run(
+    out = _run_bytes(
         [
             "jj",
             "--no-pager",
@@ -980,13 +998,15 @@ def tracked_files(workspace: Path, paths: Collection[str]) -> list[str]:
             "--ignore-working-copy",
             "file",
             "list",
+            "-T",
+            'path ++ "\\x00"',
             "--revision=@",
             "--",
             *filesets,
         ],
         workspace,
     )
-    return out.splitlines()
+    return [_decode_path(path) for path in out.split(b"\0") if path]
 
 
 def main_branch(names: Collection[str], configured: str = "") -> str | None:

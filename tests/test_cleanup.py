@@ -87,6 +87,30 @@ def test_cleanup_ignores_git_worktree_metadata(repo: Path) -> None:
     assert "ignored files" in ws.status
 
 
+def test_workspace_discovery_preserves_multiline_roots(repo: Path) -> None:
+    path = repo.parent / "first\nsecond"
+    name = "café"
+    run("jj", "workspace", "add", str(path), "--name", name, "-r", "main", cwd=repo)
+    backend = detect(repo)
+    commit = run("jj", "log", "--no-graph", "-r", "@", "-T", "commit_id", cwd=path)
+    assert backend.workspace_names() == {repo: "default", path: name}
+    assert backend.workspaces_at(commit) == [(name, path)]
+    [ws] = find_workspaces(backend, Config())
+    assert ws.name == name and ws.path == path and ws.removable
+
+
+def test_cleanup_distinguishes_tracked_newline_paths_from_ignored_files(repo: Path) -> None:
+    path = _add_workspace(repo, "feature/x")
+    (path / "first\nsecond").write_text("tracked")
+    (path / ".gitignore").write_text("/second\n")
+    run("jj", "commit", "-m", "track a multiline filename", cwd=path)
+    [clean] = find_workspaces(detect(repo), Config())
+    assert clean.removable
+    (path / "second").write_text("ignored")
+    [kept] = find_workspaces(detect(repo), Config())
+    assert not kept.removable and "ignored files" in kept.status
+
+
 def test_cleanup_preserves_running_session(repo: Path, capsys, monkeypatch) -> None:
     import os
 
