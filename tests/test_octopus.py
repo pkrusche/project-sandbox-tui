@@ -53,11 +53,11 @@ def _build_jj_branches(repo: Path) -> None:
         return run("jj", *args, cwd=repo)
 
     jj("git", "init", "--quiet")
-    (repo / "shared.txt").write_text("base\n")
+    (repo / "shared file.txt").write_text("base\n")
     jj("commit", "--quiet", "-m", "base")
     jj("bookmark", "create", "--quiet", "main", "-r", "@-")
-    for name, path, text in [("a", "shared.txt", "from a\n"), ("b", "b.txt", "b\n"),
-                             ("c", "shared.txt", "from c\n")]:  # fmt: skip
+    for name, path, text in [("a", "shared file.txt", "from a\n"), ("b", "b.txt", "b\n"),
+                             ("c", "shared file.txt", "from c\n")]:  # fmt: skip
         jj("new", "--quiet", "main")
         (repo / path).write_text(text)
         jj("commit", "--quiet", "-m", f"{name}: {path}")
@@ -67,7 +67,7 @@ def _build_jj_branches(repo: Path) -> None:
 
 @pytest.fixture
 def jj_branches(tmp_path: Path, repo_copy: RepoCopy) -> Path:
-    """main + a (conflicts with c on shared.txt), b (independent file), c."""
+    """main + a (conflicts with c on shared file.txt), b (independent file), c."""
     return repo_copy(_build_jj_branches, tmp_path / "jj")
 
 
@@ -78,7 +78,7 @@ def jj_out(repo: Path, *args: str) -> str:
 def test_jj_merge_records_conflicts_in_commit(jj_branches: Path) -> None:
     at_before = jj_out(jj_branches, "log", "--no-graph", "-r", "@", "-T", "commit_id")
     state = octopus.prepare(jj_branches, OctopusPlan("merge", ["a", "b", "c"], "merge/abc"))
-    assert not state.clean and state.conflicts == ["shared.txt"]
+    assert not state.clean and state.conflicts == ["shared file.txt"]
     parents = jj_out(jj_branches, "log", "--no-graph", "-r", '"merge/abc"', "-T",
                      'parents.map(|p| p.bookmarks()).join(",")')  # fmt: skip
     assert sorted(parents.split(",")) == ["a", "b", "c"]
@@ -98,7 +98,7 @@ def test_jj_rebase_duplicates_without_touching_inputs(jj_branches: Path) -> None
     state = octopus.prepare(jj_branches, plan)
     stack = jj_out(jj_branches, "log", "--no-graph", "-r", 'main.."rebase/bac"', "-T",
                    'description.first_line() ++ "\\n"').splitlines()  # fmt: skip
-    assert [s for s in stack if s] == ["c: shared.txt", "a: shared.txt", "b: b.txt"]
+    assert [s for s in stack if s] == ["c: shared file.txt", "a: shared file.txt", "b: b.txt"]
     assert not state.clean and len(state.conflicts) == 1  # c conflicts with a
     assert jj_out(jj_branches, "log", "--no-graph", "-r", "a", "-T", "commit_id") == a_before
 
@@ -124,7 +124,7 @@ def test_rebase_shared_ancestry_is_included_once(jj_branches: Path) -> None:
         "-T",
         'description.first_line() ++ "\\n"',
     ).splitlines()
-    assert stack == ["b: b.txt", "child of a", "a: shared.txt"]
+    assert stack == ["b: b.txt", "child of a", "a: shared file.txt"]
     assert {
         name: jj_out(jj_branches, "log", "--no-graph", "-r", name, "-T", "commit_id")
         for name in inputs
@@ -150,7 +150,7 @@ def test_bash_summary(jj_branches: Path, operation, conflicted) -> None:
         text=True,
     )
     assert result.returncode == (1 if conflicted else 0), result.stderr
-    assert "shared.txt" in result.stdout or "b.txt" in result.stdout
+    assert "shared file.txt" in result.stdout or "b.txt" in result.stdout
 
 
 @pytest.mark.parametrize("base", ["@-", "heads(::a & ::b)", "main"])
@@ -160,7 +160,7 @@ def test_jj_rebase_onto_revset_base(jj_branches: Path, base: str) -> None:
     assert state.clean
     stack = jj_out(jj_branches, "log", "--no-graph", "-r", 'main.."r"', "-T",
                    'description.first_line() ++ "\\n"').splitlines()  # fmt: skip
-    assert [s for s in stack if s] == ["b: b.txt", "a: shared.txt"]
+    assert [s for s in stack if s] == ["b: b.txt", "a: shared file.txt"]
 
 
 def test_jj_rebase_base_must_be_one_revision(jj_branches: Path) -> None:

@@ -15,6 +15,7 @@ Inputs are never rewritten.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import subprocess
@@ -193,10 +194,8 @@ def _jj_ids(repo: Path, revset: str) -> list[str]:
 
 
 def _jj_conflicted_paths(repo: Path, rev: str) -> list[str]:
-    proc = _jj(repo, "resolve", "--list", "-r", rev, check=False)
-    if proc.returncode != 0:  # "No conflicts found at this revision"
-        return []
-    return [line.split()[0] for line in proc.stdout.splitlines() if line.strip()]
+    proc = _jj(repo, "file", "list", "-r", rev, "-T", 'if(conflict, json(path) ++ "\\n")')
+    return [json.loads(path) for path in proc.stdout.split("\n") if path]
 
 
 def _jj_new_heads(repo: Path, before: set[str], within: str) -> list[str]:
