@@ -214,13 +214,27 @@ first_step_interactive = true
 steps = ["spec-check", "spec-implement", "spec-chores"]
 pass_state_keys = ["spec_path"]
 
+[actions.spec-plan]
+prompt = "Write the agreed plan in the checkout and report its relative path in state.spec_path."
+persona = "planner"
+
 [actions.spec-check]
-prompt = "Check the spec at previous_state.spec_path."
+prompt = "Check the spec at previous_state.spec_path and report whether it is ready to implement."
 persona = "checker"
+
+[actions.spec-implement]
+prompt = "Implement the spec at previous_state.spec_path and run its verification steps."
+persona = "implementer"
+
+[actions.spec-chores]
+prompt = "Finish documentation and cleanup for the spec at previous_state.spec_path. Run the project checks."
+persona = "chore-runner"
 ```
 
-The [project's example configuration](../.project-sandbox-tui.toml) defines all
-four actions, each with a persona. To use it, select an idle feature bookmark and type
+The project includes fuller prompts for these four actions.
+[Example project configuration](https://github.com/pkrusche/project-sandbox-tui/blob/main/.project-sandbox-tui.toml)
+
+To use the workflow, select an idle feature bookmark and type
 `:workflow spec Add CSV export`. Type `:workflow` to list the
 configured names. At the start of planning, ask the agent to read
 `/run/sbx-feedback/context.json` and follow its brief. Work together on a plan

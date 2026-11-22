@@ -137,7 +137,8 @@ the selected CI uv version remains compatible when changing that requirement.
   commit it after dependency changes; CI uses `uv sync --locked`.
 - CI pins uv (`UV_VERSION`; keep `[tool.uv] required-version` compatible),
   actions by SHA, and jj by `JJ_VERSION` plus `JJ_SHA256` (update together).
-- [Dependabot](../.github/dependabot.yml) proposes monthly action and lockfile updates.
+- Dependabot proposes monthly action and lockfile updates.
+  [Repository configuration](https://github.com/pkrusche/project-sandbox-tui/blob/main/.github/dependabot.yml)
 
 ## OpenSpec skills
 

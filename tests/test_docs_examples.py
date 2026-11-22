@@ -86,12 +86,29 @@ def test_settings_reference_example(tmp_path: Path) -> None:
 
 
 def test_workflow_example_with_project_actions(tmp_path: Path) -> None:
-    blocks = toml_blocks(section("feedback.md", "## Project workflows"))
-    project = (DOCS.parent / c.PROJECT_CONFIG_NAME).read_text()
-    data = tomllib.loads(project)
-    example = tomllib.loads(blocks[0])
-    assert example["workflows"]["spec"]["steps"] == data["workflows"]["spec"]["steps"]
-    assert example["actions"]["spec-check"]["persona"] == data["actions"]["spec-check"]["persona"]
-    cfg = c.from_dict(data)
+    (block,) = toml_blocks(section("feedback.md", "## Project workflows"))
+    cfg = load_pair(tmp_path, "", block)
+    workflow = cfg.workflows["spec"]
+    steps = [workflow.planning_action, *workflow.steps]
+    assert steps == ["spec-plan", "spec-check", "spec-implement", "spec-chores"]
+    assert [cfg.actions[s].persona for s in steps] == [
+        "planner",
+        "checker",
+        "implementer",
+        "chore-runner",
+    ]
+    assert workflow.pass_state_keys == ["spec_path"] and not workflow.result_state_keys
+
+
+def test_project_workflow_matches_documented_example() -> None:
+    project = DOCS.parent / c.PROJECT_CONFIG_NAME
+    if (DOCS.parent / "PKG-INFO").is_file() and not project.exists():
+        pytest.skip("checkout-local configuration is excluded from the source distribution")
+    (block,) = toml_blocks(section("feedback.md", "## Project workflows"))
+    example = tomllib.loads(block)
+    cfg = c.from_dict(tomllib.loads(project.read_text()))
     cfg.validate()
-    assert "spec-commits" not in cfg.actions and not cfg.workflows["spec"].result_state_keys
+    assert cfg.workflows["spec"] == c.from_dict(example).workflows["spec"]
+    for name, action in example["actions"].items():
+        assert cfg.actions[name].persona == action["persona"]
+    assert "spec-commits" not in cfg.actions

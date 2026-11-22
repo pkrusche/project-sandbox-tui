@@ -463,9 +463,10 @@ def _check_egress(cfg: Config, caps: Capabilities) -> list[Check]:
         return [
             Check(
                 name,
-                "fail",
-                f"sidecar, but {path} does not exist; levels 3 to 5 and commit review need it",
-                hint,
+                "ok",
+                f"sidecar uses default settings because {path} does not exist",
+                "GitHub Copilot needs the sidecar to allow access to its hosts; "
+                "configure the policy with project-sandbox-egress if needed",
             )
         ]
     hosts = egress_hosts(path)

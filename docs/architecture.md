@@ -29,7 +29,7 @@ require a `.jj/` directory.
 | `app.py`, `widgets.py`, `screens/` | Bookmark list, forms, dialogs, logs, op history and prompt search |
 | `logview.py` | Log tail widget: wrapped rows, incremental Markdown blocks, line cursor |
 | `screens/agent.py`, `screens/profiles.py` | Shared agent controls and the project profile editor |
-| `screens/workflow.py` | Per-step profile picker shown before a workflow starts |
+| `screens/workflow.py` | Per-step setup, provider and security level picker |
 
 ## Launches and job lifecycle
 

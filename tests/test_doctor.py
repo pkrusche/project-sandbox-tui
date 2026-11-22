@@ -501,11 +501,12 @@ def test_sidecar_policy_with_nested_tables(egress_policy: Path) -> None:
     assert check.status == "ok" and str(egress_policy) in check.detail
 
 
-def test_sidecar_not_set_up() -> None:
+def test_sidecar_default_policy() -> None:
     check = by_name(doctor.check_security(Config(), discovered()))["egress backend"]
-    assert check.status == "fail" and "egress.toml does not exist" in check.detail
+    assert check.status == "ok" and "egress.toml does not exist" in check.detail
+    assert "default settings" in check.detail
+    assert "GitHub Copilot" in check.hint and "allow access" in check.hint
     assert "project-sandbox-egress" in check.hint
-    assert 'security.egress = "firewall" in the global config' in check.hint
 
 
 def test_egress_backend_not_offered_by_the_launcher() -> None:
