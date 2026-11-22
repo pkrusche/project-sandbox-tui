@@ -94,11 +94,12 @@ probing a runtime.
 All repository and session state lives under pytest's temporary directory. For
 Apple Containers (whose build VM cannot read macOS's per-user temp directory),
 or Docker Desktop with restricted file sharing, use a fresh directory in a
-runtime-accessible location:
+runtime-accessible location outside any repository (the commit summary smoke
+mounts its inputs from there, and refuses a directory inside a checkout):
 
 ```sh
-mkdir -p .project-sandbox
-smoke_tmp=$(mktemp -d "$PWD/.project-sandbox/container-smoke.XXXXXX")
+mkdir -p ~/.cache/project-sandbox-tui
+smoke_tmp=$(mktemp -d ~/.cache/project-sandbox-tui/container-smoke.XXXXXX)
 scripts/test.sh -n 0 -v -s tests/test_container_smoke.py \
   --container-smoke --container-runtime apple-container --basetemp "$smoke_tmp"
 ```

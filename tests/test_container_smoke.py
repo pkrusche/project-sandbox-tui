@@ -353,6 +353,8 @@ PYTHON
 """
     scratch = tmp_path / "summaries"
     scratch.mkdir()
+    checkouts = [p for p in scratch.parents for m in (".jj", ".git") if (p / m).exists()]
+    assert not checkouts, f"--basetemp must be outside any repository, not in {checkouts[0]}"
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
 
     async def exercise() -> dict[str, commit_summary.AssessmentResult]:

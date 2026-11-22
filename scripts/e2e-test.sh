@@ -10,12 +10,13 @@
 # Checks jj, project-sandbox and the runtime before starting pytest. Detection
 # picks the first runtime that answers: Apple container (macOS only), then
 # docker, then podman. For Apple container, unless --basetemp is given, test
-# state goes to a fresh .project-sandbox/container-smoke.* directory, because
-# its build VM cannot read macOS's per-user temp directory.
+# state goes to a fresh ~/.cache/project-sandbox-tui/container-smoke.* directory:
+# its build VM cannot read macOS's per-user temp directory, and commit summary
+# inputs must live outside any repository.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-usage() { sed -n '2,14s/^# \{0,1\}//p' "$0"; }
+usage() { sed -n '2,15s/^# \{0,1\}//p' "$0"; }
 die() { printf 'e2e-test: %s\n' "$*" >&2; exit 1; }
 info() { printf 'e2e-test: %s\n' "$*" >&2; }
 
@@ -119,8 +120,9 @@ info "runtime $runtime"
 args=(-n 0 -v -s tests/test_container_smoke.py --container-smoke --container-runtime "$runtime")
 [[ -n $command ]] && args+=(--container-command "$command")
 if [[ $runtime == apple-container ]] && [[ " ${pytest_args[*]-} " != *" --basetemp"* ]]; then
-    mkdir -p .project-sandbox
-    basetemp=$(mktemp -d "$PWD/.project-sandbox/container-smoke.XXXXXX")
+    smoke_parent=${XDG_CACHE_HOME:-$HOME/.cache}/project-sandbox-tui
+    mkdir -p "$smoke_parent"
+    basetemp=$(mktemp -d "$smoke_parent/container-smoke.XXXXXX")
     info "test state in $basetemp"
     args+=(--basetemp "$basetemp")
 fi
