@@ -124,4 +124,5 @@ if [[ $runtime == apple-container ]] && [[ " ${pytest_args[*]-} " != *" --basete
     info "test state in $basetemp"
     args+=(--basetemp "$basetemp")
 fi
-exec scripts/test.sh "${args[@]}" "${pytest_args[@]}"
+# Bash 3.2 treats an empty array as unset under set -u.
+exec scripts/test.sh "${args[@]}" ${pytest_args[@]+"${pytest_args[@]}"}
