@@ -535,3 +535,13 @@ def test_provider_availability(egress_policy: Path) -> None:
     cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
     checks = by_name(doctor.check_security(cfg, discovered()))
     assert "commit_review.provider" not in checks
+
+
+def test_default_provider_allows_configured_in_sandbox_login(home: Path) -> None:
+    cfg = Config()
+    cfg.catalogue.default_provider = "codex"
+    assert "catalogue.default_provider" in by_name(doctor.check_security(cfg, caps(), home=home))
+    cfg.sandbox.no_forward_credentials = True
+    assert "catalogue.default_provider" not in by_name(
+        doctor.check_security(cfg, caps(), home=home)
+    )

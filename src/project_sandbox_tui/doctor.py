@@ -332,7 +332,9 @@ def check_capabilities(cfg: Config, caps: Capabilities, home: Path | None = None
             checks.append(Check("launcher capabilities", "warn", problem))
     gateway = bool(cfg.network.agent_proxy)
     for agent in caps.agents:
-        result = capabilities.agent_sources(agent, caps, gateway_configured=gateway, home=home)
+        result = capabilities.agent_sources(
+            agent, caps, gateway_configured=gateway, home=home, cfg=cfg
+        )
         checks.append(
             Check(
                 f"agent {agent}",

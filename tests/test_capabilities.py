@@ -173,6 +173,7 @@ def test_token_login_and_bash(host: Path) -> None:
 
 
 def test_no_forward_credentials_is_login_in_sandbox(host: Path) -> None:
+    (host / ".codex").mkdir()
     result = caps_mod.launch_availability(
         "codex", PROBED, extra_args=["--no-forward-credentials"], home=host
     )

@@ -129,7 +129,7 @@ class SetupDialog(App[Interview]):
         return [
             (agent, result.describe())
             for agent, result in capabilities.profile_agents(
-                self.caps, gateway=gateway, home=self.home
+                self.caps, gateway=gateway, home=self.home, cfg=self.cfg
             )
         ]
 

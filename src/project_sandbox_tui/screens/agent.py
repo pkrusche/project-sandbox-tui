@@ -210,7 +210,9 @@ class AgentControls(Vertical):
         caps = self.caps
         if caps.discovered and agent not in caps.agents:
             return f"{agent}: not supported by {caps_mod.launcher_name(caps)}"
-        result = caps_mod.agent_sources(agent, caps, gateway_configured=self.gateway_configured)
+        result = caps_mod.agent_sources(
+            agent, caps, gateway_configured=self.gateway_configured, cfg=self.cfg
+        )
         if result.available is False:
             return f"{agent}: unavailable — {result.reason}"
         only_gateway = result.available and result.sources == (caps_mod.AGENT_GATEWAY,)

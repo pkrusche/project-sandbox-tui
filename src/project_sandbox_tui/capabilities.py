@@ -295,9 +295,13 @@ def agent_sources(
     *,
     gateway_configured: bool = False,
     home: Path | None = None,
+    cfg: Config | None = None,
 ) -> Availability:
     """How ``agent`` can run on this host, in general (not for one launch)."""
-    return _availability(agent, caps, gateway=gateway_configured, extra_args=(), home=home)
+    login = cfg is not None and (
+        cfg.sandbox.no_forward_credentials or "--no-forward-credentials" in cfg.sandbox.extra_args
+    )
+    return _availability(agent, caps, gateway=gateway_configured, sandbox_login=login, home=home)
 
 
 def launch_availability(
@@ -309,7 +313,13 @@ def launch_availability(
     home: Path | None = None,
 ) -> Availability:
     """Whether one launch of ``agent`` can start, given its gateway use and switches."""
-    return _availability(agent, caps, gateway=gateway, extra_args=tuple(extra_args), home=home)
+    return _availability(
+        agent,
+        caps,
+        gateway=gateway,
+        sandbox_login="--no-forward-credentials" in extra_args,
+        home=home,
+    )
 
 
 def _availability(
@@ -317,20 +327,20 @@ def _availability(
     caps: Capabilities,
     *,
     gateway: bool,
-    extra_args: tuple[str, ...],
+    sandbox_login: bool,
     home: Path | None,
 ) -> Availability:
     if agent == "bash":
         return Availability(True, (NO_CREDENTIALS,))
     sources: list[str] = []
     rules = _host_rules(caps, home)
-    if rules is not None and agent in rules[0]:
+    if not sandbox_login and rules is not None and agent in rules[0]:
         sources.append(HOST_CREDENTIALS)
     if agent == "copilot":
         sources.append(TOKEN_LOGIN)
     if gateway and agent in GATEWAY_AGENTS:
         sources.append(AGENT_GATEWAY)
-    if "--no-forward-credentials" in extra_args:
+    if sandbox_login:
         sources.append(SANDBOX_LOGIN)
     if sources:
         return Availability(True, tuple(sources))
@@ -607,7 +617,7 @@ def provider_availability(
         )
     if row.gateway:
         return Availability(True, (AGENT_GATEWAY,))
-    return agent_sources(agent, caps, home=home)
+    return agent_sources(agent, caps, home=home, cfg=cfg)
 
 
 def gateway_problems(agent: str, model: str, gateway: bool) -> list[str]:
@@ -628,7 +638,11 @@ def gateway_problems(agent: str, model: str, gateway: bool) -> list[str]:
 
 
 def profile_agents(
-    caps: Capabilities, *, gateway: bool = False, home: Path | None = None
+    caps: Capabilities,
+    *,
+    gateway: bool = False,
+    home: Path | None = None,
+    cfg: Config | None = None,
 ) -> list[tuple[str, Availability]]:
     """Agents a sandbox profile can use, with their sources; for the setup wizard.
 
@@ -636,7 +650,7 @@ def profile_agents(
     Agents without any source are left out; unknown availability is kept.
     """
     found = [
-        (agent, agent_sources(agent, caps, gateway_configured=gateway, home=home))
+        (agent, agent_sources(agent, caps, gateway_configured=gateway, home=home, cfg=cfg))
         for agent in caps.agents
     ]
     return [(agent, result) for agent, result in found if result.available is not False]
@@ -687,7 +701,7 @@ def setup_summary(
     """Discovered capabilities for the setup agent's prompt."""
     agents = "; ".join(
         f"{agent} ({result.describe()})"
-        for agent, result in profile_agents(caps, gateway=gateway, home=home)
+        for agent, result in profile_agents(caps, gateway=gateway, home=home, cfg=cfg)
     )
     usable = [
         name for name, rt in caps.runtimes.items() if rt.status == "usable" and name != "auto"
