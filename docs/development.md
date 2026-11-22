@@ -22,18 +22,20 @@ that the source archive excludes them.
 Tests cover units, Textual Pilot interactions and pseudo-terminal sessions.
 `fake_project_sandbox.py` supplies session records, logs and summaries.
 
-- Keep state in `tmp_path`, never shared or global paths: tests must pass in
-  parallel. `conftest.py` isolates XDG state, config, data and runtime directories,
-  `CODEX_HOME` and `JJ_CONFIG` per test. The offline packaging test reuses uv's
-  dependency cache; its checkout and build artifacts live in `tmp_path`.
+- Keep test state in `tmp_path`; never use shared or global paths. Tests must
+  pass in parallel. `conftest.py` gives each test isolated XDG state, config,
+  data and runtime directories, plus its own `CODEX_HOME` and `JJ_CONFIG`. The
+  offline packaging test reuses uv's dependency cache but keeps its checkout
+  and build artifacts in `tmp_path`.
 - `conftest.py` tracks real child processes and stops and reaps them at teardown,
   including detached job/task groups and groups created with `process_group=0`
-  when an assertion fails, and closes their pipes. Keep explicit
-  cleanup for resources outside those groups, such as containers and tmux servers.
-  On Linux it also adopts and reaps orphaned descendants in those groups, so tests
-  do not depend on a container's PID 1 to collect them.
-- Use `repo`, `jj_repo`, `jj_repo_no_bookmarks`, or `repo_copy(build, dest)` for
-  a new layout. Each test gets a mutable copy of a repo built once per worker.
+  after assertion failures. It also closes their pipes. Explicitly clean up
+  resources outside those groups, such as containers and tmux servers. On Linux,
+  it adopts and reaps orphaned descendants so tests do not rely on the container's
+  PID 1 to collect them.
+- Use `repo`, `jj_repo`, `jj_repo_no_bookmarks`, or `repo_copy(build, dest)` to
+  create a layout. Each test gets a mutable copy of a repository built once per
+  worker.
 - Wait for observable completion instead of fixed startup delays. For screens
   opened by workers, use `wait_for_screen` in `tests/test_app.py`: screen type,
   focus and an empty table do not prove that `on_mount` has finished. For child
@@ -64,8 +66,8 @@ security level 3 with the egress sidecar (`--agent-proxy` with
 and reads the user's `$XDG_CONFIG_HOME/project-sandbox/egress.toml` (never
 changing it); without that policy it is skipped with the reason.
 
-Install `project-sandbox` ≥ 0.2.2 and jj ≥ 0.46, start Docker, Podman, or Apple
-Containers, then run:
+Install `project-sandbox` ≥ 0.2.2 and jj ≥ 0.46, then start Docker, Podman or
+Apple Containers before running:
 
 ```sh
 uv tool install project-sandbox==0.4.1  # version used by the manual CI smoke job
@@ -102,9 +104,9 @@ scripts/test.sh -n 0 -v -s tests/test_container_smoke.py \
 ```
 
 `--basetemp` must be disposable: pytest clears it before use. Failure messages
-include output/log paths and tails. The test stops its child processes and
-removes only its recorded containers and uniquely tagged image in `finally`;
-repository files and logs remain for inspection under the pytest temp directory.
+include output/log paths and tails. In `finally`, the test stops its child
+processes and removes only its recorded containers and uniquely tagged image.
+Repository files and logs remain under the pytest temp directory for inspection.
 Downloaded base images and shared build-cache layers are retained.
 
 In GitHub Actions, manually run **CI** with **container_smoke** enabled to run

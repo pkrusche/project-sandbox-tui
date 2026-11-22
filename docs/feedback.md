@@ -1,9 +1,9 @@
 # Agent run feedback
 
-sbx-tui collects structured progress and task outcomes separately from process
+sbx-tui records agent progress and reported outcomes separately from process
 exit status. Reporting is enabled by default when the configured project-sandbox
-CLI supports `--mount`. No project-sandbox modification or model-specific hook
-is required. `doctor` checks transport availability and installed guidance.
+CLI supports `--mount`; no launcher changes or model-specific hooks are needed.
+`doctor` checks transport availability and installed guidance.
 
 ## Reporting from an agent
 
@@ -57,9 +57,9 @@ remain usable and have an unknown reported outcome.
 
 ## Protocol version 1
 
-`context.json` belongs to the launcher. It contains `schema_version`, `run_id`,
-`task_id` (empty outside queues), `interactive`, and `previous_state` (an object
-containing only selected predecessor keys).
+`context.json` is launcher-owned. It contains `schema_version`, `run_id`,
+`task_id` (empty outside queues), `interactive`, and `previous_state`, which
+contains only selected keys from the preceding task.
 Interactive workflow runs also receive `planning_prompt`, the configured brief
 and any topic supplied when starting the workflow.
 Interactive sessions opened to resolve a blocker receive `blocked_guidance`,
@@ -96,9 +96,9 @@ require explicit reader support; they are never interpreted as version 1.
 
 ## Collection and display
 
-The TUI polls reports while the process runs and reads once more when completion
-is observed, before queue dispatch. Collection status is `missing`, `valid`,
-`invalid`, or `unsupported`. An invalid newer file does not discard the last
+The TUI polls reports while the process runs and reads once more at completion,
+before dispatching the next queued task. Collection status is `missing`, `valid`,
+`invalid`, or `unsupported`. An invalid newer file does not replace the last
 accepted snapshot, but it prevents that snapshot from authorizing progression.
 After completion, collection is frozen; subsequent file edits cannot change
 the persisted task result.

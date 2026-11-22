@@ -18,8 +18,8 @@ sbx-tui config …             # read or edit settings
 Subcommands accept `-R/--repository PATH` and `--config PATH`. Open repositories
 named `config` or `doctor` as `./config` or `./doctor`.
 
-`doctor` checks jj (tested minimum 0.46), project-sandbox ≥ 0.2.2 and runtime
-health; failed checks exit 1, while warnings alone exit 0. It also warns about
+`doctor` checks jj (tested minimum 0.46), project-sandbox (minimum 0.2.2) and
+runtime health. Failed checks exit 1; warnings alone exit 0. It also warns about
 untrusted config and missing image sources, multiplexers or notifiers.
 
 It asks the configured `sandbox.command` what it supports, from its `--help` and
@@ -125,12 +125,13 @@ Selected rows stay visible while a filter hides others, so an action never hits
 a row you cannot see; the header counts them as outside the filter. An action
 ends visual mode as in vim; its range stays marked until `esc`.
 
-A half-typed `gg` or `dd` shows in the header (`d…`) until the second key; any
-other key, or 0.8 seconds, cancels it.
+While you type `gg` or `dd`, the header shows the first key (`g…` or `d…`).
+Press the second key to complete the command; any other key or a 0.8-second
+timeout cancels it.
 
 The status column shows the last run's outcome and, when inactive, how long ago
-it ended (or started if the end time is unavailable), such as `completed · 5m ago`.
-Its node in the graph shows the outcome as a symbol
+it ended (or started if the end time is unavailable), e.g. `completed · 5m ago`.
+Its graph node shows the outcome as a symbol
 (`▶` running, `✓` completed, `✗` failed, `⚠` other).
 The latest [background task](#tasks) follows while it runs or until
 a newer run starts: `:pytest ▶` (`+N` more running), `:pytest ✓`, `:pytest ✗1`
@@ -219,9 +220,9 @@ in the background on each target.
 | Stop or return | `Ctrl+C` interrupts; `Enter` at the exit prompt returns to the TUI | `T`, select task, `x` to cancel; `Enter` to view output | Same task controls, separately for each target |
 | After quitting sbx-tui | Return from the command before quitting the TUI | Task keeps running | Tasks keep running |
 
-For example, with `feature/x` highlighted and several rows marked, `:&test`
-still runs just once in the repository and appears under `@`. `:*test` runs
-in every marked workspace. Clear the marks to use `:*test` only in the
+For example, if `feature/x` is highlighted and several rows are marked,
+`:&test` still runs once in the repository and appears under `@`. `:*test` runs
+in every marked workspace. Clear the marks to run `:*test` only in the
 highlighted workspace. Merely highlighting a bookmark never changes the
 starting directory of `:test` or `:&test`.
 

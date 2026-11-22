@@ -32,8 +32,8 @@ The first match wins in mixed projects. Detection does not search subdirectories
 or infer language versions. Review the starter settings for monorepos, alternate
 package managers, or Dockerfiles intended only for production. Rerunning
 `--init` does not redetect or change an existing project config.
-The new template explicitly clears unused image settings so that an inherited
-global image source or build version cannot conflict with the detected choice.
+The template clears unused image settings so inherited global image sources or
+build versions cannot conflict with the detected choice.
 
 Initialization installs two configuration skills under both `.agents/skills/`
 and `.claude/skills/`. Each skill has a `SKILL.md` that other agents can also
@@ -61,9 +61,10 @@ Bookmark workspaces are separate checkouts, so ignored files such as local
 skills are not in them. sbx-tui copies skill directories into a bookmark's
 workspace on first use: before `I` / `:host`, `i`, `r` and agent actions start
 (queued prompts when dispatched), and before `o` opens an idle workspace. Each
-workspace gets its own complete copy, so an agent can read supporting files and
-run scripts with the same relative paths as in the source; a sandbox sees them
-under `/workspace`. `@` uses the checkout's own files. `:*` tasks do not deploy.
+workspace gets a complete copy, including supporting files, so agents can
+read and run them using the same relative paths as in the source. Sandboxes see
+the copies under `/workspace`. `@` uses the checkout's own files; `:*` tasks do
+not deploy skills.
 
 **Bundled skills.** Both configuration skills are
 copied under `.agents/skills/` and `.claude/skills/`,
@@ -92,7 +93,7 @@ supporting files; `~` and absolute paths are host paths, relative paths start
 at the checkout that opened the TUI. Each target is one directory directly in
 `.agents/skills/` or `.claude/skills/`, and may appear only once, including the
 bundled targets while `deploy_config_skill` is enabled. A project
-`workspace_skills` list replaces the global one, like other arrays.
+`workspace_skills` list replaces the global list, like other arrays.
 
 The bookmark itself must ignore each full target directory. For the example,
 add these rules to the repository's `.gitignore` and include that change in the
@@ -177,8 +178,8 @@ are trusted host code.
 
 ## Agent profiles
 
-Profiles save an agent setup for reuse in interactive (`i`), background (`r`),
-and merge or rebase launch forms. To create one in the TUI:
+Profiles save agent settings for interactive (`i`), background (`r`), merge and
+rebase launches. To create one in the TUI:
 
 1. Run `:config-profiles`, leave **new profile** selected, and enter a name,
    for example `Deep review`.
@@ -411,7 +412,7 @@ for levels 3 to 5, or missing VCS access modes for levels 4 and 5) is marked
 unavailable and refused; a launcher that could not be probed restricts nothing.
 Tasks queued before a project opted in run at its default level when they start.
 
-When a level is in effect, it is the only source of network and VCS flags:
+When a security level is active, it is the only source of network and VCS flags:
 
 - `--no-firewall`, `--egress`, `--extra-domain`, `--allow-github`,
   `--vcs-access`, `--pi-ollama`, `--internet-proxy`,

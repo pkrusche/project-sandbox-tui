@@ -8,15 +8,21 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 > 🤖 Written largely by AI, reviewed by a human. Use at your own risk.
 
-- Run agents interactively or in the background with completion notifications.
-- Collect [structured agent outcomes](docs/feedback.md), pass selected task state, and configure bounded task loops.
-- Start [project workflows](docs/feedback.md#project-workflows) with interactive planning and run follow-up agents on the same bookmark.
-- Save agent, model and sandbox options as named [profiles](docs/configuration.md#agent-profiles), selectable in launch forms.
-- [Review changes commit by commit](docs/usage.md#diff-review), with on-demand agent summaries, shared seen marks and your place remembered during the TUI session.
+- Run agents interactively or in the background, with completion notifications.
+- Collect [structured outcomes](docs/feedback.md), pass selected state between tasks,
+  and set bounded task loops.
+- Start [project workflows](docs/feedback.md#project-workflows) with interactive
+  planning and follow-up agents on the same bookmark.
+- Save agent, model and sandbox options as named [profiles](docs/configuration.md#agent-profiles).
+- [Review changes commit by commit](docs/usage.md#diff-review), with optional
+  agent summaries and shared seen marks.
 - Merge or rebase tasks from separate jj workspaces with agent assistance.
-- Follow each bookmark's prompts and merges in a history graph (`O` for every run); delete and undo with `dd` / `u`.
-- Run shell or configured commands in the foreground (`:!make`, `:test`), once in the repository background (`:&test`), or in each selected workspace (`:*test`); see the [command comparison](docs/usage.md#choosing-how-to-run-a-shell-command). Map any form to leader keys.
-- Let project-sandbox handle isolation, credentials and workspace teardown.
+- Track prompts and merges in a history graph (`O`); delete and undo with `dd` / `u`.
+- Run shell commands in the foreground (`:!make`, `:test`), once in the
+  repository background (`:&test`), or in each selected workspace (`:*test`).
+  [Compare the command modes](docs/usage.md#choosing-how-to-run-a-shell-command),
+  or map them to leader keys.
+- Let project-sandbox manage isolation, credentials and workspace teardown.
 
 ```text
  sbx-tui   ~/workspace/myproject   5 bookmarks · 1 running
@@ -33,15 +39,17 @@ containers, with one sandbox per [jj bookmark](https://docs.jj-vcs.dev/latest/bo
 
 - Linux or macOS (WSL on Windows)
 - Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/)
-- [jj](https://github.com/jj-vcs/jj) ≥ 0.46 on `PATH`; for an existing Git repository, run `jj git init --colocate`
-- [project-sandbox](https://github.com/pkrusche/project-sandbox) ≥ 0.2.2 and Apple Containers, Docker or Podman
+- [jj](https://github.com/jj-vcs/jj) ≥ 0.46 on `PATH`. For an existing Git
+  repository, run `jj git init --colocate`.
+- [project-sandbox](https://github.com/pkrusche/project-sandbox) ≥ 0.2.2, plus
+  Apple Containers, Docker or Podman.
 
 ## Getting started
 
 ```sh
 uv tool install project-sandbox
 uv tool install project-sandbox-tui
-# For latest from Github:
+# For the latest version from GitHub:
 # uv tool install git+https://github.com/pkrusche/project-sandbox-tui
 # From a checkout: uv tool install . (or uv sync && uv run sbx-tui)
 
@@ -52,17 +60,15 @@ sbx-tui --dry-run   # preview project-sandbox calls
 sbx-tui             # launch
 ```
 
-For guided project setup, run `sbx-setup-wizard` in your jj checkout. Choose
-the setup agent that runs the interview on this host: an installed Claude, Codex,
-Pi, GitHub Copilot or OpenCode. Then select the agents to consider for sandbox
-profiles. These come from what the configured project-sandbox supports, each
-shown with how it can run here (host credentials, token login, the agent gateway,
-or no credentials for Bash), so they need not be installed on the host. Tick
-**Use the agent gateway** to offer Pi and OpenCode through `network.agent_proxy`.
-Add any instructions, then **Start interview** (`ctrl+s`) opens the setup agent in
-the current terminal with the discovered agents, VCS access modes and runtimes. It
-uses the bundled `sbx-tui-safety` skill to discuss the VCS access, network
-destinations, credentials and mounts each task needs. You can run the wizard
+For guided setup, run `sbx-setup-wizard` in your jj checkout. Choose an installed
+host agent (Claude, Codex, Pi, GitHub Copilot or OpenCode) to conduct the interview,
+then select agents for sandbox profiles. The wizard lists agents supported by your
+configured project-sandbox and explains how each can authenticate on this host;
+they do not all need to be installed locally. Select **Use the agent gateway**
+to offer Pi and OpenCode through `network.agent_proxy`. Add any instructions and
+press **Start interview** (`ctrl+s`) to open the setup agent in the current
+terminal. It receives discovered agents, VCS access modes and runtimes, and uses
+the `sbx-tui-safety` skill to discuss each task's access needs. Run the wizard
 before or after `sbx-tui --init`.
 
 Press `?` for full help.
@@ -73,8 +79,8 @@ Use `:config-profiles` to save an agent setup,
 then choose it in either launch form. Select **custom** to adjust settings for a run.
 
 See [initialization](docs/configuration.md#initialization) for project detection
-and the local `sbx-tui-config` and `sbx-tui-safety` skills. Existing config and skill files are
-preserved. Bookmark workspaces get their own ignored copies, plus any
+and the `sbx-tui-config` and `sbx-tui-safety` skills. Existing config and skill
+files are preserved. Bookmark workspaces get ignored copies, along with any
 [workspace skills](docs/configuration.md#workspace-skills) you configure.
 
 ## Documentation

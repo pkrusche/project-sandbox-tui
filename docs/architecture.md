@@ -92,7 +92,7 @@ separately. Only final success feedback with a clean process exit supplies new
 assessments. Temporary inputs are removed after completion, cancellation or
 failure; exiting the app cancels and waits for summary workers.
 
-Each TUI instance does its jj, file and process work in worker threads.
+Each TUI instance runs jj, file and process operations in worker threads.
 Instances opened from the same checkout share the file locks shown below.
 See [cleanup from a second checkout](cleanup.md#cleanup-from-a-second-checkout)
 for the limits of this protection across checkouts.
@@ -147,16 +147,16 @@ Which actions take which locks. *history* is `_history_lock`, *graph*
 
 - Checks that guard an action are repeated under its lock with records and
   session files read again. The UI's cached state only decides what to offer.
-- Inline sessions hold `jobs.lock` only while starting and finishing, not
-  while the agent runs.
+- Inline sessions hold `jobs.lock` only while starting or finishing, not while
+  the agent runs.
 - Most readers take no lock. Files are replaced atomically, and a reload swaps
   the in-memory records in one assignment. Queue readers take `queue.lock` so
   they can recover interrupted multi-file transactions before reading.
 - Locks are `flock`s on separately opened files, so they also order the threads
   of one TUI. They are not re-entrant: code holding one uses unlocked helpers
   such as `JobManager._busy_reason`.
-- Merging or rebasing selected bookmarks holds `jobs.lock` while jj runs.
-  Refreshes and launches from the same checkout wait until jj finishes.
+- Merging or rebasing selected bookmarks holds `jobs.lock` while jj runs, so
+  refreshes and launches from the same checkout wait for it to finish.
 - Workers that change the repository are not `exclusive`. A second action waits
   for `_history_lock` instead of cancelling the first after jj has already run.
 - Launch defaults and host-command updates share the per-checkout `last_used.lock`.

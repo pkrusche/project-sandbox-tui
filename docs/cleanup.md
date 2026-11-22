@@ -5,29 +5,30 @@ sbx-tui --cleanup-workspaces --dry-run   # preview
 sbx-tui --cleanup-workspaces             # remove eligible workspaces and merged bookmarks
 ```
 
-Press `W` to review candidates: eligible rows are preselected; others show why
-they are kept. `j` `k` move, `space` toggles a row, `a` selects all/none,
-`enter` lists what goes and asks for `y`, and `esc` or `q` cancels. The CLI removes all eligible candidates, reporting removals and
-reasons for keeping others.
+Press `W` to review candidates. Eligible rows are preselected; other rows show
+why they are kept. Use `j` / `k` to move, `space` to toggle a row, and `a` to
+select or clear all. Press `enter` to review the deletion list and confirm with
+`y`; press `esc` or `q` to cancel. The CLI removes all eligible candidates and
+reports removals and reasons for keeping others.
 
 Candidates come from `jj workspace list`, regardless of name or location. The
 current workspace and the directory holding the jj repository store (usually
-`default`) are protected. When cleanup sees a running session or a
-[`:*` task](usage.md#running-in-each-workspace), it keeps the workspace even
-during force deletion. Normal cleanup also keeps files too large to snapshot and uncommitted
-changes not already included in main.
-Directories containing another registered workspace are protected from both
-normal and force removal; remove the nested workspace first and scan again.
-Running sessions also protect enclosing and nested workspace directories.
+`default`) are protected. A running session or a
+[`:*` task](usage.md#running-in-each-workspace) protects its workspace, even
+from force deletion. Normal cleanup also keeps workspaces with files too large
+to snapshot or uncommitted changes not included in main.
+
+Directories containing another registered workspace are protected from normal
+and force removal. Remove the nested workspace first, then scan again. Running
+sessions also protect enclosing and nested workspace directories.
 
 ## Cleanup from a second checkout
 
-Multiple TUI instances opened from the same checkout share job and task locks.
-The edge case arises when you open sbx-tui from two different checkouts that
-share a jj repository. Cleanup lists workspaces across that repository, but
-each checkout keeps its own job and task records. For example, cleanup from
-one checkout can delete an otherwise eligible workspace while a host task
-started from the other checkout is still using it.
+TUI instances opened from the same checkout share job and task locks. The risk
+is opening sbx-tui from different checkouts of the same jj repository: cleanup
+sees every workspace, but each checkout has its own job and task records. One
+checkout could therefore remove a workspace while a host task from the other
+checkout is using it.
 
 Run launches and cleanup from the same checkout. If you use both, wait for
 work in the affected workspace to finish and hold off on new launches from
@@ -35,8 +36,8 @@ either checkout until cleanup completes.
 
 ## Merged work
 
-Clean workspaces without ignored files can be removed even before merging;
-their bookmarks stay.
+A clean workspace without ignored files can be removed before its work is
+merged; its bookmark remains.
 
 The [main bookmark](configuration.md#settings-reference) defines merged work:
 
