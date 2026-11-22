@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
 ### Added
 
 - `:reorganise [BOOKMARK]` (alias `:reorganize`) opens the unsupervised launch
@@ -44,7 +46,6 @@ All notable changes to this project are documented in this file.
   egress backend and the sidecar's allowed hosts, and each provider's
   availability; the setup wizard's prompt lists providers, supported levels and
   personas, and the bundled skills describe them.
-
 - The setup wizard uses the new `sbx-tui-safety` skill to discuss sandbox
   access for each task. Initialization and bookmark workspaces install it
   alongside `sbx-tui-config`.
@@ -60,12 +61,17 @@ All notable changes to this project are documented in this file.
 - `project-sandbox` (>=0.4.1, <0.5) is now a package dependency, installed
   alongside sbx-tui. `sandbox.command` still selects the launcher used for runs.
 - The log viewer wraps long lines (`w` toggles) and renders transcripts and
-  coding agents' stdout as Markdown (`m` shows the raw text).
+  coding agents' stdout as Markdown (`m` shows the raw text). Running coding
+  agents open on captured stdout; `v` switches to the agent event log, where
+  `j` / `k` select a record and `enter` opens it as formatted JSON.
+- `:update-models [SOURCE]` refreshes model suggestions from the TUI, from
+  models.dev, an HTTPS URL or a local file. `:doctor` appends the full
+  `sbx-tui doctor` report to its comparison diagnostics.
 - Commit review offers **Summarize commits** (`s`) to assess all pinned commits
   in one background sandbox run. Each commit shows a summary, complexity and
   potential harm with a reason. Results remain available for the TUI session;
-  `[commit_review] profile` selects a named profile instead of the built-in
-  Codex profile. See [diff review](docs/usage.md#diff-review).
+  `[commit_review] profile` selects a named profile instead of the
+  commit-reviewer persona. See [diff review](docs/usage.md#diff-review).
 - `:init` runs the same setup as `sbx-tui --init` inside the TUI, shows the
   results and reloads configuration.
 - Structured per-run agent feedback: atomic JSON progress/outcome reports, a
@@ -136,6 +142,9 @@ All notable changes to this project are documented in this file.
   launches always pass `--model` (including bash), and OpenCode models get the
   `agent-proxy/` prefix. Add `gateway = true` to profiles that used the gateway.
   See [agent gateway](docs/configuration.md#agent-gateway).
+- Unknown keys in the project config are ignored with a warning; sbx-tui lists
+  them and asks for confirmation before opening the TUI. Unknown global keys
+  and invalid values remain errors.
 - **Config validation:** agent names (`defaults`, profiles, actions, `[models]`)
   and `sandbox.runtime` are checked for form, not against a fixed list, so
   `copilot`, `colima` and `chroot` load. `sbx-tui doctor` reports unsupported
@@ -170,6 +179,12 @@ All notable changes to this project are documented in this file.
   launch defaults, host commands, or config and profile changes.
 - Durable state files also sync their directory after replacement, so a completed
   write survives a crash.
+- The TUI reads the live terminal size at startup and on resize, so exported
+  `COLUMNS` / `LINES` no longer override it, and repaints fully when a
+  multiplexer client reattaches.
+- Missing state directory ancestors such as `$XDG_STATE_HOME` are created
+  owner-only; project-sandbox refuses private storage under a group- or
+  world-writable ancestor.
 - `scripts/e2e-test.sh` honors quoted `--command` values and failing version
   probes, and the source distribution includes the smoke-test prerequisites.
 
@@ -303,7 +318,8 @@ Initial release.
   `sbx-tui config`, `sbx-tui doctor` and `--update-models`.
 - Project config is only loaded after review.
 
-[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.1...v0.1.2

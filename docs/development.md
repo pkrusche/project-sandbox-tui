@@ -66,7 +66,7 @@ security level 3 with the egress sidecar (`--agent-proxy` with
 and reads the user's `$XDG_CONFIG_HOME/project-sandbox/egress.toml` (never
 changing it); without that policy it is skipped with the reason.
 
-Install `project-sandbox` ≥ 0.2.2 and jj ≥ 0.46, then start Docker, Podman or
+Install `project-sandbox` ≥ 0.4.1 and jj ≥ 0.46, then start Docker, Podman or
 Apple Containers before running:
 
 ```sh
