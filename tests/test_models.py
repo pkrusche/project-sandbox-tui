@@ -110,6 +110,7 @@ def test_parse_catalog_filters_sorts_and_sanitises() -> None:
     ("payload", "message"),
     [
         (b"<html>", "not valid JSON"),
+        pytest.param(b"[" * 2000 + b"}", "not valid JSON", id="deeply-nested"),
         (b"[1, 2]", "not an object"),
         (raw({"google": {"models": {}}}), "no anthropic or openai"),
     ],
@@ -133,6 +134,7 @@ def test_catalog_age_boundary_and_standalone_dated_models() -> None:
                     "models": {
                         "at-cutoff": entry(cutoff.isoformat()),
                         "too-old": entry((cutoff - timedelta(days=1)).isoformat()),
+                        "upcoming": entry((TODAY + timedelta(days=1)).isoformat()),
                         "standalone-20260922": entry(),  # no undated alias: retain this snapshot
                         "bad-date": entry("2026-02-30"),
                         "not-a-boolean": entry(reasoning=1),
@@ -320,6 +322,7 @@ def test_failed_store_replace_keeps_previous_store_and_cleans_temp_file(
     "content",
     [
         "{broken",
+        pytest.param("[" * 2000 + "]" * 2000, id="deeply-nested"),
         json.dumps({"version": 99, "agents": {}}),
         json.dumps(["not", "an", "object"]),
     ],

@@ -168,11 +168,13 @@ def parse_catalog(
     """
     try:
         data = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise ModelsError(f"not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ModelsError("unexpected format: top level is not an object")
-    cutoff = ((today or _today()) - timedelta(days=max_age_days)).isoformat()
+    as_of = today or _today()
+    cutoff = (as_of - timedelta(days=max_age_days)).isoformat()
+    latest = as_of.isoformat()
     result: dict[str, list[ModelInfo]] = {}
     for agent, provider_key in PROVIDERS.items():
         provider = data.get(provider_key)
@@ -192,8 +194,7 @@ def parse_catalog(
                 or "text" not in _strings(modalities.get("input"))
                 or "text" not in _strings(modalities.get("output"))
                 or entry.get("status") == "deprecated"
-                or not released
-                or released < cutoff
+                or not cutoff <= released <= latest
             ):
                 continue
             cost, limit = _table(entry.get("cost")), _table(entry.get("limit"))
@@ -292,7 +293,7 @@ def load_store(path: Path | None = None) -> Store | None:
         if path.stat().st_size > MAX_CACHE_BYTES:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("version") != STORE_VERSION:
         return None
@@ -353,7 +354,7 @@ def codex_cache_models(home: Path | None = None) -> list[str]:
         if path.stat().st_size > MAX_CACHE_BYTES:
             return []
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return []
     entries = data.get("models") if isinstance(data, dict) else None
     ranked: list[tuple[float, str]] = []
