@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import tomllib
 from pathlib import Path
@@ -788,3 +789,15 @@ def test_persona_launch_keeps_custom_settings(tmp_path: Path) -> None:
     c.remember(tmp_path, "codex", "", "", None, profile="")
     last = c.LastUsed.load(tmp_path)
     assert last.selection is None and last.provider == "gateway-openai"  # provider kept
+
+
+def test_private_dir_creates_missing_ancestors_owner_only(tmp_path: Path) -> None:
+    # project-sandbox refuses lock storage under a group-writable $XDG_STATE_HOME.
+    target = tmp_path / "state" / "app" / "repo"
+    old = os.umask(0o002)
+    try:
+        c.private_dir(target)
+    finally:
+        os.umask(old)
+    for path in (tmp_path / "state", tmp_path / "state" / "app", target):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700, path

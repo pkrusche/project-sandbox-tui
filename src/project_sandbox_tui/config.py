@@ -1102,8 +1102,15 @@ def repo_state_dir(repo: Path) -> Path:
 
 def private_dir(path: Path) -> Path:
     """Create ``path`` for the owner only: state holds transcripts, prompts and job
-    argv. Also tightens a directory an earlier version created with the umask."""
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    argv. Also tightens a directory an earlier version created with the umask.
+
+    Missing ancestors (such as ``$XDG_STATE_HOME`` itself) are created 0700 as the
+    XDG spec asks; ``mkdir(parents=True)`` would apply the umask, and project-sandbox
+    refuses private storage under a group- or world-writable ancestor."""
+    for missing in reversed([p for p in path.parents if not p.exists()]):
+        with contextlib.suppress(FileExistsError):  # created concurrently
+            missing.mkdir(mode=0o700)
+    path.mkdir(exist_ok=True, mode=0o700)
     with contextlib.suppress(OSError):  # e.g. a directory someone else owns
         path.chmod(0o700)
     return path
