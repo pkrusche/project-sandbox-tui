@@ -1032,15 +1032,20 @@ def load(repo: Path, global_path: Path | None = None) -> Config:
     return _merge_workflow_files(cfg, repo)
 
 
-def _merge_workflow_files(cfg: Config, repo: Path) -> Config:
+def _merge_workflow_files(
+    cfg: Config, repo: Path, candidate_file: WorkflowTrust | None = None
+) -> Config:
     leader = cfg.leader
     cfg.leader = {}
     files, warnings = WorkflowTrust.scan(repo)
     cfg.warnings.extend(warnings)
+    if candidate_file is not None and all(f.path != candidate_file.path for f in files):
+        files.append(candidate_file)
     for file in files:
         name = file.path.stem
-        text = file.trusted
-        if file.needs_review:
+        candidate = candidate_file is not None and file.path == candidate_file.path
+        text = candidate_file.current if candidate and candidate_file else file.trusted
+        if file.needs_review and not candidate:
             cfg.warnings.append(file.describe())
         if text is None:
             continue
@@ -1096,6 +1101,25 @@ def load_candidate(trust: ProjectTrust, global_path: Path | None = None) -> Conf
     """Load the project config under review, to validate it before trusting it."""
     cfg = _load(global_path, trust.current, trust.path, defer_leader=True)
     return _merge_workflow_files(cfg, trust.path.parent)
+
+
+def load_workflow_candidate(
+    trust: WorkflowTrust, repo: Path, global_path: Path | None = None
+) -> Config:
+    project = ProjectTrust.check(repo)
+    text = project.trusted if project.current is not None else None
+    cfg = _load(
+        global_path,
+        text,
+        trusted_config_path(repo) if text is not None else None,
+        project_path=project.path,
+        defer_leader=True,
+    )
+    cfg = _merge_workflow_files(cfg, repo, trust)
+    for path, problem in cfg.workflow_problems:
+        if path == trust.path:
+            raise ConfigError(f"{path}: {problem}")
+    return cfg
 
 
 def _load(

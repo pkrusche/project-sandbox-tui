@@ -297,21 +297,31 @@ def _warn_untrusted(repo: Path | None) -> None:
 
 
 def _trust_config(repo: Path, global_path: Path | None) -> int:
-    trust = config_mod.ProjectTrust.check(repo)
-    if not trust.needs_review:
-        state = "trusted" if trust.current is not None else "not present"
-        print(f"{trust.path}: {state}")
-        return 0
-    cfg = config_mod.load_candidate(trust, global_path)
-    for warning in cfg.warnings:
+    project = config_mod.ProjectTrust.check(repo)
+    files, warnings = config_mod.WorkflowTrust.scan(repo)
+    for warning in warnings:
         _warn_config(warning)
-    print(trust.diff(), end="")
-    if not _confirm(f"Trust {trust.path}? It can run commands on this machine. [y/N] "):
-        print("not trusted")
-        return 1
-    trust.trust(repo)
-    print(f"trusted: {trust.path}")
-    return 0
+    pending = [item for item in [project, *files] if item.needs_review]
+    if not pending:
+        state = "trusted" if project.current is not None else "not present"
+        print(f"{project.path}: {state}")
+        return 0
+    declined = False
+    for trust in pending:
+        if isinstance(trust, config_mod.ProjectTrust):
+            cfg = config_mod.load_candidate(trust, global_path)
+        else:
+            cfg = config_mod.load_workflow_candidate(trust, repo, global_path)
+        for warning in cfg.warnings:
+            _warn_config(warning)
+        print(trust.diff(), end="")
+        if not _confirm(f"Trust {trust.path}? It can run commands on this machine. [y/N] "):
+            print("not trusted")
+            declined = True
+            continue
+        trust.trust(repo)
+        print(f"trusted: {trust.path}")
+    return 1 if declined else 0
 
 
 def _update_models(source: str, *, required: bool = True) -> int:

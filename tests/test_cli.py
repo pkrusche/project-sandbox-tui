@@ -392,3 +392,27 @@ def test_init_preserves_guidance_line_endings(repo: Path, monkeypatch: pytest.Mo
     agents.write_bytes(original)
     assert main([str(repo), "--init"]) == 0
     assert agents.read_bytes().startswith(original)
+
+
+def test_workflow_review_accept_decline_and_changed_during_review(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = config.workflow_dir(repo)
+    directory.mkdir(parents=True)
+    body = (
+        '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "old"\n'
+    )
+    first, second = directory / "a.toml", directory / "b.toml"
+    first.write_text(body)
+    second.write_text(body)
+    answers = iter(("y", "n"))
+
+    def answer(_prompt: str) -> str:
+        first.write_text(body.replace("old", "changed"))
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", answer)
+    assert main([str(repo), "--trust-config"]) == 1
+    files, _ = config.WorkflowTrust.scan(repo)
+    assert files[0].trusted == body and files[0].needs_review
+    assert files[1].trusted is None
