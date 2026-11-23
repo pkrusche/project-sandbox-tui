@@ -906,3 +906,25 @@ prompt = "inline"
     c.ProjectTrust.check(tmp_path).trust()
     with pytest.raises(c.ConfigError, match=r"workflows.spec.*spec.toml"):
         c.load(tmp_path)
+
+
+def test_leader_mapping_to_workflow_file(tmp_path: Path) -> None:
+    write(tmp_path / c.PROJECT_CONFIG_NAME, '[leader]\nt = "*spec/test"\n')
+    c.ProjectTrust.check(tmp_path).trust()
+    cfg = c.load(tmp_path)
+    assert not cfg.leader and "unavailable workflow" in cfg.warnings[0]
+    write(
+        c.workflow_dir(tmp_path) / "spec.toml",
+        """
+[workflow]
+planning_action = "plan"
+steps = ["host:test"]
+[actions.plan]
+prompt = "plan"
+[commands]
+test = "true"
+""",
+    )
+    c.WorkflowTrust.scan(tmp_path)[0][0].trust()
+    cfg = c.load(tmp_path)
+    assert cfg.leader == {"t": "*spec/test"}

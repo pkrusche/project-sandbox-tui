@@ -1077,7 +1077,17 @@ def _merge_workflow_files(cfg: Config, repo: Path) -> Config:
         cfg = candidate
         cfg.warnings.extend(file_warnings)
         cfg.sources.append(file.trusted_path)
-    cfg.leader = leader
+    for keys, line in leader.items():
+        target = line.strip().lstrip(":*&").split(maxsplit=1)[0] if line.strip() else ""
+        if "/" in target and target not in cfg.commands and target not in cfg.actions:
+            namespace = target.split("/", 1)[0]
+            if namespace not in cfg.workflows:
+                cfg.warnings.append(
+                    f"[leader] {keys!r} refers to {target!r} from "
+                    f"unavailable workflow {namespace!r}"
+                )
+                continue
+        cfg.leader[keys] = line
     cfg.validate()
     return cfg
 
