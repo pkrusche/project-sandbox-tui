@@ -868,11 +868,15 @@ def from_dict(data: dict[str, Any]) -> Config:
         table = data.get(name, {})
         if not isinstance(table, dict):
             raise ConfigError(f"[{name}] {TABLES[name]}")
+        if name == "commands" and any("/" in k for k in table):
+            raise ConfigError("[commands] names cannot contain /")
         getattr(cfg, name).update({k: _coerce(name, k, v, "") for k, v in table.items()})
     actions = data.get("actions", {})
     if not isinstance(actions, dict):
         raise ConfigError(f"[actions] {TABLES['actions']}")
     for name, table in actions.items():
+        if "/" in name:
+            raise ConfigError(f"[actions] invalid name {name!r}")
         cfg.actions[name] = _build_action(name, table)
     security = data.get("security")
     if isinstance(security, dict) and security.get("level") == 0:

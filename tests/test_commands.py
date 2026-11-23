@@ -291,3 +291,12 @@ def test_complete_after_prefix(tmp_path: Path, prefix: str) -> None:
     assert cmd.complete(f"{prefix}test no", ["test"], tmp_path) == (6, ["notes.txt"])
     start, words = cmd.complete(f"{prefix}!ech", [], tmp_path, path=str(tmp_path))
     assert start == 2 and words == []
+
+
+def test_namespaced_commands_and_actions() -> None:
+    configured = {"spec/test": "pytest"}
+    assert cmd.parse(":spec/check", configured, {"spec/check"}).action == "spec/check"
+    background = cmd.parse(":&spec/test -k x", configured)
+    assert background.background and background.script == "pytest -k x"
+    each = cmd.parse(":*spec/test", configured)
+    assert each.each and each.name == "spec/test"

@@ -131,7 +131,7 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
 
 def check_name(table: str, name: str) -> None:
     """Raise :class:`CommandError` unless ``name`` can be typed after ``:``."""
-    if not NAME.fullmatch(name):
+    if not all(NAME.fullmatch(part) for part in name.split("/")) or name.count("/") > 1:
         raise CommandError(
             f"[{table}] name {name!r} must start with a letter and contain only "
             "letters, digits, _ and -"

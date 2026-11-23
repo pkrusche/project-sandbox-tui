@@ -413,7 +413,7 @@ def test_default_command_warns_before_running(
 
 def test_command_line_completion_and_history(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     cfg = fake_cfg()
-    cfg.commands = {"test": "true", "tidy": "true"}
+    cfg.commands = {"test": "true", "tidy": "true", "spec/test": "true"}
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         app.command_history.add("tidy now")
@@ -439,6 +439,11 @@ def test_command_line_completion_and_history(repo: Path, fake_cfg: Callable[...,
         await pilot.press("ctrl+u")  # Input: delete to the start
         await pilot.press("r", "e", "l", "tab")
         assert box.value == "reload"  # one match: completed at once
+
+        box.value = "spec/"
+        await pilot.pause()
+        await pilot.press("tab")
+        assert box.value == "spec/test"
 
         box.value = "t"
         await pilot.pause()
