@@ -546,3 +546,30 @@ def test_default_provider_allows_configured_in_sandbox_login(home: Path) -> None
     assert "catalogue.default_provider" not in by_name(
         doctor.check_security(cfg, caps(), home=home)
     )
+
+
+def test_workflow_file_trust_and_local_persona(tmp_path: Path) -> None:
+    from project_sandbox_tui import config
+    from project_sandbox_tui.doctor import check_config
+
+    path = config.workflow_dir(tmp_path) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text("""
+[workflow]
+planning_action = "plan"
+steps = ["plan"]
+[actions.plan]
+prompt = "hi"
+persona = "house-style"
+""")
+    cfg = config.load(tmp_path)
+    assert any("not trusted" in check.detail for check in check_config(cfg, tmp_path))
+    project = tmp_path / config.PROJECT_CONFIG_NAME
+    project.write_text('[personas.house-style]\ntier = "high"\n')
+    config.ProjectTrust.check(tmp_path).trust()
+    config.WorkflowTrust.scan(tmp_path)[0][0].trust()
+    cfg = config.load(tmp_path)
+    assert any(
+        "locally configured persona house-style" in check.detail
+        for check in check_config(cfg, tmp_path)
+    )

@@ -30,6 +30,7 @@ from project_sandbox_tui.config import (
     Config,
     ConfigError,
     ProjectTrust,
+    WorkflowTrust,
     _load,
     load,
 )
@@ -221,6 +222,25 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
             if trust.needs_review:
                 checks.append(
                     Check("project config", "warn", trust.describe(), "sbx-tui --trust-config")
+                )
+        files, scan_warnings = WorkflowTrust.scan(repo)
+        checks.extend(Check("workflow file", "warn", warning) for warning in scan_warnings)
+        for file in files:
+            status = "warn" if file.needs_review else "ok"
+            detail = file.describe() if file.needs_review else f"{file.path} is trusted"
+            checks.append(Check("workflow file", status, detail))
+        for path, problem in cfg.workflow_problems:
+            checks.append(Check("workflow file", "warn", f"{path}: {problem}"))
+        for name, action in cfg.actions.items():
+            if "/" in name and action.persona and action.persona not in catalogue.BUILTIN_PERSONAS:
+                workflow = name.split("/", 1)[0]
+                checks.append(
+                    Check(
+                        "workflow file",
+                        "warn",
+                        f"workflow {workflow} depends on locally configured "
+                        f"persona {action.persona}",
+                    )
                 )
         if not cfg.has_image_source():
             checks.append(
