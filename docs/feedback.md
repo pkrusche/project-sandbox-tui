@@ -231,7 +231,7 @@ prompt = "Finish documentation and cleanup for the spec at previous_state.spec_p
 persona = "chore-runner"
 ```
 
-The project includes fuller prompts for these four actions.
+The project includes fuller prompts for these four actions. Import a shared file with `sbx-tui workflow import SOURCE [--name NAME]`.
 [Example project configuration](https://github.com/pkrusche/project-sandbox-tui/blob/main/.project-sandbox-tui.toml)
 
 To use the workflow, select an idle feature bookmark and type

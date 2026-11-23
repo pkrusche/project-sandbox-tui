@@ -774,3 +774,8 @@ sharing; use inline `[workflows.NAME]` for project-specific dependencies.
 Each file is reviewed separately with `sbx-tui --trust-config` or at TUI
 startup. A new file is ignored until trusted, and a changed file keeps its
 previously trusted contents until reviewed. Deleting it removes the workflow.
+To copy a file into the current project, run
+`sbx-tui workflow import SOURCE [--name NAME]`, where SOURCE is an HTTPS URL or
+local path. Import validates and previews the file and its provenance before
+confirmation; re-import to update it. `sbx-tui workflow import --help` lists the
+options. Doctor reports trust and whether an imported file has been edited.
