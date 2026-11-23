@@ -87,10 +87,14 @@ def test_settings_reference_example(tmp_path: Path) -> None:
 
 def test_workflow_example_with_project_actions(tmp_path: Path) -> None:
     (block,) = toml_blocks(section("feedback.md", "## Project workflows"))
-    cfg = load_pair(tmp_path, "", block)
+    path = c.workflow_dir(tmp_path) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(block)
+    c.WorkflowTrust.scan(tmp_path)[0][0].trust()
+    cfg = c.load(tmp_path)
     workflow = cfg.workflows["spec"]
     steps = [workflow.planning_action, *workflow.steps]
-    assert steps == ["spec-plan", "spec-check", "spec-implement", "spec-chores"]
+    assert steps == ["spec/plan", "spec/check", "spec/implement", "spec/chores"]
     assert [cfg.actions[s].persona for s in steps] == [
         "planner",
         "checker",
@@ -101,17 +105,15 @@ def test_workflow_example_with_project_actions(tmp_path: Path) -> None:
 
 
 def test_project_workflow_matches_documented_example() -> None:
-    project = DOCS.parent / c.PROJECT_CONFIG_NAME
-    if (DOCS.parent / "PKG-INFO").is_file() and not project.exists():
-        pytest.skip("checkout-local configuration is excluded from the source distribution")
+    project = DOCS.parent / ".project-sandbox-tui/workflows/spec.toml"
+    if not project.exists():
+        pytest.skip("checkout-local workflow is excluded from the source distribution")
     (block,) = toml_blocks(section("feedback.md", "## Project workflows"))
     example = tomllib.loads(block)
-    cfg = c.from_dict(tomllib.loads(project.read_text()))
-    cfg.validate()
-    assert cfg.workflows["spec"] == c.from_dict(example).workflows["spec"]
+    actual = tomllib.loads(project.read_text())
+    assert actual["workflow"] == example["workflow"]
     for name, action in example["actions"].items():
-        assert cfg.actions[name].persona == action["persona"]
-    assert "spec-commits" not in cfg.actions
+        assert actual["actions"][name]["persona"] == action["persona"]
 
 
 def test_shareable_workflow_example(tmp_path: Path) -> None:

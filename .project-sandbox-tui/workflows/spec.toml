@@ -1,0 +1,52 @@
+[workflow]
+planning_action = "plan"
+first_step_interactive = true
+steps = ["check", "implement", "chores"]
+pass_state_keys = ["spec_path"]
+
+[actions.plan]
+prompt = '''
+Write a Markdown plan or an OpenSpec change on {bookmark}. Record the scope,
+acceptance criteria, verification, and a checklist of tasks. Save it in the
+checkout. Reuse any existing draft for this topic and incorporate decisions
+already recorded there. In an interactive session, work with the user and get
+their approval.
+In a background run, draft from the supplied topic and the repository, and
+report blocked with the decisions needed if essential information is missing.
+Report success with state.spec_path set to the workspace-relative Markdown file
+or OpenSpec change directory. Leave implementation for the next step.
+'''
+persona = "planner"
+
+[actions.check]
+prompt = '''
+Read previous_state.spec_path from the run feedback context. Check that the spec
+is present and that its scope, tasks, acceptance criteria, and verification give
+the implementer enough information to start. Report blocked with the exact
+questions or decisions that remain if the spec is incomplete. Report success if
+the spec is ready. Leave the spec and source as you found them.
+'''
+persona = "checker"
+
+[actions.implement]
+prompt = '''
+Read the spec at previous_state.spec_path in the run feedback context and follow
+AGENTS.md. Work through the checklist, marking tasks as you finish them. Resume
+from any work already on the bookmark. When a decision is needed, record the
+completed work and report blocked with the question that needs an answer. Report
+success once all implementation tasks and their targeted checks are complete.
+'''
+persona = "implementer"
+
+[actions.chores]
+prompt = '''
+Read the spec at previous_state.spec_path in the run feedback context. Finish
+related formatting, documentation, and cleanup. Follow AGENTS.md and
+docs/development.md for the development checks, including scripts/test.sh.
+Record the checks actually run and their results in the feedback report. Fix
+in-scope failures, and report blocked if a prerequisite or decision is needed.
+Report success once the required checks pass.
+'''
+persona = "chore-runner"
+timeout = 3600
+

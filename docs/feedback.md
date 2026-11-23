@@ -199,39 +199,38 @@ upstream mount format cannot represent them.
 ## Project workflows
 
 Use named workflows to run agent actions, human reviews, and host commands on
-one bookmark. Add a workflow to your trusted project config
-(`.project-sandbox-tui.toml`) and define each referenced agent action in `[actions.NAME]`.
-Actions supply the prompts, an optional timeout and level, and a `persona`, a
-`profile` or their own agent, model, and effort; see
+one bookmark. Add a shareable workflow to `.project-sandbox-tui/workflows/spec.toml` and define each referenced agent action in `[actions.NAME]`.
+Actions supply the prompts, an optional timeout and level, and a `persona`;
+inline actions can instead select a profile or agent settings; see
 [agent actions](configuration.md#agent-actions). With personas a workflow is
 provider-independent: the picker chooses the provider per step.
 Workflow commands support inline and external terminals.
 
 ```toml
-[workflows.spec]
-planning_action = "spec-plan"
+[workflow]
+planning_action = "plan"
 first_step_interactive = true
-steps = ["spec-check", "spec-implement", "spec-chores"]
+steps = ["check", "implement", "chores"]
 pass_state_keys = ["spec_path"]
 
-[actions.spec-plan]
+[actions.plan]
 prompt = "Write the agreed plan in the checkout and report its relative path in state.spec_path."
 persona = "planner"
 
-[actions.spec-check]
+[actions.check]
 prompt = "Check the spec at previous_state.spec_path and report whether it is ready to implement."
 persona = "checker"
 
-[actions.spec-implement]
+[actions.implement]
 prompt = "Implement the spec at previous_state.spec_path and run its verification steps."
 persona = "implementer"
 
-[actions.spec-chores]
+[actions.chores]
 prompt = "Finish documentation and cleanup for the spec at previous_state.spec_path. Run the project checks."
 persona = "chore-runner"
 ```
 
-The project includes fuller prompts for these four actions. Import a shared file with `sbx-tui workflow import SOURCE [--name NAME]`.
+The project includes fuller prompts in its workflow file. Trust it with `sbx-tui --trust-config`; its actions are available as `spec/plan`, `spec/check`, `spec/implement` and `spec/chores`. Import a shared file with `sbx-tui workflow import SOURCE [--name NAME]`.
 [Example project configuration](https://github.com/pkrusche/project-sandbox-tui/blob/main/.project-sandbox-tui.toml)
 
 To use the workflow, select an idle feature bookmark and type
@@ -261,8 +260,8 @@ launch forms would select (a remembered persona selection, the remembered
 profile, or the first configured one).
 
 A persona step also has a **provider** field, starting at the remembered or
-default provider. Setting `spec-implement` (persona implementer) and
-`spec-check` (persona checker) to Gateway/Gemini runs both with
+default provider. Setting `spec/implement` (persona implementer) and
+`spec/check` (persona checker) to Gateway/Gemini runs both with
 `gemini-4-argon` through the gateway at level 2. A provider without the
 persona's tier, such as Copilot/Anthropic for the frontier debugger, is shown
 with the reason and `enter` is refused until the step changes. When a
@@ -329,7 +328,7 @@ at workflow start is marked as reviewed. Existing marks count for matching
 commit and file changes.
 
 A `host:NAME` step runs the named `[commands]` entry. For example, to run tests
-after implementation, set `steps = ["spec-implement", "host:test"]` and define
+after implementation, set `steps = ["implement", "host:test"]` and define
 `test = "scripts/test.sh"` under `[commands]`. Config loading verifies command
 names and inserts a `human-review` stage wherever a host command needs one.
 The workflow checks marks while the bookmark is idle and starts the host command
