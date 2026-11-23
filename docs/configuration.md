@@ -741,3 +741,32 @@ Use `[workflows.NAME]` to run `[actions.NAME]` prompts, `human-review` stages,
 and `host:NAME` commands on the same bookmark. Set `first_step_interactive = false`
 to queue the planning action. See [project workflows](feedback.md#project-workflows)
 for the configuration and task controls.
+
+## Shareable workflow files
+
+Put one workflow in `.project-sandbox-tui/workflows/NAME.toml`, using a
+`[workflow]` table, `[actions.SHORT]` tables and an optional `[commands]`
+table. The filename supplies the workflow name. References inside the file use
+short names; outside it, actions and commands are `NAME/SHORT`. For example:
+
+```toml
+[workflow]
+planning_action = "plan"
+steps = ["host:test"]
+
+[actions.plan]
+prompt = "Plan the change."
+persona = "planner"
+
+[commands]
+test = '''
+echo preparing
+scripts/test.sh
+'''
+```
+
+Workflow-file actions select agents using `persona`, or use the launch-form
+selection. They cannot set `profile`, `agent`, `model`, or `effort`. Commands
+are shell scripts; extra words typed after a command are appended to the script
+and therefore land on its last line. Keep paths and prompts portable when
+sharing; use inline `[workflows.NAME]` for project-specific dependencies.

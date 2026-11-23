@@ -112,3 +112,14 @@ def test_project_workflow_matches_documented_example() -> None:
     for name, action in example["actions"].items():
         assert cfg.actions[name].persona == action["persona"]
     assert "spec-commits" not in cfg.actions
+
+
+def test_shareable_workflow_example(tmp_path: Path) -> None:
+    (block,) = toml_blocks(section("configuration.md", "## Shareable workflow files"))
+    path = c.workflow_dir(tmp_path) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(block)
+    c.WorkflowTrust.scan(tmp_path)[0][0].trust()
+    cfg = c.load(tmp_path)
+    assert cfg.workflows["spec"].steps == ["human-review", "host:spec/test"]
+    assert "scripts/test.sh" in cfg.commands["spec/test"]
