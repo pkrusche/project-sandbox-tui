@@ -3,19 +3,29 @@
 from __future__ import annotations
 
 import dataclasses
+import difflib
+import hashlib
 import json
+import os
 import shlex
 import sys
+import urllib.parse
+import uuid
 from argparse import ArgumentParser, Namespace
+from datetime import UTC, datetime
 from pathlib import Path
 
-from project_sandbox_tui import __version__, initialization
+from project_sandbox_tui import __version__, commands, initialization
 from project_sandbox_tui import config as config_mod
 from project_sandbox_tui import models as models_mod
 from project_sandbox_tui.config import ConfigError
 from project_sandbox_tui.vcs import JjBackend, VcsError, detect, sort_branches
 
-SUBCOMMANDS = ("config", "doctor")  # a repository with one of these names: sbx-tui ./config
+SUBCOMMANDS = (
+    "config",
+    "doctor",
+    "workflow",
+)  # a repository with one of these names: sbx-tui ./config
 
 
 def build_parser() -> ArgumentParser:
@@ -127,6 +137,13 @@ def build_subcommand_parser() -> ArgumentParser:
         description="Check dependencies, runtime, configuration and comparisons to main. "
         "Failed checks exit 1; warnings alone exit 0.",
     )
+    workflow = sub.add_parser("workflow", help="manage shareable workflows")
+    workflow_actions = workflow.add_subparsers(dest="action", required=True)
+    import_ = workflow_actions.add_parser(
+        "import", parents=[common], help="import and review an HTTPS or local workflow file"
+    )
+    import_.add_argument("source", help="HTTPS URL or local workflow file")
+    import_.add_argument("--name", help="workflow name (default: source filename stem)")
     return p
 
 
@@ -223,10 +240,124 @@ def _subcommand(args: Namespace) -> int:
     except VcsError:
         repo = None  # global settings work outside a repository
     try:
+        if args.command == "workflow":
+            if repo is None:
+                raise ConfigError("workflow import requires a repository")
+            return _import_workflow(args, repo)
         return _config(args, repo)
     except ConfigError as exc:
         print(f"sbx-tui: {exc}", file=sys.stderr)
         return 2
+
+
+def _import_workflow(args: Namespace, repo: Path) -> int:
+    import tomlkit
+
+    source = args.source
+    parsed = urllib.parse.urlsplit(source)
+    if parsed.scheme and parsed.scheme != "https":
+        raise ConfigError("workflow import accepts only https:// URLs and local files")
+    fetch_source = source
+    if parsed.scheme == "https" and parsed.netloc.lower() == "github.com":
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) >= 5 and parts[2] == "blob":
+            fetch_source = "https://raw.githubusercontent.com/" + "/".join(parts[:2] + parts[3:])
+    try:
+        data = models_mod.fetch(fetch_source).decode("utf-8")
+        doc = tomlkit.parse(data)
+    except (models_mod.FetchError, UnicodeError, ValueError) as exc:
+        raise ConfigError(f"workflow import: {exc}") from exc
+    doc.pop("source", None)
+    body = tomlkit.dumps(doc)
+    name = args.name or Path(parsed.path if parsed.scheme else source).stem
+    directory = config_mod.workflow_dir(repo)
+    if not commands.NAME.fullmatch(name):
+        raise ConfigError(f"invalid workflow name {name!r}")
+    # Validate before displaying conflict prompts, including when the requested name
+    # is already occupied by an inline workflow.
+    cfg = config_mod.load(repo, args.config)
+    validation_name = name
+    if name in cfg.workflows and not (directory / f"{name}.toml").exists():
+        validation_name = "import_candidate"
+        while validation_name in cfg.workflows:
+            validation_name += "_"
+    config_mod.validate_workflow_text(repo, validation_name, body, args.config)
+    while True:
+        if not commands.NAME.fullmatch(name):
+            raise ConfigError(f"invalid workflow name {name!r}")
+        cfg = config_mod.load(repo, args.config)
+        target = directory / f"{name}.toml"
+        inline = name in cfg.workflows and not target.exists()
+        if not inline and not target.exists() and not target.is_symlink():
+            break
+        if not sys.stdin.isatty():
+            raise ConfigError(f"workflow {name!r} already exists")
+        try:
+            if inline:
+                print(f"workflow {name!r} is defined inline; choose another name")
+                name = input("New name (empty cancels): ").strip()
+            else:
+                choice = (
+                    input(f"{target} exists: overwrite, rename or cancel? [o/r/N] ").strip().lower()
+                )
+                if choice in ("o", "overwrite"):
+                    break
+                if choice not in ("r", "rename"):
+                    return 1
+                name = input("New name (empty cancels): ").strip()
+        except EOFError:
+            return 1
+        if not name:
+            return 1
+    config_mod.validate_workflow_text(repo, name, body, args.config)
+    source_table = tomlkit.table()
+    if parsed.scheme:
+        source_table.add("url", source)
+    else:
+        source_table.add("path", str(Path(source).expanduser().resolve()))
+    source_table.add("imported_at", datetime.now(UTC).isoformat())
+    source_table.add("sha256", hashlib.sha256(body.encode()).hexdigest())
+    provenance = tomlkit.document()
+    provenance.add("source", source_table)
+    final = body + ("" if body.endswith("\n") else "\n") + tomlkit.dumps(provenance)
+    if target.is_symlink():
+        raise ConfigError(f"{target}: refusing symlink")
+    before = target.read_text(encoding="utf-8") if target.exists() else None
+    if before is None:
+        print(final, end="" if final.endswith("\n") else "\n")
+    else:
+        print(
+            "".join(
+                difflib.unified_diff(
+                    before.splitlines(keepends=True),
+                    final.splitlines(keepends=True),
+                    fromfile=str(target),
+                    tofile="import",
+                )
+            ),
+            end="",
+        )
+    if not _confirm(f"Import and trust {target}? It can run commands on this machine. [y/N] "):
+        return 1
+    if directory.is_symlink() or directory.parent.is_symlink() or target.is_symlink():
+        raise ConfigError(f"{target}: refusing symlink")
+    directory.mkdir(parents=True, exist_ok=True)
+    trusted_path = config_mod.repo_state_dir(repo) / "trusted-workflows" / target.name
+    with config_mod.config_lock():
+        if target.is_symlink() or directory.is_symlink() or directory.parent.is_symlink():
+            raise ConfigError(f"{target}: refusing symlink")
+        current = target.read_text(encoding="utf-8") if target.exists() else None
+        if current != before:
+            raise ConfigError(f"{target}: file changed during review")
+        tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(final, encoding="utf-8")
+            os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
+        config_mod._write_trusted_file(trusted_path, final)
+    print(f"imported and trusted: {target}")
+    return 0
 
 
 def _config(args: Namespace, repo: Path | None) -> int:

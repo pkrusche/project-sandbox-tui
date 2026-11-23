@@ -416,3 +416,102 @@ def test_workflow_review_accept_decline_and_changed_during_review(
     files, _ = config.WorkflowTrust.scan(repo)
     assert files[0].trusted == body and files[0].needs_review
     assert files[1].trusted is None
+
+
+def test_import_workflow_review_and_trust(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "external.toml"
+    source.write_text(
+        '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "hi"\n'
+    )
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert main(["workflow", "import", str(source), "--name", "spec", "-R", str(repo)]) == 0
+    output = capsys.readouterr().out
+    target = config.workflow_dir(repo) / "spec.toml"
+    text = target.read_text()
+    assert "[source]" in output and text in output
+    assert config.WorkflowTrust.scan(repo)[0][0].trusted == text
+    assert "spec/plan" in config.load(repo).actions
+
+
+def test_import_declined_and_invalid(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.toml"
+    source.write_text(
+        '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "hi"\n'
+    )
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 1
+    assert not config.workflow_dir(repo).exists()
+    source.write_text(source.read_text() + 'profile = "deep"\n')
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 2
+
+
+def test_import_github_rewrite_and_http_refused(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from project_sandbox_tui import models
+
+    seen = []
+
+    def fetch(source: str) -> bytes:
+        seen.append(source)
+        return (
+            b'[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n'
+            b'[actions.plan]\nprompt = "hi"\n'
+        )
+
+    monkeypatch.setattr(models, "fetch", fetch)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    url = "https://github.com/org/repo/blob/main/spec.toml"
+    assert main(["workflow", "import", url, "-R", str(repo)]) == 1
+    assert seen == ["https://raw.githubusercontent.com/org/repo/main/spec.toml"]
+    monkeypatch.undo()
+    assert main(["workflow", "import", "http://example.com/spec.toml", "-R", str(repo)]) == 2
+    assert "https://" in capsys.readouterr().err
+
+
+def test_import_overwrite_and_inline_conflict(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+
+    source = tmp_path / "spec.toml"
+    body = (
+        '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "first"\n'
+    )
+    source.write_text(body)
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 0
+    capsys.readouterr()
+    source.write_text(body.replace("first", "second"))
+
+    class Interactive(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("sys.stdin", Interactive())
+    answers = iter(("o", "y"))
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert '-prompt = "first"' in out and '+prompt = "second"' in out
+    file = config.WorkflowTrust.scan(repo)[0][0]
+    assert file.current is not None and file.current == file.trusted
+    assert "second" in file.current
+
+    (repo / config.PROJECT_CONFIG_NAME).write_text("""
+[workflows.inline]
+planning_action = "plan"
+steps = ["plan"]
+[actions.plan]
+prompt = "hello"
+""")
+    config.ProjectTrust.check(repo).trust()
+    answers = iter(("renamed", "y"))
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    assert main(["workflow", "import", str(source), "--name", "inline", "-R", str(repo)]) == 0
+    assert (config.workflow_dir(repo) / "renamed.toml").exists()
+    assert "defined inline" in capsys.readouterr().out

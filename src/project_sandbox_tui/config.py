@@ -1122,6 +1122,14 @@ def load_workflow_candidate(
     return cfg
 
 
+def validate_workflow_text(
+    repo: Path, name: str, text: str, global_path: Path | None = None
+) -> Config:
+    path = workflow_dir(repo) / f"{name}.toml"
+    trust = WorkflowTrust(path, repo_state_dir(repo) / "trusted-workflows" / path.name, text, None)
+    return load_workflow_candidate(trust, repo, global_path)
+
+
 def _load(
     global_path: Path | None,
     project_text: str | None,
