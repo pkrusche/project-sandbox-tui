@@ -37,6 +37,18 @@ without claiming the test passed. Do not modify source files.
 persona = "checker"
 timeout = 3600
 
+[workflows.pre-release]
+planning_action = "release-docs"
+first_step_interactive = false
+steps = ["check", "human-review", "host:smoke"]
+
+[actions.release-docs]
+prompt = """
+Review README, docs/ and CHANGELOG.md against changes since the last release tag.
+Report documentation gaps and do not modify files.
+"""
+persona = "reviewer"
+
 [commands]
 test = "scripts/test.sh"
 smoke = "scripts/e2e-test.sh"
