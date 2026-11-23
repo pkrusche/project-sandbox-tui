@@ -69,16 +69,17 @@ from project_sandbox_tui.config import (
     Selection,
     StepChoice,
     Workflow,
+    WorkflowTrust,
     command_warning,
     initial_choice,
     load,
     load_candidate,
+    load_workflow_candidate,
     project_level,
     remember,
     remembered_provider,
     resolve_launch_defaults,
     resolve_selection,
-    trusted_config_path,
 )
 from project_sandbox_tui.history import PromptHistory
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, _parse_ts
@@ -650,6 +651,7 @@ class SandboxTUI(App[None]):
         self.watch(table, "virtual_size", self._clamp_table_scroll, init=False)
         await self.refresh_data()
         self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
+        self._notify_config_warnings()
         self._review_project_config()
         self._refresh_capabilities()
 
@@ -3066,36 +3068,61 @@ class SandboxTUI(App[None]):
 
         Returns whether a review was opened.
         """
-        try:
-            trust = ProjectTrust.check(self.repo)
-            if not trust.needs_review:
-                return False
-            candidate = load_candidate(trust, self.config_path)
-        except ConfigError as exc:
-            self.notify(f"Project config not trusted: {exc}", severity="error")
+        project = ProjectTrust.check(self.repo)
+        files, warnings = WorkflowTrust.scan(self.repo)
+        for warning in warnings:
+            self.notify(warning, severity="warning", timeout=10)
+        pending = [item for item in [project, *files] if item.needs_review]
+        if not pending:
             return False
 
-        def decided(trusted: bool | None) -> None:
-            if not trusted:
-                self.notify(trust.describe(), severity="warning", timeout=10)
-            else:
-                try:
-                    trust.trust(self.repo)
-                except ConfigError as exc:
-                    self.notify(str(exc), severity="error")
-            self.call_later(self._reload_config)
+        def review_next() -> None:
+            if not pending:
+                self.call_later(self._reload_config)
+                return
+            trust = pending.pop(0)
+            try:
+                if isinstance(trust, ProjectTrust):
+                    candidate = load_candidate(trust, self.config_path)
+                else:
+                    candidate = load_workflow_candidate(trust, self.repo, self.config_path)
+            except ConfigError as exc:
+                label = "Project config" if isinstance(trust, ProjectTrust) else str(trust.path)
+                self.notify(f"{label} not trusted: {exc}", severity="error")
+                review_next()
+                return
 
-        body = (
-            "This file comes with the repository. It can set commands that run on this "
-            "machine (sandbox.command, ui.*_command, [commands]) and loosen the sandbox (network, "
-            f"credentials, extra_args). Trusting it copies it to {trusted_config_path(self.repo)}; "
-            "later changes are shown here again before they take effect."
-        )
-        if candidate.warnings:
-            body += "\n\n" + "\n".join(f"Warning: {warning}" for warning in candidate.warnings)
-        body += "\n\n" + trust.diff()
-        title = "trust the project config?" if trust.trusted is None else "project config changed"
-        self.push_screen(ConfirmScreen(title, body, "trust"), decided)
+            def decided(trusted: bool | None) -> None:
+                if not trusted:
+                    self.notify(trust.describe(), severity="warning", timeout=10)
+                else:
+                    try:
+                        trust.trust(self.repo)
+                    except ConfigError as exc:
+                        self.notify(str(exc), severity="error")
+                review_next()
+
+            body = (
+                "This file comes with the repository. It can set commands that run on this "
+                "machine (sandbox.command, ui.*_command, [commands]) and loosen the sandbox "
+                "(network, credentials, extra_args). "
+                f"Trusting it copies it to {trust.trusted_path}; "
+                "later changes are shown here again before they take effect."
+            )
+            if candidate.warnings:
+                body += "\n\n" + "\n".join(f"Warning: {warning}" for warning in candidate.warnings)
+            body += "\n\n" + trust.diff()
+            if isinstance(trust, ProjectTrust):
+                title = (
+                    "trust the project config?"
+                    if trust.trusted is None
+                    else "project config changed"
+                )
+            else:
+                title = f"trust workflow {trust.path.stem}?"
+            self.push_screen(ConfirmScreen(title, body, "trust"), decided)
+
+        review_next()
         return True
 
     async def action_reload_config(self) -> None:
@@ -3126,6 +3153,8 @@ class SandboxTUI(App[None]):
     def _notify_config_warnings(self) -> None:
         for warning in self.cfg.warnings:
             self.notify(warning, severity="warning", timeout=10)
+        for path, problem in self.cfg.workflow_problems:
+            self.notify(f"{path}: {problem}", severity="error", timeout=10)
 
     def action_toggle_cheatsheet(self) -> None:
         self.show_cheatsheet(not self.cheatsheet_visible)

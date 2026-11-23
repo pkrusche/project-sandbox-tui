@@ -3641,3 +3641,29 @@ def test_commit_summary_dry_run(
         assert not list(tmp_path.glob("sbx-review-*"))
 
     run_app(repo, cfg, scenario)
+
+
+def test_workflow_files_reviewed_independently(repo: Path) -> None:
+    from project_sandbox_tui.config import WorkflowTrust, load, workflow_dir
+
+    directory = workflow_dir(repo)
+    directory.mkdir(parents=True)
+    body = '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "hi"\n'
+    (directory / "a.toml").write_text(body)
+    (directory / "b.toml").write_text(body)
+    app = SandboxTUI(repo, detect(repo), load(repo))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("y")
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("n")
+            await pilot.pause()
+            files, _ = WorkflowTrust.scan(repo)
+            assert files[0].trusted == body and files[1].trusted is None
+            assert "a" in app.cfg.workflows and "b" not in app.cfg.workflows
+
+    asyncio.run(scenario())

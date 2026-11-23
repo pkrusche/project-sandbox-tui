@@ -165,7 +165,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.trust_config:
             return _trust_config(repo, args.config)
-        trust = config_mod.ProjectTrust.check(repo)
         cfg = config_mod.load(repo, args.config)
     except ConfigError as exc:
         print(f"sbx-tui: config error: {exc}", file=sys.stderr)
@@ -174,8 +173,10 @@ def main(argv: list[str] | None = None) -> int:
     if headless:
         for warning in cfg.warnings:
             _warn_config(warning)
-    if trust.needs_review and headless:  # the TUI asks for a review itself
-        print(f"sbx-tui: {trust.describe()} (review: sbx-tui --trust-config)", file=sys.stderr)
+    if headless:  # the TUI asks for a review itself
+        _warn_untrusted(repo)
+        for path, problem in cfg.workflow_problems:
+            _warn_config(f"{path}: {problem}")
     if args.dry_run:
         cfg.sandbox.extra_args.append("--dry-run")
 
@@ -193,8 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_config:
         return _print_config(repo, backend, cfg)
 
-    if cfg.warnings:
-        for warning in cfg.warnings:
+    files, _ = config_mod.WorkflowTrust.scan(repo)
+    review_warnings = {file.describe() for file in files if file.needs_review}
+    other_warnings = [warning for warning in cfg.warnings if warning not in review_warnings]
+    if other_warnings:
+        for warning in other_warnings:
             _warn_config(warning)
         if not _confirm("Start sbx-tui with these items ignored? [y/N] "):
             return 1
@@ -292,8 +296,12 @@ def _warn_untrusted(repo: Path | None) -> None:
     if repo is None:
         return
     trust = config_mod.ProjectTrust.check(repo)
-    if trust.needs_review:
-        print(f"sbx-tui: {trust.describe()} (review: sbx-tui --trust-config)", file=sys.stderr)
+    files, warnings = config_mod.WorkflowTrust.scan(repo)
+    for warning in warnings:
+        _warn_config(warning)
+    for item in [trust, *files]:
+        if item.needs_review:
+            print(f"sbx-tui: {item.describe()} (review: sbx-tui --trust-config)", file=sys.stderr)
 
 
 def _trust_config(repo: Path, global_path: Path | None) -> int:
