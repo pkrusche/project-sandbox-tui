@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Share workflows as separately trusted `.project-sandbox-tui/workflows/NAME.toml`
+  files, with namespaced `NAME/SHORT` actions and commands and an HTTPS or local
+  `sbx-tui workflow import` command. The bundled `spec-*` actions are now
+  `spec/plan`, `spec/check`, `spec/implement` and `spec/chores`.
+
 ## [0.3.1] - 2026-11-23
 
 ### Fixed
