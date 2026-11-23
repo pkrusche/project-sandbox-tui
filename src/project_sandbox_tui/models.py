@@ -63,6 +63,10 @@ class ModelsError(Exception):
     """A catalog could not be downloaded, read or understood."""
 
 
+class FetchError(ModelsError):
+    """A remote or local source could not be read."""
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     id: str
@@ -219,12 +223,12 @@ def parse_catalog(
 class _HTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if urllib.parse.urlsplit(newurl).scheme != "https":
-            raise ModelsError(f"refusing non-HTTPS redirect to {newurl}")
+            raise FetchError(f"refusing non-HTTPS redirect to {newurl}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def fetch(source: str, *, timeout: float = TIMEOUT_SECONDS) -> bytes:
-    """Read a catalog from an ``https://`` URL or a local file (size-capped).
+    """Read content from an ``https://`` URL or a local file (size-capped).
 
     HTTPS proxies come from the usual environment variables (``HTTPS_PROXY``).
     """
@@ -235,18 +239,18 @@ def fetch(source: str, *, timeout: float = TIMEOUT_SECONDS) -> bytes:
             with opener.open(request, timeout=timeout) as response:
                 data = response.read(MAX_DOWNLOAD_BYTES + 1)
         except (OSError, ValueError) as exc:  # URLError, HTTPError, timeouts, malformed URLs
-            raise ModelsError(f"download failed: {exc}") from exc
+            raise FetchError(f"download failed: {exc}") from exc
     elif "://" in source:
-        raise ModelsError(f"refusing {source.split('://')[0]}:// — use an https:// URL or a file")
+        raise FetchError(f"refusing {source.split('://')[0]}:// — use an https:// URL or a file")
     else:
         path = Path(source).expanduser()
         try:
             with path.open("rb") as fh:
                 data = fh.read(MAX_DOWNLOAD_BYTES + 1)
         except OSError as exc:
-            raise ModelsError(f"cannot read {path}: {exc}") from exc
+            raise FetchError(f"cannot read {path}: {exc}") from exc
     if len(data) > MAX_DOWNLOAD_BYTES:
-        raise ModelsError(f"catalog larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB")
+        raise FetchError(f"content larger than {MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB")
     return data
 
 
