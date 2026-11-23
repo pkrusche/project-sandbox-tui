@@ -955,6 +955,57 @@ def _build_action(name: str, data: Any) -> Action:
     return Action(**values)
 
 
+def parse_workflow_file(
+    text: str, path: Path
+) -> tuple[Workflow, dict[str, Action], dict[str, str], list[str]]:
+    """Parse a standalone workflow and ignore unknown keys with warnings."""
+    try:
+        data = tomllib.loads(text)
+    except ValueError as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
+    warnings: list[str] = []
+    for key in data.keys() - {"workflow", "actions", "commands", "source"}:
+        warnings.append(f"{path}: unknown section or key {key} (ignored)")
+    source_data = data.get("source", {})
+    if isinstance(source_data, dict):
+        for key in source_data.keys() - {"url", "path", "imported_at", "sha256"}:
+            warnings.append(f"{path}: [source] has unknown key {key} (ignored)")
+    elif "source" in data:
+        raise ConfigError(f"{path}: [source] must be a table")
+    workflow_data = data.get("workflow")
+    if not isinstance(workflow_data, dict):
+        raise ConfigError(f"{path}: missing [workflow] table")
+    workflow_keys = {f.name for f in dataclasses.fields(Workflow)}
+    for key in workflow_data.keys() - workflow_keys:
+        warnings.append(f"{path}: [workflow] has unknown key {key} (ignored)")
+    workflow = _build_section(
+        "workflow", Workflow, {k: v for k, v in workflow_data.items() if k in workflow_keys}
+    )
+    action_data = data.get("actions", {})
+    if not isinstance(action_data, dict):
+        raise ConfigError(f"{path}: [actions] must be a table")
+    actions: dict[str, Action] = {}
+    for name, table in action_data.items():
+        if not commands.NAME.fullmatch(name):
+            raise ConfigError(f"{path}: invalid action name {name!r}")
+        if not isinstance(table, dict):
+            raise ConfigError(f"{path}: [actions.{name}] must be a table")
+        if table.keys() & {"profile", "agent", "model", "effort"}:
+            raise ConfigError(f"{path}: workflow file actions select agents with persona only")
+        for key in table.keys() - ACTION_KEYS.keys():
+            warnings.append(f"{path}: [actions.{name}] has unknown key {key} (ignored)")
+        actions[name] = _build_action(name, {k: v for k, v in table.items() if k in ACTION_KEYS})
+    command_data = data.get("commands", {})
+    if not isinstance(command_data, dict):
+        raise ConfigError(f"{path}: [commands] must be a table")
+    bundled_commands: dict[str, str] = {}
+    for name, value in command_data.items():
+        if not commands.NAME.fullmatch(name):
+            raise ConfigError(f"{path}: invalid command name {name!r}")
+        bundled_commands[name] = _coerce("commands", name, value, "")
+    return workflow, actions, bundled_commands, warnings
+
+
 def load(repo: Path, global_path: Path | None = None) -> Config:
     """Load global + the trusted project config for ``repo`` and validate the result.
 

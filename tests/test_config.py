@@ -822,3 +822,22 @@ def test_workflow_trust_scan(tmp_path: Path) -> None:
     path.unlink()
     files, _ = c.WorkflowTrust.scan(tmp_path)
     assert files == []
+
+
+def test_parse_workflow_file() -> None:
+    path = Path("spec.toml")
+    workflow, actions, commands, warnings = c.parse_workflow_file(
+        '[workflow]\nplanning_action = "plan"\nextra = true\n'
+        '[actions.plan]\nprompt = "hello"\npersona = "reviewer"\n'
+        '[commands]\ntest = "echo ok"\n[unknown]\nx = 1\n',
+        path,
+    )
+    assert workflow.planning_action == "plan"
+    assert actions["plan"].persona == "reviewer"
+    assert commands["test"] == "echo ok"
+    assert len(warnings) == 2
+    with pytest.raises(c.ConfigError, match="missing \\[workflow\\]"):
+        c.parse_workflow_file("[actions.plan]\nprompt = 'x'", path)
+    for key in ("profile", "agent", "model", "effort"):
+        with pytest.raises(c.ConfigError, match="persona only"):
+            c.parse_workflow_file(f"[workflow]\n[actions.plan]\n{key} = 'x'", path)
