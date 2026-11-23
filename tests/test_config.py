@@ -841,3 +841,68 @@ def test_parse_workflow_file() -> None:
     for key in ("profile", "agent", "model", "effort"):
         with pytest.raises(c.ConfigError, match="persona only"):
             c.parse_workflow_file(f"[workflow]\n[actions.plan]\n{key} = 'x'", path)
+
+
+def test_load_trusted_workflow_files(tmp_path: Path) -> None:
+    path = write(
+        c.workflow_dir(tmp_path) / "spec.toml",
+        """
+[workflow]
+planning_action = "plan"
+steps = ["check", "host:test"]
+[actions.plan]
+prompt = "plan"
+[actions.check]
+prompt = "trusted"
+[commands]
+test = "true"
+""",
+    )
+    files, _ = c.WorkflowTrust.scan(tmp_path)
+    files[0].trust()
+    path.write_text(path.read_text().replace('"trusted"', '"changed"'))
+    cfg = c.load(tmp_path)
+    assert cfg.actions["spec/check"].prompt == "trusted"
+    assert cfg.workflows["spec"].steps == ["spec/check", "human-review", "host:spec/test"]
+    assert files[0].trusted_path in cfg.sources
+    path.unlink()
+    assert "spec" not in c.load(tmp_path).workflows
+
+
+def test_broken_workflow_is_isolated(tmp_path: Path) -> None:
+    write(
+        c.workflow_dir(tmp_path) / "bad.toml",
+        '[workflow]\nplanning_action = "missing"\nsteps = ["missing"]',
+    )
+    for file in c.WorkflowTrust.scan(tmp_path)[0]:
+        file.trust()
+    cfg = c.load(tmp_path)
+    assert not cfg.workflows and "unknown action" in cfg.workflow_problems[0][1]
+
+
+def test_workflow_name_clash_and_disabled_feedback(tmp_path: Path) -> None:
+    write(
+        c.workflow_dir(tmp_path) / "spec.toml",
+        """
+[workflow]
+planning_action = "plan"
+steps = ["plan"]
+[actions.plan]
+prompt = "hello"
+""",
+    )
+    c.WorkflowTrust.scan(tmp_path)[0][0].trust()
+    project = write(tmp_path / c.PROJECT_CONFIG_NAME, "[feedback]\nenabled = false\n")
+    c.ProjectTrust.check(tmp_path).trust()
+    cfg = c.load(tmp_path)
+    assert "feedback.enabled" in cfg.workflow_problems[0][1]
+    project.write_text("""
+[workflows.spec]
+planning_action = "plan"
+steps = ["plan"]
+[actions.plan]
+prompt = "inline"
+""")
+    c.ProjectTrust.check(tmp_path).trust()
+    with pytest.raises(c.ConfigError, match=r"workflows.spec.*spec.toml"):
+        c.load(tmp_path)

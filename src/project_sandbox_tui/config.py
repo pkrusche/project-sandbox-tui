@@ -13,6 +13,7 @@ file is shown as a diff against that copy before it takes effect.
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import difflib
 import fcntl
@@ -400,6 +401,7 @@ class Config:
     # List the project scope first when both files define the profile.
     profile_sources: dict[str, tuple[ConfigScope, ...]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    workflow_problems: list[tuple[Path, str]] = field(default_factory=list)
 
     # ---------------------------------------------------------- helpers
 
@@ -1014,13 +1016,72 @@ def load(repo: Path, global_path: Path | None = None) -> Config:
     """
     trust = ProjectTrust.check(repo)
     if trust.current is None or trust.trusted is None:
-        return _load(global_path, None, None)
-    return _load(global_path, trust.trusted, trusted_config_path(repo), project_path=trust.path)
+        cfg = _load(global_path, None, None, defer_leader=True)
+    else:
+        cfg = _load(
+            global_path,
+            trust.trusted,
+            trusted_config_path(repo),
+            project_path=trust.path,
+            defer_leader=True,
+        )
+    return _merge_workflow_files(cfg, repo)
+
+
+def _merge_workflow_files(cfg: Config, repo: Path) -> Config:
+    leader = cfg.leader
+    cfg.leader = {}
+    files, warnings = WorkflowTrust.scan(repo)
+    cfg.warnings.extend(warnings)
+    for file in files:
+        name = file.path.stem
+        text = file.trusted
+        if file.needs_review:
+            cfg.warnings.append(file.describe())
+        if text is None:
+            continue
+        if name in cfg.workflows:
+            raise ConfigError(f"[workflows.{name}] conflicts with {file.path}")
+        try:
+            workflow, actions, bundled, file_warnings = parse_workflow_file(text, file.path)
+            for action_name in [workflow.planning_action, *workflow.steps]:
+                if action_name == HUMAN_REVIEW:
+                    continue
+                if action_name.startswith(HOST_STEP_PREFIX):
+                    short = action_name.removeprefix(HOST_STEP_PREFIX)
+                    if short not in bundled:
+                        raise ConfigError(f"unknown host command {short!r}")
+                elif action_name not in actions:
+                    raise ConfigError(f"unknown action {action_name!r}")
+            workflow.planning_action = f"{name}/{workflow.planning_action}"
+            workflow.steps = [
+                step
+                if step == HUMAN_REVIEW
+                else f"host:{name}/{step[5:]}"
+                if step.startswith(HOST_STEP_PREFIX)
+                else f"{name}/{step}"
+                for step in workflow.steps
+            ]
+            candidate = copy.deepcopy(cfg)
+            candidate.actions.update({f"{name}/{k}": v for k, v in actions.items()})
+            candidate.commands.update({f"{name}/{k}": v for k, v in bundled.items()})
+            candidate.workflows[name] = workflow
+            candidate.validate()
+        except ConfigError as exc:
+            cfg.workflow_problems.append((file.path, str(exc)))
+            continue
+        cfg = candidate
+        cfg.warnings.extend(file_warnings)
+        cfg.sources.append(file.trusted_path)
+    cfg.leader = leader
+    cfg.validate()
+    return cfg
 
 
 def load_candidate(trust: ProjectTrust, global_path: Path | None = None) -> Config:
     """Load the project config under review, to validate it before trusting it."""
-    return _load(global_path, trust.current, trust.path)
+    cfg = _load(global_path, trust.current, trust.path, defer_leader=True)
+    return _merge_workflow_files(cfg, trust.path.parent)
 
 
 def _load(
@@ -1029,6 +1090,7 @@ def _load(
     project_source: Path | None,
     *,
     project_path: Path | None = None,
+    defer_leader: bool = False,
 ) -> Config:
     gpath = global_path or global_config_path()
     global_data: dict[str, Any] = {}
@@ -1059,7 +1121,11 @@ def _load(
         )
         for name in cfg.profiles
     }
+    leader = cfg.leader
+    if defer_leader:
+        cfg.leader = {}
     cfg.validate()
+    cfg.leader = leader
     return cfg
 
 
