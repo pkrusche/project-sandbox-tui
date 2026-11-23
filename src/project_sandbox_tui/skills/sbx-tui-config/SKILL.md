@@ -304,7 +304,7 @@ persona = "checker"
 
 [actions.spec-implement]
 prompt = "Implement the spec at previous_state.spec_path."
-profile = "deep"
+persona = "implementer"
 timeout = 3600
 
 [workflows.spec]
@@ -312,6 +312,17 @@ planning_action = "spec-plan"
 steps = ["spec-check", "spec-implement", "host:test"]
 pass_state_keys = ["spec_path"]
 ```
+
+That example is an inline, project-specific workflow, so it can use the full
+action settings described above. For a workflow intended to travel between
+projects, put it in `.project-sandbox-tui/workflows/NAME.toml` with a
+`[workflow]` table, actions and any host commands it needs. Inside that file,
+use short action and command names; outside it, names are `NAME/SHORT` (for
+example `:spec/implement` or `:&spec/test`). File-based workflow actions select
+their agent with `persona` only. Keep shared prompts and commands portable, and
+use `sbx-tui --trust-config` to review each workflow file independently. Use
+`sbx-tui workflow import SOURCE [--name NAME]` to import one from HTTPS or a
+local path.
 
 Workflows require `feedback.enabled` (the default), and every referenced action
 must exist. Before anything starts, `:workflow NAME [TOPIC]` shows a picker with
@@ -379,3 +390,12 @@ through in-tree ignore rules or the repository's local `info/exclude`. Existing
 copies, including local edits, are kept: to refresh one, remove its directory
 while the workspace is idle and reopen it. `project.deploy_config_skill = false`
 stops automatic copies; `[[workspace_skills]]` deploys additional skills.
+
+For a workflow intended to be shared, use a separately trusted
+`.project-sandbox-tui/workflows/NAME.toml` with `[workflow]`, `[actions.SHORT]`
+and optional `[commands]`. Use short references within the file and
+`NAME/SHORT` elsewhere. Bundled actions use personas rather than profiles or
+agent settings. Keep commands and prompts portable. Prefer inline workflows
+for project-specific dependencies; review workflow files independently with
+`sbx-tui --trust-config`. See the workflow file example in the configuration
+documentation.
