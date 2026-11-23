@@ -30,7 +30,7 @@ def runner(responses: Mapping[str, tuple[int, str] | None]) -> doctor.Runner:
 
 HEALTHY = {
     "jj --version": (0, "jj 0.46.0-7d382314"),
-    "project-sandbox --version": (0, "project-sandbox 0.2.2"),
+    "project-sandbox --version": (0, "project-sandbox 0.4.1"),
     "project-sandbox --help": (0, "--mount MOUNT"),
     "docker info": (0, "Server Version: 27"),
 }
@@ -60,7 +60,7 @@ def test_healthy(repo: Path) -> None:
     checks = by_name(doctor.run_checks(repo, runner=runner(HEALTHY), which=lambda c: f"/bin/{c}"))
     for name in ("jj", "repository", "project-sandbox", "container runtime"):
         assert checks[name].status == "ok", checks[name]
-    assert checks["project-sandbox"].detail == "0.2.2 (project-sandbox)"
+    assert checks["project-sandbox"].detail == "0.4.1 (project-sandbox)"
     assert "image" not in checks and "project config" not in checks
     assert checks["comparisons to main"].status == "ok"
 
@@ -101,8 +101,8 @@ def test_jj_versions(output: str | None, status: str) -> None:
 @pytest.mark.parametrize(
     ("response", "status", "text"),
     [
-        ((0, "project-sandbox 0.2.2"), "ok", "0.2.2"),
-        ((0, "project-sandbox 0.2.1"), "fail", "too old"),
+        ((0, "project-sandbox 0.4.1"), "ok", "0.4.1"),
+        ((0, "project-sandbox 0.4.0"), "fail", "too old"),
         ((1, "Traceback\nboom"), "fail", "boom"),
         (None, "fail", "not found"),
     ],
@@ -372,8 +372,22 @@ def test_unused_gateway_is_reported(home: Path) -> None:
     cfg = Config()
     cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
     found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
-    assert "no default or profile uses it" in found["agent gateway"].detail
+    assert "no configured selection uses it" in found["agent gateway"].detail
     assert found["agent gateway"].status == "ok"
+
+
+def test_doctor_checks_persona_and_model_only_actions(home: Path) -> None:
+    cfg = Config()
+    cfg.catalogue.default_provider = "copilot-anthropic"
+    cfg.actions["debug"] = Action("debug", persona="debugger")
+    cfg.defaults.agent = "missing-agent"
+    cfg.actions["check"] = Action("check", model="model")
+    found = problems(doctor.check_agent_selections(cfg, caps(), home=home))
+    assert "frontier" in found["actions.debug.persona"].detail
+    assert "missing-agent" in found["actions.check.agent"].detail
+    cfg.catalogue.default_provider = "gateway-anthropic"
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    assert "agent gateway" not in problems(doctor.check_agent_selections(cfg, caps(), home=home))
 
 
 def test_configured_runtime_not_ready(home: Path) -> None:

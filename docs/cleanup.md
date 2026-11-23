@@ -6,10 +6,17 @@ sbx-tui --cleanup-workspaces             # remove eligible workspaces and merged
 ```
 
 Press `W` to review candidates. Eligible rows are preselected; other rows show
-why they are kept. Use `j` / `k` to move, `space` to toggle a row, and `a` to
-select or clear all. Press `enter` to review the deletion list and confirm with
-`y`; press `esc` or `q` to cancel. The CLI removes all eligible candidates and
-reports removals and reasons for keeping others.
+why they are kept. The CLI reports removals and reasons for keeping others.
+
+## Cleanup keys
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Move down / up |
+| `space` / `a` | Toggle this row / all eligible rows |
+| `enter` | Review the deletion list and confirm with `y` |
+| `D` | Request force deletion of a kept workspace |
+| `esc` / `q` | Cancel |
 
 Candidates come from `jj workspace list`, regardless of name or location. The
 current workspace and the directory holding the jj repository store (usually

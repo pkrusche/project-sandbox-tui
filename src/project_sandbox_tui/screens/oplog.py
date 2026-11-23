@@ -23,7 +23,14 @@ from project_sandbox_tui.opgraph import NODE, Node, OpGraph
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.log import LogScreen
-from project_sandbox_tui.widgets import GLYPHS, KeyHints, PrefixKeys, human_age
+from project_sandbox_tui.widgets import (
+    GLYPHS,
+    KeyHints,
+    PrefixKeys,
+    human_age,
+    restore_table_view,
+    update_table_cells,
+)
 
 UNKNOWN = ("?", "dim")  # a run whose outcome was never seen
 HINT = "q back · j/k ^d/^u gg/G move · tab pane · enter/P expand · l log"
@@ -130,20 +137,30 @@ class OpLogScreen(Screen[None]):
 
     def _render_rows(self) -> None:
         rows = [(node.id, self._cells(node, line)) for node, line in self.graph.state.op_log()]
-        if rows == self._shown:
+        if rows == self._shown or update_table_cells(self.table, self._shown, rows):
+            self._shown = rows
             self._title()
             self._render_details()
             return
         table = self.table
+        preserve_y = bool(self._shown) and self._select is None
         selected = self._select or self.selected_id()
         self._select = None
+        scroll_x, scroll_y = table.scroll_target_x, table.scroll_target_y
+        for column in table.columns.values():
+            column.content_width = column.label.cell_len
         table.clear()
         for key, cells in rows:
             table.add_row(*cells, key=key)
         self._shown = rows
         keys = [key for key, _cells in rows]
-        if selected in keys:
-            table.move_cursor(row=keys.index(selected), animate=False)
+        restore_table_view(
+            table,
+            scroll_x,
+            scroll_y,
+            keys.index(selected) if selected in keys else None,
+            preserve_y=preserve_y,
+        )
         self._title()
         self._render_details()
 
@@ -171,20 +188,29 @@ class OpLogScreen(Screen[None]):
     # ------------------------------------------------------------ navigation
 
     def action_cursor(self, step: int) -> None:
+        if isinstance(self.focused, VerticalScroll):
+            self.focused.scroll_relative(y=step, animate=False)
+            return
         table = self.table
         if table.row_count:
             row = min(max(table.cursor_row + step, 0), table.row_count - 1)
             table.move_cursor(row=row, animate=False)
 
     def action_page(self, direction: int) -> None:
-        self.action_cursor(direction * max(1, self.table.size.height // 2))
+        self.action_cursor(direction * max(1, (self.focused or self.table).size.height // 2))
 
     def action_bottom(self) -> None:
-        self.action_cursor(self.table.row_count)
+        if isinstance(self.focused, VerticalScroll):
+            self.focused.scroll_end(animate=False)
+        else:
+            self.action_cursor(self.table.row_count)
 
     def action_g_prefix(self) -> None:
         if self._prefix.press("g"):
-            self.action_cursor(-self.table.row_count)
+            if isinstance(self.focused, VerticalScroll):
+                self.focused.scroll_home(animate=False)
+            else:
+                self.action_cursor(-self.table.row_count)
 
     # ------------------------------------------------------------ actions
 
@@ -262,7 +288,7 @@ class OpLogScreen(Screen[None]):
             return
         job = self.jobs.jobs.get(node.bookmark)
         if job is None or job.started_at != node.job:
-            if not node.log:
+            if not (node.log or node.stdout):
                 self.notify(
                     "no log: interactive sessions log to their terminal", severity="warning"
                 )
@@ -271,7 +297,7 @@ class OpLogScreen(Screen[None]):
             # is only shown, so an unseen outcome may read "unknown".
             job = JobRecord(
                 node.bookmark,
-                LaunchSpec(node.bookmark, node.agent),
+                LaunchSpec(node.bookmark, node.agent.partition("/")[0]),
                 0,
                 node.job,
                 log_path=node.log,

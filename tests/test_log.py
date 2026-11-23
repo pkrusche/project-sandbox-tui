@@ -340,6 +340,8 @@ def test_markdown_blocks_respect_fences_and_continuations() -> None:
         (13, 14),
     ]
     assert markdown_blocks(["```", "open", ""], 0, 3) == [(0, 3)]
+    assert markdown_blocks(["```inline```", "", "next"], 0, 3) == [(0, 1), (1, 2), (2, 3)]
+    assert markdown_blocks(["~~~", "    ~~~", "", "code", "  ~~~"], 0, 5) == [(0, 5)]
 
 
 def _rows(log: LiveLog) -> list[str]:
@@ -471,13 +473,36 @@ def test_markdown_pruning_cuts_at_block_boundaries() -> None:
             log.set_mode(markdown=True)
             log.write("".join(f"para {i}\nmore {i}\n\n" for i in range(3)))
             assert log.line_count == 9
+            before = log.render_line(log.row_of(4))
+            log.cursor_row = 4  # second logical line in a paragraph
+            assert list(log.render_line(log.row_of(4))) != list(before)
             log.write("```\ncode\n```\n")
             # 13 lines: the first paragraph and its blank line go, not part of a block.
+            assert log.cursor_row == 1
             assert log.lines[0] == "para 1" and log.line_count == 9
             rows = [log.render_line(y).text.strip() for y in range(log.row_count)]
             assert rows[0] == "para 1 more 1" and "code" in rows
             log.auto_scroll = False
             log.write("".join(f"line {i}\n" for i in range(12)))  # one block over the limit
             assert len(log.lines) <= 10 and log.lines[-1] == ""
+
+    asyncio.run(scenario())
+
+
+def test_streamed_controls_and_split_crlf() -> None:
+    async def scenario() -> None:
+        app = App[None]()
+        async with app.run_test() as pilot:
+            log = LiveLog()
+            await app.mount(log)
+            await pilot.pause()
+            log.write("\x1b[31mred\x1b[0m\tX\r")
+            log.write("\nA\x1f\x7f\x80B")
+            for markdown in (False, True):
+                log.set_mode(markdown=markdown)
+                rendered = " ".join(_rows(log)).strip()
+                assert "red" in rendered and "A���B" in rendered
+                assert "\x1b" not in rendered and "[31m" not in rendered
+            assert log.line_count == 2
 
     asyncio.run(scenario())

@@ -124,16 +124,12 @@ def test_profile_argv_is_a_snapshot(tmp_path: Path, background: bool) -> None:
         mode="background" if background else "interactive",
         prompt_text="review",
     )
-    restored = LaunchSpec.from_dict(spec.to_dict())
-    assert restored == spec
     cfg.profiles["review"] = AgentProfile(agent="bash")
     paths = RunPaths(tmp_path / "log", tmp_path / "summary", tmp_path / "stdout")
-    argv = build_argv(cfg, tmp_path, restored, paths if background else None)
+    argv = build_argv(cfg, tmp_path, spec, paths if background else None)
     assert "--agent=codex" in argv and "--model=m" in argv and "--fast" in argv
     start = argv.index("--verbose")
     assert argv[start : start + 4] == ["--verbose", "--new-switch", "a b", "$(literal)"]
-    old = LaunchSpec.from_dict({"branch": "topic", "agent": "bash"})
-    assert old.profile == "" and old.extra_args == []
 
 
 @pytest.mark.parametrize("mode", ["i", "r"])

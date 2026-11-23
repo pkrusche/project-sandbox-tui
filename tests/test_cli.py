@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -302,7 +303,7 @@ def test_init_reports_skill_install_errors(
     monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
     assert main([str(repo), "--init"]) == 2
     error = capsys.readouterr().err
-    assert "could not install configuration skill" in error
+    assert "could not install bundled skills and feedback guidance" in error
     assert str(repo / ".agents") in error
 
 
@@ -677,3 +678,17 @@ def test_import_reports_unreadable_existing_file(
     monkeypatch.setattr("builtins.input", lambda _: "o")
     assert main(["workflow", "import", str(source), "-R", str(repo)]) == 2
     assert f"cannot read {target}" in capsys.readouterr().err
+
+
+def test_print_config_with_invalid_trusted_workflow(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = config.workflow_dir(repo)
+    directory.mkdir(parents=True)
+    (directory / "broken.toml").write_text("[workflow]\n")
+    config.WorkflowTrust.scan(repo)[0][0].trust()
+    assert config.load(repo).workflow_problems
+    assert main([str(repo), "--print-config"]) == 0
+    out, err = capsys.readouterr()
+    data, _ = json.JSONDecoder().raw_decode(out)
+    assert "broken.toml" in err and "workflow_problems" not in data and "persona_config" not in data

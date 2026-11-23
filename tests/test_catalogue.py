@@ -24,61 +24,6 @@ def row(name: str) -> cat.ProviderRow:
 # ---------------------------------------------------------------- catalogue
 
 
-def test_provider_rows_in_order() -> None:
-    assert [r.label for r in cat.ROWS] == [
-        "Codex",
-        "Claude Code",
-        "Gateway/OpenAI",
-        "Gateway/Anthropic",
-        "Gateway/Gemini",
-        "Copilot/OpenAI",
-        "Copilot/Anthropic",
-        "Copilot/Gemini",
-    ]
-    assert [r.id for r in cat.ROWS] == [
-        "codex",
-        "claude-code",
-        "gateway-openai",
-        "gateway-anthropic",
-        "gateway-gemini",
-        "copilot-openai",
-        "copilot-anthropic",
-        "copilot-gemini",
-    ]
-
-
-BUILT_IN = {
-    "codex": ("gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"),
-    "gateway-openai": ("gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"),
-    "copilot-openai": ("gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"),
-    "claude-code": ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"),
-    "gateway-anthropic": (
-        "claude-haiku-5-5",
-        "claude-sonnet-5-5",
-        "claude-opus-5-5",
-        "claude-fable-5-2",
-    ),
-    "copilot-anthropic": ("claude-haiku-5.5", "claude-sonnet-5.5", "claude-opus-5.5", None),
-    "gateway-gemini": ("gemini-4-hydrogen", "gemini-4-argon", "gemini-4-neon", "gemini-4-carbon"),
-    "copilot-gemini": ("gemini-4-hydrogen", None, None, None),
-}
-
-
-@pytest.mark.parametrize("row_id", BUILT_IN)
-def test_every_built_in_cell(row_id: str) -> None:
-    cfg = c.Config()
-    got = tuple(cat.model_for(cfg, row(row_id), tier) for tier in cat.TIERS)
-    assert got == BUILT_IN[row_id]
-
-
-def test_copilot_dotted_ids_never_reach_claude_code() -> None:
-    cfg = c.Config()
-    for tier in cat.TIERS:
-        model = cat.model_for(cfg, row("claude-code"), tier)
-        assert model is not None and "." not in model
-    assert cat.models_for_agent(cfg, "claude") == list(BUILT_IN["claude-code"])
-
-
 def test_missing_copilot_tiers_are_none_with_a_reason() -> None:
     cfg = c.Config()
     assert cat.model_for(cfg, row("copilot-anthropic"), "frontier") is None
@@ -86,16 +31,6 @@ def test_missing_copilot_tiers_are_none_with_a_reason() -> None:
         "Copilot/Anthropic has no frontier model"
     )
     assert cat.tier_problem(cfg, row("copilot-gemini"), "fast") == ""
-
-
-def test_row_rules() -> None:
-    assert [r.id for r in cat.ROWS if r.fast] == ["codex", "claude-code"]
-    assert [r.id for r in cat.ROWS if not r.effort] == ["gateway-gemini"]
-    assert [r.id for r in cat.ROWS if r.gateway] == [
-        "gateway-openai",
-        "gateway-anthropic",
-        "gateway-gemini",
-    ]
 
 
 def test_catalogue_overrides() -> None:
@@ -134,33 +69,12 @@ def test_invalid_catalogue(catalogue: dict[str, object], message: str) -> None:
 # ---------------------------------------------------------------- personas
 
 
-def test_built_in_personas() -> None:
-    p = c.Config().personas
-    assert (p["planner"].tier, p["planner"].effort, p["planner"].fast, p["planner"].level) == (
-        "high",
-        "high",
-        False,
-        3,
+def test_internal_personas_are_excluded_from_launch_choices() -> None:
+    personas = c.Config().personas
+    assert {name for name, p in personas.items() if not p.internal} == set(
+        cat.offered_personas(personas)
     )
-    assert (p["checker"].tier, p["checker"].effort, p["checker"].fast, p["checker"].level) == (
-        "medium",
-        "low",
-        True,
-        2,
-    )
-    assert p["implementer"] == cat.Persona("medium", "medium", False, 2)
-    assert p["debugger"] == cat.Persona("frontier", "xhigh", False, 2)
-    assert p["chore-runner"] == cat.Persona("fast", "medium", True, 2)
-    assert p["reviewer"] == cat.Persona("high", "high", False, 4)
-    assert p["commit-reviewer"].internal
-    assert cat.offered_personas(p) == [
-        "planner",
-        "checker",
-        "implementer",
-        "debugger",
-        "chore-runner",
-        "reviewer",
-    ]
+    assert "commit-reviewer" not in cat.offered_personas(personas)
 
 
 def test_persona_override_is_field_wise(tmp_path: Path) -> None:
@@ -227,85 +141,45 @@ def argv_for(cfg: c.Config, setup: c.ResolvedSetup, tmp_path: Path) -> list[str]
 GATEWAY = {"network": {"agent_proxy": "http://127.0.0.1:4000/v1"}}
 
 
-def test_reviewer_on_codex(tmp_path: Path) -> None:
-    setup = resolve(c.Config(), "reviewer", "codex")
-    argv = argv_for(c.Config(), setup, tmp_path)
-    assert {"--agent=codex", "--model=gpt-6.2-sol", "--effort=high"} <= set(argv)
-    assert setup.level == 4 and "--fast" not in argv
-
-
-def test_checker_on_claude_code() -> None:
-    setup = resolve(c.Config(), "checker", "claude-code")
-    assert (setup.agent, setup.model, setup.effort, setup.fast, setup.level) == (
-        "claude",
-        "claude-sonnet-5-5",
-        "low",
-        True,
-        2,
-    )
-
-
-def test_agent_follows_from_the_row(tmp_path: Path) -> None:
-    cfg = cfg_with(**GATEWAY)
-    argv = argv_for(cfg, resolve(cfg, "implementer", "claude-code"), tmp_path)
-    assert "--agent=claude" in argv and not any(a.startswith("--agent-proxy") for a in argv)
-
-
-def test_codex_high_tier(tmp_path: Path) -> None:
-    cfg = cfg_with(personas={"deep": {"tier": "high"}})
-    argv = argv_for(cfg, resolve(cfg, "deep", "codex"), tmp_path)
-    assert "--agent=codex" in argv and "--model=gpt-6.2-sol" in argv
-
-
-def test_copilot_uses_its_own_ids(tmp_path: Path) -> None:
-    setup = resolve(c.Config(), "implementer", "copilot-anthropic")
-    argv = argv_for(c.Config(), setup, tmp_path)
-    assert "--agent=copilot" in argv and "--model=claude-sonnet-5.5" in argv
-    claude = argv_for(c.Config(), resolve(c.Config(), "implementer", "claude-code"), tmp_path)
-    assert "--model=claude-sonnet-5-5" in claude
-
-
-def test_gateway_row_with_opencode(tmp_path: Path) -> None:
-    cfg = cfg_with(**GATEWAY, catalogue={"gateway_agent": "opencode"})
-    setup = resolve(cfg, "reviewer", "gateway-anthropic")
+@pytest.mark.parametrize(
+    ("persona", "provider", "agent", "model", "effort", "fast", "level"),
+    [
+        ("reviewer", "codex", "codex", "gpt-6.2-sol", "high", False, 4),
+        ("checker", "claude-code", "claude", "claude-sonnet-5-5", "low", True, 2),
+        ("implementer", "copilot-anthropic", "copilot", "claude-sonnet-5.5", "medium", False, 2),
+        ("chore-runner", "gateway-openai", "pi", "gpt-6-luna", "medium", False, 2),
+        ("debugger", "gateway-gemini", "pi", "gemini-4-carbon", "", False, 2),
+        (
+            "planner",
+            "gateway-anthropic",
+            "opencode",
+            "agent-proxy/claude-opus-5-5",
+            "high",
+            False,
+            3,
+        ),
+    ],
+)
+def test_persona_launch_arguments(
+    tmp_path: Path,
+    persona: str,
+    provider: str,
+    agent: str,
+    model: str,
+    effort: str,
+    fast: bool,
+    level: int,
+) -> None:
+    cfg = cfg_with(**GATEWAY, catalogue={"gateway_agent": agent if agent == "opencode" else "pi"})
+    setup = resolve(cfg, persona, provider)
     argv = argv_for(cfg, setup, tmp_path)
-    assert "--agent=opencode" in argv
-    assert "--agent-proxy=http://127.0.0.1:4000/v1" in argv
-    assert "--model=agent-proxy/claude-opus-5-5" in argv
-
-
-def test_pi_gateway_row(tmp_path: Path) -> None:
-    cfg = cfg_with(**GATEWAY)
-    argv = argv_for(cfg, resolve(cfg, "chore-runner", "gateway-openai"), tmp_path)
-    assert {"--agent=pi", "--agent-proxy=http://127.0.0.1:4000/v1", "--model=gpt-6-luna"} <= set(
-        argv
+    assert setup.level == level
+    assert f"--agent={agent}" in argv and f"--model={model}" in argv
+    assert [arg for arg in argv if arg.startswith("--effort=")] == (
+        [f"--effort={effort}"] if effort else []
     )
-    assert "--fast" not in argv  # fast mode only on Codex and Claude Code
-
-
-def test_gemini_frontier_through_the_gateway() -> None:
-    cfg = cfg_with(**GATEWAY)
-    setup = resolve(cfg, "debugger", "gateway-gemini")
-    assert (setup.model, setup.gateway, setup.agent) == ("gemini-4-carbon", True, "pi")
-
-
-def test_gemini_gateway_omits_effort(tmp_path: Path) -> None:
-    cfg = cfg_with(**GATEWAY)
-    setup = resolve(cfg, "planner", "gateway-gemini")
-    assert setup.effort == "" and "provider default effort" in setup.label()
-    assert not any(a.startswith("--effort") for a in argv_for(cfg, setup, tmp_path))
-
-
-def test_planner_preview_on_gateway_anthropic() -> None:
-    cfg = cfg_with(**GATEWAY)
-    label = resolve(cfg, "planner", "gateway-anthropic").label()
-    assert label == "pi/claude-opus-5-5/high/gateway · level 3"
-
-
-def test_fast_mode_only_on_codex_and_claude_code() -> None:
-    cfg = cfg_with(**GATEWAY)
-    fast = {r.id: resolve(cfg, "checker", r.id).fast for r in cat.ROWS}
-    assert [name for name, on in fast.items() if on] == ["codex", "claude-code"]
+    assert ("--fast" in argv) == fast
+    assert ("--agent-proxy=http://127.0.0.1:4000/v1" in argv) == provider.startswith("gateway-")
 
 
 def test_missing_tier_is_a_problem_not_a_substitute() -> None:

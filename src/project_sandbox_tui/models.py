@@ -3,9 +3,10 @@
 Sources, merged per agent in this order (first match wins in the autocomplete):
 
 1. ``[models]`` from the configuration (explicit pins),
-2. built-in Claude Code aliases,
-3. Codex's own model list (``$CODEX_HOME/models_cache.json``, written by Codex),
-4. the downloaded catalog in the state directory (``models.json``).
+2. catalogue models of the agent's provider rows,
+3. built-in Claude Code aliases,
+4. Codex's own model list (``$CODEX_HOME/models_cache.json``, written by Codex),
+5. the downloaded catalog in the state directory (``models.json``).
 
 The catalog is downloaded on request (``sbx-tui --update-models`` or
 ``:update-models``) and by ``sbx-tui --init`` when missing. Downloads are HTTPS-only,
@@ -27,7 +28,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from project_sandbox_tui.config import state_home
+from project_sandbox_tui.config import private_dir, state_home
 
 DEFAULT_SOURCE = "https://models.dev/api.json"
 DEFAULT_LICENSE = "MIT, Copyright (c) 2025 models.dev"
@@ -269,7 +270,7 @@ def _entry(model: ModelInfo) -> dict[str, Any]:
 def save(store: Store, path: Path | None = None) -> Path:
     """Write the store atomically: a failed write keeps the previous file."""
     path = path or store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_dir(path.parent)
     fetched = store.fetched_at or datetime.now(UTC)
     doc = {
         "version": STORE_VERSION,

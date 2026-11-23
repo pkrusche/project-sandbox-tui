@@ -187,6 +187,7 @@ class LogScreen(Screen[None]):
         return (
             isinstance(source, JobRecord)
             and source.spec.agent != "bash"
+            and bool(source.log_path)
             and self.current == Path(source.log_path)
         )
 
@@ -210,9 +211,9 @@ class LogScreen(Screen[None]):
         name = path.name if path else "(no output files)"
         source = self._source
         if isinstance(source, JobRecord):
-            if path == Path(source.stdout_path):
+            if source.stdout_path and path == Path(source.stdout_path):
                 name = f"stdout ({name})"
-            elif path == Path(source.log_path):
+            elif source.log_path and path == Path(source.log_path):
                 name = f"agent log ({name})"
         state = ""
         if source is not None:
@@ -303,11 +304,6 @@ class LogScreen(Screen[None]):
             self._skip_partial = not newline
         data = self._decoder.decode(chunk)
         log = self.query_one(LiveLog)
-        if log.cursor_row is not None and not self._follow:
-            # Log.write can evict old rows as new line endings arrive.
-            endings = data.count("\n") + data.count("\r") - data.count("\r\n")
-            dropped = max(0, len(log.lines) + endings - MAX_LINES)  # plain text prunes exactly
-            log.cursor_row = max(0, log.cursor_row - dropped)
         log.auto_scroll = self._follow
         log.write(data)
         self._sync_cursor(log)

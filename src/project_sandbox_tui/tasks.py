@@ -80,6 +80,14 @@ class TaskRecord:
         word = body.removeprefix("!").split(maxsplit=1)
         return (word[0] if word else body)[:12]
 
+    @property
+    def display_line(self) -> str:
+        return self.line if self.workflow_repo else f":{self.line}"
+
+    @property
+    def display_name(self) -> str:
+        return self.name if self.workflow_repo else f":{self.name}"
+
     def output_files(self) -> list[Path]:
         return [Path(self.out_path)]
 
@@ -183,9 +191,12 @@ class TaskManager:
             self._stop_stage.pop(task_id, None)
             self._stop_last.pop(task_id, None)
 
-    def _forget(self, task: TaskRecord) -> None:
+    def _forget(self, task: TaskRecord, *, keep_output: bool = False) -> None:
         self._record_path(task.id).unlink(missing_ok=True)
-        for path in (task.out_path, task.exit_path, f"{task.exit_path}.tmp"):
+        paths = [task.exit_path, f"{task.exit_path}.tmp"]
+        if not keep_output:
+            paths.append(task.out_path)
+        for path in paths:
             with contextlib.suppress(OSError):
                 Path(path).unlink(missing_ok=True)
         self.tasks.pop(task.id, None)
@@ -196,7 +207,7 @@ class TaskManager:
     def _prune(self, bookmark: str) -> None:
         for task in self.for_bookmark(bookmark)[KEEP:]:
             if not task.running and task.notified:
-                self._forget(task)
+                self._forget(task, keep_output=bool(task.workflow_repo))
 
     # ------------------------------------------------------------ queries
 
@@ -451,11 +462,11 @@ class TaskManager:
                 return self._signal(task)
             if task.workflow_repo and not task.notified:
                 return "waiting for the workflow to record this host command"
-            self._forget(task)
-            return f"{task.bookmark}: :{task.line} forgotten"
+            self._forget(task, keep_output=bool(task.workflow_repo))
+            return f"{task.bookmark}: {task.display_line} forgotten"
 
     def _signal(self, task: TaskRecord) -> str:
-        where = f"{task.bookmark}: :{task.line}"
+        where = f"{task.bookmark}: {task.display_line}"
         now = time.time()
         last = self._stop_last.get(task.id)
         if last is not None and now - last < STOP_DEBOUNCE_S:
@@ -464,15 +475,27 @@ class TaskManager:
             return f"{task.bookmark}: invalid process id {task.pid}"
         stage = min(self._stop_stage.get(task.id, 0), len(STOP_SIGNALS) - 1)
         sig = STOP_SIGNALS[stage]
-        try:
-            os.killpg(task.pid, sig)
-        except ProcessLookupError:
-            return f"{where} already finished"
-        except PermissionError:
-            return f"{task.bookmark}: not permitted to signal pid {task.pid}"
         self._stop_stage[task.id] = stage + 1
         self._stop_last[task.id] = now
-        return f"{task.bookmark}: sent {signal.Signals(sig).name} to :{task.line}"
+        try:
+            os.killpg(task.pid, sig)
+        except (ProcessLookupError, PermissionError) as exc:
+            reason = (
+                "already finished"
+                if isinstance(exc, ProcessLookupError)
+                else f"not permitted to signal pid {task.pid}"
+            )
+            if stage == len(STOP_SIGNALS) - 1:
+                if task.workflow_repo:
+                    task.status = "orphaned"
+                    task.ended_at = _now()
+                    self.save(task)
+                else:
+                    self._forget(task)
+                outcome = "marked orphaned" if task.workflow_repo else "record forgotten"
+                return f"{where}: {reason}; {outcome}"
+            return f"{where}: {reason}; press x again to escalate"
+        return f"{task.bookmark}: sent {signal.Signals(sig).name} to {task.display_line}"
 
     def cancel_requested(self, task_id: str) -> bool:
         return task_id in self._stop_stage

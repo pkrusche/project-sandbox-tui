@@ -490,7 +490,7 @@ class WorkspacePreparer:
         """Explicit targets need in-tree rules; the bundled one may use local excludes."""
         explicit = [p for p in plans if p.skill.explicit]
         bundled = [p for p in plans if not p.skill.explicit]
-        status = ignore_status(path, [p.target for p in explicit])
+        status = ignore_status(path, [p.target for p in plans])
         for plan in explicit:
             ignored, why = status.get(plan.target, (False, "git did not report on it"))
             if not ignored:
@@ -498,6 +498,7 @@ class WorkspacePreparer:
                     f"the bookmark does not ignore it ({why}); add {exclude_rule(plan.target)} "
                     "to its .gitignore"
                 )
+        bundled = [p for p in bundled if not status.get(p.target, (False, ""))[0]]
         if not bundled:
             return
         git_dir = self.backend.git_dir()

@@ -128,7 +128,7 @@ def test_init_reports_installation_failure(
         await pilot.press("enter")
         report = await wait_for_screen(app, pilot, MessageScreen)
         await wait_until(pilot, lambda: "Initialization failed:" in report.body)
-        assert "could not install configuration skill" in report.body
+        assert "could not install bundled skills and feedback guidance" in report.body
         assert app.cfg is cfg
         assert "Configuration reloaded" not in messages(app)
         await pilot.press("escape")

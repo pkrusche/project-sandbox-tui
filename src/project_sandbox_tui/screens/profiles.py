@@ -29,7 +29,7 @@ from project_sandbox_tui.widgets import CycleField, KeyHints
 ProfileEdit = tuple[Literal["saved", "deleted"], ConfigScope]
 
 
-class ProfilesScreen(ModalScreen[ProfileEdit]):
+class ProfilesScreen(ModalScreen[ProfileEdit | None]):
     DEFAULT_CSS = """
     ProfilesScreen { align: center middle; }
     ProfilesScreen > Vertical {
@@ -39,7 +39,7 @@ class ProfilesScreen(ModalScreen[ProfileEdit]):
     }
     ProfilesScreen .title { text-style: bold; margin-bottom: 1; }
     ProfilesScreen .field { height: 1; }
-    ProfilesScreen .field-label { width: 10; color: $text-muted; padding-left: 1; }
+    ProfilesScreen .field-label { width: 12; color: $text-muted; padding-left: 1; }
     ProfilesScreen Input, ProfilesScreen Input:focus {
         border: none; height: 1; padding: 0; margin: 0;
     }

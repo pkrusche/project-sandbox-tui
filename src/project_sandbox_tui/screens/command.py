@@ -139,13 +139,19 @@ class CommandScreen(ModalScreen[str | None]):
 
     def action_history(self, step: int) -> None:
         if self._browse is None:
+            if step < 0:
+                return
             origin = self._browse_origin = self.input.value
             self._browse = [e for e in self.history.with_prefix(origin) if e != origin]
             self._browse_index = -1
             self._cycle, self._words = [], []
             self._show_matches()
         index = self._browse_index + step
-        if not self._browse or index >= len(self._browse):
+        if not self._browse:
+            self._browse = None
+            self.app.bell()
+            return
+        if index >= len(self._browse):
             self.app.bell()  # no (older) match
             return
         if index < 0:  # past the newest: back to what was typed

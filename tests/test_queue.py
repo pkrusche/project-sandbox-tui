@@ -199,6 +199,33 @@ def test_queue_vim_editing(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     run_app(repo, fake_cfg(), scenario)
 
 
+def test_visual_selection_keeps_queue_viewport(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.queue.pause("feature/x", True)
+        for i in range(24):
+            app.queue.add(prompt(f"{i} " + "long prompt " * 10))
+        await pilot.press("j", "L")
+        screen = await wait_for_screen(app, pilot, QueueScreen)
+        table = screen.table
+        await pilot.press("G", "k", "k", "v")
+        table.scroll_to(x=10, animate=False, immediate=True)
+        vertical = table.scroll_y
+        assert vertical > 0 and table.scroll_x == 10
+        await pilot.press("j")
+        assert (table.scroll_x, table.scroll_y) == (10, vertical)
+        assert len(screen.selection()) == 2
+        current = screen.selected_id()
+        app.queue.edit("feature/x", screen.visible_ids()[0], prompt("updated"))
+        screen.render_queue()
+        await pilot.pause()
+        assert (table.scroll_x, table.scroll_y) == (
+            10,
+            vertical,
+        ) and screen.selected_id() == current
+
+    run_app(repo, fake_cfg(), scenario, size=(64, 18))
+
+
 def test_queue_previews_long_prompts_and_shows_full_text(
     repo: Path, fake_cfg: Callable[..., Config]
 ) -> None:

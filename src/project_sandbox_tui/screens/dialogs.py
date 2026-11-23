@@ -154,6 +154,14 @@ class ScrollModal[ResultT](ModalScreen[ResultT]):
         super().__init__()
         self._prefix = PrefixKeys()
 
+    def on_resize(self, event: events.Resize) -> None:
+        self.call_after_refresh(self._fit_body)
+
+    def _fit_body(self) -> None:
+        # Queued resize events may outlive the dialog's children during teardown.
+        for body in self.query(VerticalScroll):
+            fit_body(body)
+
     def on_key(self, event: events.Key) -> None:
         event.stop()
         event.prevent_default()
@@ -192,7 +200,7 @@ class MessageScreen(ScrollModal[None]):
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="MessageScreen")
         + """
-    MessageScreen .message-body { height: auto; max-height: 60vh; }
+    MessageScreen .message-body { height: auto; }
     """
     )
     CLOSE_KEYS: ClassVar[frozenset[str]] = frozenset({"q", "escape", "enter"})
@@ -224,7 +232,7 @@ class ConfirmScreen(ScrollModal[bool]):
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="ConfirmScreen")
         + """
-    ConfirmScreen VerticalScroll { height: auto; max-height: 60vh; }
+    ConfirmScreen VerticalScroll { height: auto; }
     """
     )
 
@@ -257,7 +265,7 @@ class StaleWorkspaceScreen(ScrollModal[bool]):
     DEFAULT_CSS = (
         _MODAL_CSS.format(name="StaleWorkspaceScreen")
         + """
-    StaleWorkspaceScreen VerticalScroll { height: auto; max-height: 60vh; }
+    StaleWorkspaceScreen VerticalScroll { height: auto; }
     """
     )
 
@@ -559,11 +567,3 @@ class HelpScreen(MessageScreen):
             with VerticalScroll():
                 yield Static(HelpBody(self.extra))
             yield Static(KeyHints(f"{SCROLL_HINT} · q/esc/? close"), classes="hint")
-
-    def on_resize(self, event: events.Resize) -> None:
-        self.call_after_refresh(self._fit_body)
-
-    def _fit_body(self) -> None:
-        # Queued resize events may outlive the dialog's children during teardown.
-        for body in self.query(VerticalScroll):
-            fit_body(body)

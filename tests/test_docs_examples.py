@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -78,11 +77,30 @@ def test_agent_action_examples(tmp_path: Path) -> None:
 
 def test_settings_reference_example(tmp_path: Path) -> None:
     (block,) = toml_blocks(section("configuration.md", "## Settings reference"))
-    data = tomllib.loads(block)
-    data["security"].pop("egress")  # global-only: the reference shows it for completeness
-    cfg = c.from_dict(data)
-    cfg.validate()
+    cfg = load_pair(tmp_path, block, "")
     assert cfg.actions["review"].persona == "reviewer"
+
+
+def test_feedback_policy_examples(tmp_path: Path) -> None:
+    defaults, policy = toml_blocks(section("feedback.md", "## Queue policies"))
+    assert load_pair(tmp_path / "defaults", "", defaults).feedback == c.Feedback()
+    cfg = load_pair(tmp_path / "policy", "", policy)
+    assert cfg.feedback.on_success in cfg.actions
+
+
+def test_documented_profile_and_gateway_settings(tmp_path: Path) -> None:
+    blocks = toml_blocks(section("configuration.md", "## Agent profiles"))
+    cfg = load_pair(tmp_path, "", "\n".join(blocks))
+    assert cfg.profiles["Deep review"].extra_args == ["--memory=16g"]
+    assert cfg.profiles["Pi via gateway"].gateway and cfg.network.agent_proxy
+
+
+def test_bundled_skill_config_examples(tmp_path: Path) -> None:
+    skill = DOCS.parent / "src/project_sandbox_tui/skills/sbx-tui-config/SKILL.md"
+    blocks = toml_blocks(skill.read_text())
+    cfg = load_pair(tmp_path, "", "\n".join(blocks))
+    assert cfg.workflows["spec"].steps[-2:] == ["human-review", "host:test"]
+    assert cfg.profiles["browser-tests"].extra_args
 
 
 def test_workflow_example_with_project_actions(tmp_path: Path) -> None:

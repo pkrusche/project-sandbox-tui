@@ -877,3 +877,42 @@ prompt = "report:success original"
         assert task.job is not None and "original" in task.job.spec.prompt_text
 
     run_app(repo, cfg, second)
+
+
+def test_empty_workflow_review_requires_confirmation_for_current_tip(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    branch = "feature/x"
+    jj(repo, "bookmark", "move", branch, "--to", "main", "--allow-backwards")
+    cfg = fake_cfg(deploy_config_skill=False)
+    cfg.actions = {"plan": Action("report:success")}
+    cfg.commands = {"check": "true"}
+    cfg.workflows = {"review": Workflow("plan", ["host:check"], first_step_interactive=False)}
+    cfg.validate()
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        names = [row.branch.name for row in app.visible_rows()]
+        app.table.move_cursor(row=names.index(branch))
+        await start_workflow(app, pilot, ":workflow review")
+        queue = app.queue
+        await wait_until(pilot, lambda: any(task.human_review for task in queue.get(branch).tasks))
+        await pilot.press("L")
+        await wait_for_screen(app, pilot, QueueScreen)
+        await pilot.press("enter")
+        await wait_for_screen(app, pilot, ConfirmScreen)
+        await pilot.press("n")
+        await app.refresh_data()
+        assert queue.get(branch).tasks[0].human_review and not app.tasks.for_bookmark(branch)
+        await pilot.press("enter")
+        await wait_for_screen(app, pilot, ConfirmScreen)
+        jj(repo, "new", "main")
+        jj(repo, "bookmark", "move", branch, "--to", "@")
+        await pilot.press("y")
+        await app.refresh_data()
+        assert queue.get(branch).tasks[0].human_review and not app.tasks.for_bookmark(branch)
+        await pilot.press("enter")
+        await wait_for_screen(app, pilot, ConfirmScreen)
+        await pilot.press("y")
+        await wait_until(pilot, lambda: any(t.host_task for t in queue.get(branch).history))
+
+    run_app(repo, cfg, scenario)

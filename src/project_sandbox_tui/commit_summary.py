@@ -136,7 +136,7 @@ def resolve_launch(cfg: Config, repo: Path) -> tuple[Config, LaunchSpec]:
         ),
         security=Security(level=LEVEL, egress=cfg.security.egress),
     )
-    caps = capabilities.cached(isolated.sandbox_command(), repo)
+    caps = capabilities.cached(cfg.sandbox_command(), repo)
     if problems := capabilities.level_problems(caps, isolated, LEVEL):
         raise ConfigError(
             "commit review runs with API-only egress: "

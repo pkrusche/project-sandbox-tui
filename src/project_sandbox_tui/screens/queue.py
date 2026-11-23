@@ -16,7 +16,13 @@ from textual.widgets import DataTable, Input, Static
 from project_sandbox_tui.queue import QueuedTask, TaskQueue
 from project_sandbox_tui.screens.dialogs import MessageScreen
 from project_sandbox_tui.screens.log import LogScreen
-from project_sandbox_tui.widgets import KeyHints, PrefixKeys, table_preview
+from project_sandbox_tui.widgets import (
+    KeyHints,
+    PrefixKeys,
+    restore_table_view,
+    table_preview,
+    update_table_cells,
+)
 
 HINT = (
     "q back · j/k ^d/^u gg/G move · / filter · n add · e edit · l/enter edit/log"
@@ -72,7 +78,7 @@ class QueueScreen(Screen[None]):
         edit: Callable[[str, QueuedTask | None], None],
         review: Callable[[str, str], object] | None = None,
         resolve: Callable[[QueuedTask, str], None] | None = None,
-        review_bookmark: Callable[[str, str], None] | None = None,
+        review_bookmark: Callable[[str, str, str], None] | None = None,
     ) -> None:
         super().__init__()
         self.queue = queue
@@ -110,7 +116,7 @@ class QueueScreen(Screen[None]):
         if not self.table.row_count:
             return None
         key, _ = self.table.coordinate_to_cell_key(self.table.cursor_coordinate)
-        return str(key.value)
+        return str(key.value) if key.value is not None else None
 
     def visible_ids(self) -> list[str]:
         return [key for key, _ in self._shown or []]
@@ -174,19 +180,27 @@ class QueueScreen(Screen[None]):
             hint += " · enter review diff · X terminate workflow"
         self.query_one("#queue-hint", Static).update(KeyHints(hint))
         self.query_one("#queue-empty", Static).display = not rows
-        if rows != self._shown:
-            row = self.table.cursor_row
-            for column in self.table.columns.values():
-                column.content_width = column.label.cell_len
-            self.table.clear()
-            for key, cells in rows:
-                self.table.add_row(*cells, key=key)
+        if rows == self._shown:
+            return
+        if self._shown is not None and update_table_cells(self.table, self._shown, rows):
             self._shown = rows
-            ids = self.visible_ids()
-            self.table.move_cursor(
-                row=ids.index(selected) if selected in ids else min(row, max(0, len(ids) - 1)),
-                animate=False,
-            )
+            return
+        scroll_x, scroll_y = self.table.scroll_target_x, self.table.scroll_target_y
+        row = self.table.cursor_row
+        for column in self.table.columns.values():
+            column.content_width = column.label.cell_len
+        self.table.clear()
+        for key, cells in rows:
+            self.table.add_row(*cells, key=key)
+        self._shown = rows
+        ids = self.visible_ids()
+        restore_table_view(
+            self.table,
+            scroll_x,
+            scroll_y,
+            ids.index(selected) if selected in ids else min(row, max(0, len(ids) - 1)),
+            preserve_y=selected in ids and ids.index(selected) == row,
+        )
 
     def change(self, action: Callable[[], None], *, pause: bool = True) -> None:
         try:
@@ -229,8 +243,6 @@ class QueueScreen(Screen[None]):
             row=min(max(0, self.table.cursor_row + step), max(0, self.table.row_count - 1)),
             animate=False,
         )
-        if self._visual_anchor:
-            self.render_queue()
 
     @on(DataTable.RowHighlighted)
     def _highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -251,10 +263,13 @@ class QueueScreen(Screen[None]):
     def action_d_prefix(self) -> None:
         if self._prefix.press("d"):
             ids = self.selection()
-            self.change(lambda: self.queue.delete(self.branch, ids))
-            self.marked.clear()
-            self._visual_anchor = None
-            self.render_queue()
+
+            def delete() -> None:
+                self.queue.delete(self.branch, ids)
+                self.marked.clear()
+                self._visual_anchor = None
+
+            self.change(delete)
 
     def action_visual(self) -> None:
         if self._visual_anchor:
@@ -306,7 +321,7 @@ class QueueScreen(Screen[None]):
             if run := task.job or task.host_task:
                 self.app.push_screen(LogScreen(run))
             elif task.human_review and task.workflow and self.review_bookmark:
-                self.review_bookmark(self.branch, task.workflow.review_base)
+                self.review_bookmark(self.branch, task.workflow.review_base, task.id)
             elif task.status == "pending":
                 self.edit_task(self.branch, task)
 

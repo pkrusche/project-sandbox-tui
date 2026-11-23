@@ -48,7 +48,9 @@ def initialize(repo: Path, global_path: Path | None = None) -> Generator[str]:
     try:
         yield from install_feedback(repo, config_skill=True)
     except (OSError, ValueError) as exc:
-        raise config_mod.ConfigError(f"could not install configuration skill: {exc}") from exc
+        raise config_mod.ConfigError(
+            f"could not install bundled skills and feedback guidance: {exc}"
+        ) from exc
 
 
 def project_template(repo: Path) -> str:

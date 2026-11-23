@@ -44,27 +44,9 @@ Tests cover units, Textual Pilot interactions and pseudo-terminal sessions.
 
 ## Real container smoke test
 
-The opt-in smoke test launches the real `project-sandbox` **bash** agent through
-`JobManager`. It checks a successful run, exit code 7, and a timeout (124), plus
-live session matching, duplicate-launch prevention, adoption by a new manager,
-logs and JSON summaries, bookmark capture, notification persistence, and stopped
-containers. It also deploys an ignored skill fixture, reads it and runs its helper from
-`/workspace`, and checks with `jj file list` that the bookmark captures the
-session's change but no skill files.
-It uses no model API or credentials and keeps the firewall enabled.
-Bash produces plain-text logs, so a Markdown transcript is not required.
-
-The commit-summary smoke test runs a second credential-free Bash session with
-the production summary launcher, using its pinned API-only egress with the
-firewall backend. It reads the pinned patch, checks that the
-mount is read-only and the reviewed checkout and jj store are inaccessible, and
-publishes a result through the feedback helper.
-
-The gateway smoke test runs a Bash session through a local fake agent gateway at
-security level 3 with the egress sidecar (`--agent-proxy` with
-`--egress=sidecar`). It needs the sidecar set up with `project-sandbox-egress`
-and reads the user's `$XDG_CONFIG_HOME/project-sandbox/egress.toml` (never
-changing it); without that policy it is skipped with the reason.
+The opt-in suite runs credential-free Bash sessions through a real container
+runtime and verifies job lifecycle, workspace skills, isolated commit summaries
+and gateway egress. The gateway case also needs a configured egress sidecar.
 
 Install `project-sandbox` ≥ 0.4.1 and jj ≥ 0.46, then start Docker, Podman or
 Apple Containers before running:
@@ -75,40 +57,13 @@ scripts/test.sh -n 0 -v -s tests/test_container_smoke.py \
   --container-smoke --container-runtime docker
 ```
 
-Or let `scripts/e2e-test.sh` check jj and project-sandbox against the minimums
-in `doctor.py`, pick the first responding runtime (Apple container on macOS,
-then Docker, then Podman), and run the command above. `--runtime NAME` (or
-`SBX_E2E_RUNTIME`) overrides detection, `--install` installs the CI-pinned
-project-sandbox when it is missing or too old, `--command CMD` tests another
-project-sandbox command, and arguments after `--` go to pytest. For Apple
-Containers it creates the `--basetemp` directory described below.
+Alternatively, `scripts/e2e-test.sh` checks versions and selects a responding
+runtime. Use `--runtime NAME` to choose one or `--install` to install the pinned
+launcher. Pass pytest options after `--`.
 
-Use `--container-runtime podman`, `apple-container`, or `auto` as appropriate.
-`--container-command 'uv run --project /path/to/project-sandbox project-sandbox'`
-tests a source checkout; `--container-base-image IMAGE` overrides the default
-`python:3.12-slim` base. The first run downloads/builds an image and has a
-20-minute build deadline; the other runs reuse it. Once opted in, missing or
-unhealthy dependencies fail the test. Ordinary test runs skip it without
-probing a runtime.
-
-All repository and session state lives under pytest's temporary directory. For
-Apple Containers (whose build VM cannot read macOS's per-user temp directory),
-or Docker Desktop with restricted file sharing, use a fresh directory in a
-runtime-accessible location outside any repository (the commit summary smoke
-mounts its inputs from there, and refuses a directory inside a checkout):
-
-```sh
-mkdir -p ~/.cache/project-sandbox-tui
-smoke_tmp=$(mktemp -d ~/.cache/project-sandbox-tui/container-smoke.XXXXXX)
-scripts/test.sh -n 0 -v -s tests/test_container_smoke.py \
-  --container-smoke --container-runtime apple-container --basetemp "$smoke_tmp"
-```
-
-`--basetemp` must be disposable: pytest clears it before use. Failure messages
-include output/log paths and tails. In `finally`, the test stops its child
-processes and removes only its recorded containers and uniquely tagged image.
-Repository files and logs remain under the pytest temp directory for inspection.
-Downloaded base images and shared build-cache layers are retained.
+For a runtime with restricted file sharing, provide a disposable, accessible
+`--basetemp` outside any checkout. Pytest clears this directory. The smoke
+suite retains logs there and cleans up its containers and uniquely tagged image.
 
 In GitHub Actions, manually run **CI** with **container_smoke** enabled to run
 the Docker smoke on Python 3.12. This does not add container builds to normal
@@ -173,31 +128,10 @@ whose only parent is immutable `main` and `main@origin`. One release can run
 per checkout at a time. The script also checks the
 live remote main commit.
 
-Choose a version bump or leave the version unchanged. A bump updates the project
-and lockfile and records a Git commit or jj change, then stops. Move the jj
-`main` bookmark to that change if needed, push main, and rerun the script.
-It runs the locked install, Ruff lint and formatting, ty, and `scripts/test.sh`,
-then runs the real container smoke test above through `scripts/e2e-test.sh`, so
-project-sandbox and a running container runtime are required (set
-`SBX_E2E_RUNTIME` to choose the runtime). It builds the sdist and wheel and checks the installed CLI and
-application import in a separate environment before creating a GitHub release
-at the verified commit. The installed CLI version must match the release version;
-it is read from package metadata, so version bumps need no separate source edit.
-Verified artifacts replace all previous contents of the top-level `dist/`
-directory, including when resuming. GitHub release creation, TestPyPI, and PyPI
-each require confirmation; registry tokens are read without echo and passed only
-to uv.
+Start the runtime required for smoke tests and choose the version bump when
+prompted. If the version changes, push the verified main revision and rerun.
+The script checks, builds, verifies the installed package, then prompts before
+creating a release or uploading packages. See `scripts/make-release.sh --help`.
 
-Progress and artifacts are kept under `.release-status/<version>-<commit>/`.
-Rerun to resume after a declined prompt or failed step; completed steps are
-skipped only for the same version and commit. Artifact hashes are checked before
-publishing, and only that release's wheel and sdist are uploaded. Existing remote
-tags/releases are rejected rather than overwritten. If a remote operation succeeds
-but its local progress marker is not saved, inspect the remote result before
-reconciling the corresponding marker; blindly restarting can attempt a duplicate
-upload. After successful PyPI publication, the script removes that release's
-state directory and removes `.release-status/` if it is empty; unfinished releases
-retain their state. The final artifacts remain in `dist/`. Release state is
-ignored by version control and excluded from distribution archives.
-
-See [architecture](architecture.md) for modules and job handling.
+Release state lives under `.release-status/<version>-<commit>/`. Rerun at the same
+commit to resume. Verified artifacts replace the contents of `dist/`.

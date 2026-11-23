@@ -7,18 +7,19 @@ sbx-tui [REPO]               # open the TUI; default: current directory
 sbx-tui --version            # show the installed package version
 sbx-tui --init               # detect project type; initialize config, setup skill and model catalog
 sbx-tui --print-config       # show effective config and a working-copy sandbox command
-sbx-tui --trust-config       # review changed project config
+sbx-tui --trust-config       # review changed project config and workflow files
 sbx-tui --dry-run            # preview sandbox calls or workspace cleanup
 sbx-tui --update-models      # refresh model suggestions
 sbx-tui --cleanup-workspaces # remove eligible workspaces and bookmarks
 sbx-tui doctor               # check dependencies, runtime, config and comparisons to main
 sbx-tui config …             # read or edit settings
+sbx-tui workflow import SOURCE [--name NAME]  # import a local or HTTPS workflow file
 ```
 
 Subcommands accept `-R/--repository PATH` and `--config PATH`. Open repositories
-named `config` or `doctor` as `./config` or `./doctor`.
+named `config`, `doctor` or `workflow` as `./config`, `./doctor` or `./workflow`.
 
-`doctor` checks jj (tested minimum 0.46), project-sandbox (minimum 0.2.2) and
+`doctor` checks jj (tested minimum 0.46), project-sandbox (minimum 0.4.1) and
 runtime health. Failed checks exit 1; warnings alone exit 0. It also warns about
 untrusted config and missing image sources, multiplexers or notifiers.
 
@@ -93,7 +94,7 @@ to review or the comparison is unavailable. Counts follow the saved marks from
 | Key | Action |
 |---|---|
 | `j` `k` · `gg` `G` · `ctrl+d` `ctrl+u` | Move · top/bottom · half page |
-| `/` | Filter (`enter` keeps it, `esc` clears) |
+| `/` · `esc` | Open filter · clear filter or selection (`enter` keeps the filter) |
 | `:` · `\` | [Command line](#command-line) (`:!cmd` runs a shell command) · [leader key](#leader-key) |
 | `i` · `r` | [Interactive session](sessions.md#interactive-sessions) · run or queue a background prompt with optional timeout; `@` uses the current checkout, main requires a new bookmark |
 | `I` | [Host agent](sessions.md#host-agent-sessions) in each selected workspace, creating missing ones; uses `ui.terminal` |
@@ -132,7 +133,7 @@ timeout cancels it.
 The status column shows the last run's outcome and, when inactive, how long ago
 it ended (or started if the end time is unavailable), e.g. `completed · 5m ago`.
 Its graph node shows the outcome as a symbol
-(`▶` running, `✓` completed, `✗` failed, `⚠` other).
+(`▶` running, `✓` completed, `✗` failed, `⏱` timeout, `◆` external, `⚠` other).
 The latest [background task](#tasks) follows while it runs or until
 a newer run starts: `:pytest ▶` (`+N` more running), `:pytest ✓`, `:pytest ✗1`
 with its exit status.
@@ -185,6 +186,7 @@ removes the workspace instead.
 | `:&!cmd` · `:&name args` | Run once in the repository as a [background task](#background-commands) |
 | `:*!cmd` · `:*name args` | Run a background task in [each target workspace](#running-in-each-workspace) at once |
 | `:action args` | Start the [`[actions]`](configuration.md#agent-actions) prompt on each target, with `args` appended |
+| `:workflow NAME [TOPIC]` | Choose stage settings and start a [project workflow](feedback.md#project-workflows) |
 | `:host agent args` | Run the named [host agent](sessions.md#host-agent-sessions) CLI in each target workspace, passing `args` |
 | `:reorganise [bookmark]` (`:reorganize`) | [Reorganise](#reorganising-a-bookmark) `main..bookmark` into smaller, task-aligned commits on a new bookmark |
 | `:help` · `:refresh` · `:reload` · `:quit` (`:q`) | Same as `?` · `R` · `ctrl+l` · `q` |
@@ -198,7 +200,7 @@ removes the workspace instead.
 | `tab` / `shift+tab` | Complete: command names, programs after `!`, file names for arguments; repeat to cycle |
 | `↑` / `↓` · `ctrl+p` / `ctrl+n` | Older / newer command starting with the typed text |
 | `→` at end | Accept the newest matching command shown as ghost text |
-| `enter` · `esc` | Run · cancel (`backspace` on an empty line also cancels) |
+| `enter` · `esc` · `backspace` | Run · cancel · delete character (cancel on an empty line) |
 
 ### Choosing how to run a shell command
 
@@ -219,12 +221,6 @@ in the background on each target.
 | Task record | No background task record | One task under `@` | One task under each target |
 | Stop or return | `Ctrl+C` interrupts; `Enter` at the exit prompt returns to the TUI | `T`, select task, `x` to cancel; `Enter` to view output | Same task controls, separately for each target |
 | After quitting sbx-tui | Return from the command before quitting the TUI | Task keeps running | Tasks keep running |
-
-For example, if `feature/x` is highlighted and several rows are marked,
-`:&test` still runs once in the repository and appears under `@`. `:*test` runs
-in every marked workspace. Clear the marks to run `:*test` only in the
-highlighted workspace. Merely highlighting a bookmark never changes the
-starting directory of `:test` or `:&test`.
 
 All three forms receive `SBX_REPO` as the repository root. For `:!` / `:name`
 and `:&`, `SBX_BOOKMARK` identifies the highlighted row and `SBX_WORKSPACE`
@@ -269,11 +265,8 @@ prompt filled in. Words after the name are appended to the prompt, e.g.
 queues receive a queued prompt; the protected main
 bookmark is skipped. `@` runs in the current checkout.
 sbx-tui asks first for several eligible targets, and before an action runs below
-the project's security level. Action runs use the action's `persona` (on the
-remembered or default provider), its `profile`, or its own agent, model and
-effort; otherwise they use the setup the launch forms would select. See
-[agent actions](configuration.md#agent-actions). They don't change the
-remembered defaults, the remembered setup or the prompt history.
+the project's security level. Action runs preserve the remembered launch setup
+and prompt history. See [agent action settings](configuration.md#agent-actions).
 
 ### Reorganising a bookmark
 
@@ -365,7 +358,7 @@ also after `x` forgot them (`interrupted` when killed), or `?` if it was never
 seen; bookmarks deleted since are marked `(deleted)`.
 The bottom pane follows the highlighted row and shows the agent, full prompt,
 command line, exact time, parents, commit and log path. Long details wrap;
-focus the pane with `tab` to scroll with arrow keys, Page Up/Down or Home/End.
+focus the pane with `tab` to use the movement keys below, arrow keys, Page Up/Down or Home/End.
 
 | Key | Action |
 |---|---|
@@ -396,7 +389,7 @@ bookmark's latest task.
 | `l` / `enter` | The task's output in the [log viewer](#log-viewer) |
 | `s` | Show the full command line |
 | `P` | Details: command, shell script, directory, times, PID and output file |
-| `x` | Cancel a running task, harder on each press; forget a finished one and its output |
+| `x` | Cancel a running task, harder on each press; forget a finished task (workflow logs remain in the queue) |
 | `q` / `esc` / `h` / `T` | Back to the list |
 
 Cancellation sends SIGINT, then SIGTERM and SIGKILL on further presses. The status
@@ -538,29 +531,12 @@ repository; see [defaults and precedence](configuration.md#settings-reference).
 A bookmark name that does not exist yet is flagged under the field: submitting creates it
 from the highlighted bookmark.
 
-The **setup** field selects how the agent is chosen:
-
-- **persona** shows a **provider** and a **persona** field. sbx-tui resolves them
-  with its [model catalogue](models.md): for example provider Gateway/Anthropic
-  with persona planner shows `pi/claude-opus-5-5/high/gateway · level 3`. Persona
-  launches add no profile or custom CLI arguments; `sandbox.extra_args` still
-  apply. A provider that cannot run here, or that lacks the persona's tier, is
-  labelled with the reason, and the form refuses to launch it.
-- A saved [agent profile](configuration.md#agent-profiles) launches with its
-  agent, model, effort, fast mode and extra arguments.
-- **custom** shows the agent, model, effort, fast mode and extra CLI arguments.
-
-The form starts with the remembered setup. Before any choice it selects the
-first configured profile, or persona `implementer` on the default provider when
-no profile is configured. A persona launch remembers its provider and persona
-without touching the remembered custom settings.
-Use `:config-profiles` to name and save profiles for this project.
-Named profiles show a settings summary; the command preview includes their extra
-arguments. To edit the profile, close the launch form and use `:config-profiles`.
-Profiles are also available in merge and rebase forms.
+Use **setup** to choose a persona and provider, a saved profile, or Custom.
+The command preview shows the resolved settings. Use `:config-profiles` to edit
+a named profile. See [setup selection and remembered choices](configuration.md#agent-profiles).
 
 Under Custom, **CLI args** accepts project-sandbox arguments with shell quoting,
-for example `--memory=16g --extra-domain example.org`. These follow the configured
+for example `--memory=16g --cpus=4`. These follow the configured
 `sandbox.extra_args`. The preview updates as fields change; invalid quoting shows
 an error and prevents submitting.
 
@@ -596,6 +572,21 @@ back the next time `r` opens on the same bookmark (or the same merge inputs),
 until a submission is accepted. Drafts last until sbx-tui exits; submitted prompts
 go to the [prompt history](#prompt-history).
 
+### Profile editor
+
+| Key | Action |
+|---|---|
+| `ctrl+s` / `ctrl+enter` | Save the profile |
+| `ctrl+d` | Delete the selected profile after confirmation |
+| `esc` | Discard edits |
+
+### Workflow setup
+
+| Key | Action |
+|---|---|
+| `enter` / `ctrl+s` | Start with the displayed stage choices |
+| `esc` | Cancel |
+
 ## Prompt history
 
 Each repository remembers the latest 500 distinct background prompts submitted
@@ -609,6 +600,14 @@ not add to this history.
 | `ctrl+p` / `ctrl+n` | Older / newer prompt matching the typed prefix |
 | `ctrl+r` | Search: type words, `↑`/`↓` choose, `enter` inserts |
 | `ctrl+l` · `ctrl+z` | Clear · undo |
+
+### History search
+
+| Key | Action |
+|---|---|
+| `↑` / `ctrl+p` / `ctrl+k` | Previous match |
+| `↓` / `ctrl+n` / `ctrl+j` | Next match |
+| `enter` / `esc` | Insert selected prompt / cancel |
 
 ## Prompt queue
 
@@ -627,7 +626,7 @@ prompt-only edit keeps its original profile or persona and provider.
 `:workflow NAME [TOPIC]` starts a configured workflow. Its first action runs
 interactively or enters this queue, according to `first_step_interactive`.
 In the flow column, `→` marks a step with another step to follow and `■` marks
-the final step.
+the final step. `×` marks a terminated workflow.
 An **awaiting review** step waits for all file changes in the bookmark's review
 to be marked. Press `enter` on that step to open the diff review. Press `p`
 after a stopped background step to retry it, or `X` on the active step to end

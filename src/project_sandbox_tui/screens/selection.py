@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from project_sandbox_tui import capabilities as caps_mod
 from project_sandbox_tui import catalogue
 from project_sandbox_tui.capabilities import Capabilities
@@ -41,11 +39,6 @@ def provider_labels(cfg: Config, caps: Capabilities, tier: str = "") -> dict[str
         reason = provider_reason(cfg, caps, row.id, tier)
         labels[row.id] = f"{row.label} — unavailable: {reason}" if reason else row.label
     return labels
-
-
-def provider_available(cfg: Config, caps: Capabilities) -> Callable[[str], bool]:
-    """A predicate for :func:`config.remembered_provider`."""
-    return lambda row_id: not provider_reason(cfg, caps, row_id)
 
 
 def level_labels(cfg: Config, caps: Capabilities) -> dict[str, str]:

@@ -893,3 +893,43 @@ def test_gateway_launch_refused_without_discovery(
     with pytest.raises(ConfigError, match=message):
         jobs.start_background(spec, {})
     assert "main" not in jobs.jobs
+
+
+@pytest.mark.parametrize("error", [PermissionError, ProcessLookupError])
+def test_failed_signals_allow_forgetting_background_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[OSError]
+) -> None:
+    jobs = JobManager(tmp_path, Config())
+    jobs.save(JobRecord("topic", bg("topic", "hello"), 123, "2026-01-01T00:00:00Z"))
+
+    def fail(pid: int, sig: int) -> None:
+        assert pid == 123
+        raise error
+
+    monkeypatch.setattr(os, "killpg", fail)
+    monkeypatch.setattr(JobManager, "STOP_DEBOUNCE_S", 0)
+    for _ in range(2):
+        assert "press x again" in jobs.cancel("topic", {})
+    assert "forgotten" in jobs.cancel("topic", {})
+    assert not JobManager(tmp_path, Config()).jobs
+
+
+@pytest.mark.parametrize("mode", ["interactive", "external"])
+def test_failed_reservation_removes_feedback_directory(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    jobs = JobManager(repo, fake_cfg())
+    spec = LaunchSpec("@", "bash")
+
+    def fail(job: JobRecord) -> None:
+        assert Path(job.feedback_path).parents[1].is_dir()
+        raise OSError("reservation failed")
+
+    monkeypatch.setattr(jobs, "save", fail)
+    with pytest.raises(OSError, match="reservation failed"):
+        if mode == "interactive":
+            with jobs.interactive(spec, {}):
+                pytest.fail("unsaved job started")
+        else:
+            jobs.record_external(spec, ["example"])
+    assert not list((jobs.state_dir / "runs").iterdir())

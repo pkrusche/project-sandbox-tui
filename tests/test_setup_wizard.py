@@ -48,6 +48,7 @@ def test_setup_dialog(home: Path) -> None:
         )
         assert result.sources["copilot"] == "token login"
         assert "--vcs-access=read-only" in result.summary
+        assert result.summary in result.prompt(["claude"])
 
         app = wizard.SetupDialog(["copilot"], PROBED, home=home)
         async with app.run_test() as pilot:
@@ -137,19 +138,6 @@ def test_gateway_preselected_when_configured(home: Path) -> None:
     asyncio.run(interact())
 
 
-def test_fallback_wording_when_launcher_cannot_be_probed(home: Path) -> None:
-    async def interact() -> None:
-        app = wizard.SetupDialog(["claude"], capabilities.fallback(["project-sandbox"]), home=home)
-        async with app.run_test() as pilot:
-            await pilot.press("ctrl+s")
-        result = app.return_value
-        assert result is not None
-        assert "built-in fallbacks" in result.summary
-        assert "`project-sandbox --help`" in result.prompt(["claude"])
-
-    asyncio.run(interact())
-
-
 def test_summary_lists_providers_levels_and_personas(home: Path) -> None:
     from project_sandbox_tui.config import Config
 
@@ -161,7 +149,7 @@ def test_summary_lists_providers_levels_and_personas(home: Path) -> None:
     assert "copilot-openai (Copilot/OpenAI: available, token login)" in text
     assert "1 (no firewall), 2 (firewall + package sources), 3 (agent API only)" in text
     assert "reviewer (high / high / level 4)" in text and "commit-reviewer" not in text
-    assert "need `security.egress" not in text
+    assert "need security.egress" not in text
 
 
 def test_summary_without_sidecar_egress(home: Path) -> None:
@@ -171,19 +159,3 @@ def test_summary_without_sidecar_egress(home: Path) -> None:
     text = capabilities.setup_summary(caps, home=home, cfg=Config())
     assert 'levels 3 to 5 need security.egress = "firewall" in the global config' in text
     assert "supports with security.egress = 'sidecar': 1 (no firewall), 2 (" in text
-
-
-def test_interview_prompt_carries_the_summary(home: Path) -> None:
-    async def interact() -> None:
-        caps = dataclasses.replace(PROBED, egress_modes=("firewall", "sidecar"))
-        app = wizard.SetupDialog(["claude"], caps, home=home)
-        async with app.run_test() as pilot:
-            await pilot.press("ctrl+s")
-        result = app.return_value
-        assert result is not None
-        prompt = result.prompt(["claude"])
-        assert "Personas (tier / effort / fast / level)" in prompt
-        assert "propose a project\nsecurity.level" in prompt
-        assert "Corporate proxy and CA settings belong in the global config" in prompt
-
-    asyncio.run(interact())

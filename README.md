@@ -75,8 +75,9 @@ Press `?` for full help.
 
 Highlight `@` or a feature bookmark and press `i` for an interactive sandbox
 session or `r` to run or queue a background prompt (`L` manages the queue).
-Use `:config-profiles` to save an agent setup,
-then choose it in either launch form. Select **custom** to adjust settings for a run.
+With no saved profile or prior choice, the form opens on the implementer persona.
+Choose a provider and persona, a saved profile (`:config-profiles`), or **custom**.
+Set `security.level` for project-wide isolation and review the level on each launch.
 
 See [initialization](docs/configuration.md#initialization) for project detection
 and the `sbx-tui-config` and `sbx-tui-safety` skills. Existing config and skill
@@ -92,6 +93,7 @@ files are preserved. Bookmark workspaces get ignored copies, along with any
 - [Workspace cleanup](docs/cleanup.md)
 - [Configuration](docs/configuration.md)
 - [Model suggestions](docs/models.md)
+- [Run feedback and workflows](docs/feedback.md)
 - [Architecture](docs/architecture.md)
 - [Development](docs/development.md)
 

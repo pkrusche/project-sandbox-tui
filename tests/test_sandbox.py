@@ -105,8 +105,17 @@ def test_fast_mode_argv(tmp_path: Path, agent: str, background: bool, fast: bool
     assert LaunchSpec.from_dict(spec.to_dict()) == spec
 
 
-def test_old_launch_spec_defaults_fast_mode_to_off() -> None:
-    assert not LaunchSpec.from_dict({"branch": "b", "agent": "codex"}).fast
+def test_saved_launch_spec_compatibility() -> None:
+    old = LaunchSpec.from_dict({"branch": "topic", "agent": "bash"})
+    assert old == LaunchSpec("topic", "bash")
+    for spec in (
+        LaunchSpec(
+            "topic", "pi", model="m", gateway=True, profile="local", extra_args=["--cpus=2"]
+        ),
+        LaunchSpec("topic", "codex", fast=True, persona="checker", provider="codex", level=4),
+    ):
+        assert LaunchSpec.from_dict(spec.to_dict()) == spec
+    assert LaunchSpec.from_dict({**old.to_dict(), "level": 9}).level is None
 
 
 def test_background_argv(tmp_path: Path) -> None:
@@ -304,14 +313,6 @@ def test_runtime_auto_selection(
     assert sandbox.runtime_cli("auto") == expected
 
 
-def test_old_records_without_gateway_load() -> None:
-    spec = LaunchSpec.from_dict({"branch": "b", "agent": "pi"})
-    assert spec.gateway is False
-    gateway = LaunchSpec("b", "pi", gateway=True)
-    assert LaunchSpec.from_dict(gateway.to_dict()) == gateway
-    assert gateway.label() == "pi/gateway"
-
-
 def test_fallback_stop_cannot_target_an_unrelated_runtime() -> None:
     assert sandbox.runtime_cli("chroot", which=lambda cli: f"/bin/{cli}") is None
 
@@ -320,11 +321,6 @@ def _gateway_argv(tmp_path: Path, agent: str, model: str, *, gateway: bool) -> l
     cfg = make_cfg()
     spec = LaunchSpec(branch="b", agent=agent, model=model, gateway=gateway)
     return build_argv(cfg, tmp_path / "repo", spec)
-
-
-def test_claude_with_gateway_configured_gets_no_gateway_flags(tmp_path: Path) -> None:
-    argv = _gateway_argv(tmp_path, "claude", "opus", gateway=False)
-    assert not [a for a in argv if a.startswith("--agent-proxy")]
 
 
 def test_pi_from_two_profiles(tmp_path: Path) -> None:

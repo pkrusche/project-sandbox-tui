@@ -149,7 +149,7 @@ def check_name(table: str, name: str) -> None:
     if not all(NAME.fullmatch(part) for part in name.split("/")) or name.count("/") > 1:
         raise CommandError(
             f"[{table}] name {name!r} must start with a letter and contain only "
-            "letters, digits, _ and -"
+            "letters, digits, _ and - in each part, with at most one /"
         )
     if name in BUILTINS or name in ALIASES:
         raise CommandError(f"[{table}] {name} is a built-in command")

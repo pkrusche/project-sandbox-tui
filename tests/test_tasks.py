@@ -106,6 +106,32 @@ def test_old_tasks_are_pruned(tmp_path: Path) -> None:
     assert manager.latest("other") is not None
 
 
+def test_pruning_acknowledged_workflow_task_preserves_queue_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = TaskManager(tmp_path / "state")
+    log = tmp_path / "host.out"
+    log.write_text("reviewed revision")
+    task = TaskRecord(
+        "workflow-abc",
+        "topic",
+        "host:test",
+        "true",
+        str(tmp_path),
+        123,
+        "",
+        str(log),
+        str(tmp_path / "exit"),
+        status="completed",
+        workflow_repo=str(tmp_path),
+    )
+    manager.save(task)
+    monkeypatch.setattr("project_sandbox_tui.tasks.KEEP", 0)
+    assert manager.mark_notified(task) and not manager.tasks
+    assert task.display_line == "host:test" and task.display_name == "host:test"
+    assert task.output_files()[0].read_text() == "reviewed revision"
+
+
 def test_finished_batch_is_pruned_after_notifications(tmp_path: Path) -> None:
     manager = TaskManager(tmp_path / "state")
     release = tmp_path / "release"
@@ -238,3 +264,33 @@ def test_load_swaps_in_a_complete_dict(tmp_path: Path, monkeypatch: pytest.Monke
     manager.load()
     assert during == [True, True]
     assert manager.tasks is not old and len(manager.tasks) == 2
+
+
+@pytest.mark.parametrize("error", [PermissionError, ProcessLookupError])
+def test_failed_signals_allow_forgetting_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[OSError]
+) -> None:
+    manager = TaskManager(tmp_path)
+    task = TaskRecord(
+        "abc",
+        "topic",
+        "test",
+        "true",
+        str(tmp_path),
+        123,
+        "",
+        str(tmp_path / "out"),
+        str(tmp_path / "exit"),
+    )
+    manager.save(task)
+
+    def fail(pid: int, sig: int) -> None:
+        assert pid == task.pid
+        raise error
+
+    monkeypatch.setattr(os, "killpg", fail)
+    monkeypatch.setattr("project_sandbox_tui.tasks.STOP_DEBOUNCE_S", 0)
+    for _ in range(2):
+        assert "press x again" in manager.cancel_task(task.id)
+    assert "forgotten" in manager.cancel_task(task.id)
+    assert not TaskManager(tmp_path).tasks

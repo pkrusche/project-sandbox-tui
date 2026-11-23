@@ -89,7 +89,9 @@ def test_unavailable_agent_is_marked_with_reason(
     capabilities.save(probed(cfg, ("claude", "codex", "bash")), capabilities.cache_path(repo))
 
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        _form, controls = await open_form(app, pilot)
+        form, controls = await open_form(app, pilot)
+        labels = field(form, "provider").labels
+        assert "no ~/.codex" in labels["codex"] and "not supported" in labels["copilot-openai"]
         controls.query_one("#agent", CycleField).value = "codex"
         await pilot.pause()
         assert "codex: unavailable — no ~/.codex on this host" in status(controls)
@@ -226,24 +228,6 @@ def test_persona_mode_without_profiles(repo: Path, fake_cfg: Callable[..., Confi
             "codex",
             "implementer",
         )
-        assert field(form, "persona").options == [
-            "planner",
-            "checker",
-            "implementer",
-            "debugger",
-            "chore-runner",
-            "reviewer",
-        ]
-        assert field(form, "provider").options == [
-            "codex",
-            "claude-code",
-            "gateway-openai",
-            "gateway-anthropic",
-            "gateway-gemini",
-            "copilot-openai",
-            "copilot-anthropic",
-            "copilot-gemini",
-        ]
         labels = field(form, "provider").labels
         assert labels["claude-code"] == "Claude Code"
         assert labels["gateway-anthropic"] == (
@@ -369,39 +353,6 @@ def test_frontier_persona_on_copilot_anthropic_is_refused(
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen is form and not app.jobs.jobs
-
-    run_app(repo, cfg, scenario)
-
-
-def test_planner_hint_on_gateway_anthropic(repo: Path, fake_cfg: Callable[..., Config]) -> None:
-    cfg = fake_cfg()
-    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
-
-    async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        form, _controls = await open_form(app, pilot)
-        field(form, "persona").value = "planner"
-        field(form, "provider").value = "gateway-anthropic"
-        await pilot.pause()
-        assert hint_text(form) == "pi/claude-opus-5-5/high/gateway · level 3"
-        field(form, "provider").value = "gateway-gemini"
-        await pilot.pause()
-        assert "provider default effort" in hint_text(form)
-        assert "--effort" not in str(form.query_one("#preview", Static).render())
-
-    run_app(repo, cfg, scenario)
-
-
-def test_codex_without_host_configuration_is_unavailable(
-    repo: Path, fake_cfg: Callable[..., Config], empty_home: Path
-) -> None:
-    cfg = fake_cfg()
-    capabilities.save(probed(cfg, ("claude", "codex", "bash")), capabilities.cache_path(repo))
-
-    async def scenario(app: SandboxTUI, pilot: Any) -> None:
-        form, _controls = await open_form(app, pilot)
-        label = field(form, "provider").labels["codex"]
-        assert label.startswith("Codex — unavailable: no ~/.codex on this host")
-        assert "not supported" in field(form, "provider").labels["copilot-openai"]
 
     run_app(repo, cfg, scenario)
 

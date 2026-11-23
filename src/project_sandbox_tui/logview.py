@@ -24,14 +24,17 @@ from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
 
-_sub_escape = re.compile("[\u0000-\u0014]").sub
+_sub_escape = re.compile(r"[\x00-\x1f\x7f-\x9f]").sub
+_ansi = re.compile(
+    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)"
+)
 _line_endings = re.compile(r"(\r\n|\r|\n)")
 _fence = re.compile(r" {0,3}(`{3,}|~{3,})")
 
 
 def _process_line(line: str) -> str:
     """Replace control codes as ``Log`` does, so rows keep their cell widths."""
-    return _sub_escape("\N{REPLACEMENT CHARACTER}", line.expandtabs())
+    return _sub_escape("\N{REPLACEMENT CHARACTER}", _ansi.sub("", line).expandtabs())
 
 
 def markdown_blocks(lines: Sequence[str], start: int, end: int) -> list[tuple[int, int]]:
@@ -47,8 +50,8 @@ def markdown_blocks(lines: Sequence[str], start: int, end: int) -> list[tuple[in
     for i in range(start, end):
         line = lines[i]
         if fence:
-            stripped = line.strip()
-            if stripped.startswith(fence) and not stripped.strip(fence[0]):
+            match = _fence.match(line)
+            if match and match[1].startswith(fence) and not line[match.end() :].strip(" \t"):
                 fence = ""
             continue
         if not line.strip():
@@ -66,7 +69,7 @@ def markdown_blocks(lines: Sequence[str], start: int, end: int) -> list[tuple[in
             blank = None
         if first is None:
             first = i
-        if match := _fence.match(line):
+        if (match := _fence.match(line)) and (match[1][0] == "~" or "`" not in line[match.end() :]):
             fence = match.group(1)
     if first is not None:
         blocks.append((first, end))
@@ -102,6 +105,7 @@ class LiveLog(ScrollView, can_focus=True):
         self.max_lines = max_lines
         self._wrap = wrap
         self._markdown = False
+        self._ended_cr = False
         self._lines: list[str] = []
         self._width = 0  # the width the current layout was made for, 0 before layout
         self._max_width = 0
@@ -148,6 +152,7 @@ class LiveLog(ScrollView, can_focus=True):
             self._relayout()
 
     def clear(self) -> None:
+        self._ended_cr = False
         self._lines.clear()
         self._starts.clear()
         self._rows.clear()
@@ -161,6 +166,9 @@ class LiveLog(ScrollView, can_focus=True):
     def write(self, data: str) -> None:
         if not data:
             return
+        if self._ended_cr:
+            data = data.removeprefix("\n")
+        self._ended_cr = data.endswith("\r")
         if not self._lines:
             self._lines.append("")
         changed = len(self._lines) - 1
@@ -170,7 +178,10 @@ class LiveLog(ScrollView, can_focus=True):
             else:
                 self._lines[-1] += piece
         if self.max_lines is not None and len(self._lines) > self.max_lines:
-            changed -= self._prune(len(self._lines) - self.max_lines)
+            removed = self._prune(len(self._lines) - self.max_lines)
+            changed -= removed
+            if self.cursor_row is not None:
+                self.cursor_row = max(0, self.cursor_row - removed)
         self._layout_from(max(0, changed))
         if self.auto_scroll:
             self.scroll_end(animate=False, immediate=True, x_axis=False)
@@ -212,7 +223,7 @@ class LiveLog(ScrollView, can_focus=True):
     def _render_block(self, first: int, stop: int, width: int) -> list[Strip]:
         console = self.app.console
         if self._markdown:
-            text = "\n".join(self._lines[first:stop])
+            text = "\n".join(_process_line(line) for line in self._lines[first:stop])
             if not text.strip():
                 return [Strip.blank(0)]
             options = console.options.update(width=width, height=None, highlight=False)
@@ -335,7 +346,7 @@ class LiveLog(ScrollView, can_focus=True):
         if not 0 <= y < self._row_count:
             return None
         block = self._block_of_row(y)
-        return self._starts[block], self._rows[block][y - self._offsets[block]]
+        return block, self._rows[block][y - self._offsets[block]]
 
     def render_line(self, y: int) -> Strip:
         scroll_x, scroll_y = self.scroll_offset
@@ -345,7 +356,7 @@ class LiveLog(ScrollView, can_focus=True):
         found = self._row(row)
         if found is None:
             return Strip.blank(width, style)
-        line, strip = found
+        block, strip = found
         selection = self.text_selection
         if selection is not None and (span := selection.get_span(row)) is not None:
             end = strip.cell_length if span[1] == -1 else min(span[1], strip.cell_length)
@@ -354,7 +365,11 @@ class LiveLog(ScrollView, can_focus=True):
             highlight = self.screen.get_component_rich_style("screen--selection")
             strip = Strip.join([before, middle.apply_style(highlight), after])
         strip = strip.apply_style(style).crop_extend(scroll_x, scroll_x + width, style)
-        if self.cursor_row is not None and self.cursor_row == line:
+        if (
+            self.cursor_row is not None
+            and 0 <= self.cursor_row < self.line_count
+            and self._block_of_line(self.cursor_row) == block
+        ):
             cursor: Style = self.get_component_rich_style("live-log--cursor")
             strip = Strip(Segment.apply_style(strip, post_style=cursor), strip.cell_length)
         return strip.apply_offsets(scroll_x, row)

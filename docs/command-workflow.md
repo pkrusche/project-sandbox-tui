@@ -36,10 +36,7 @@ Press `:`, type `test`, and press `Enter`. The command takes over the terminal:
 ── exited with 0; press Enter to return to sbx-tui ──
 ```
 
-Press `Enter` to return. If the tests take longer than expected, `Ctrl+C`
-interrupts them; press `Enter` at the exit prompt to return to the TUI.
-An exit status of `-2` or `130` means the command was interrupted. This form
-does not create a background task or a captured log in the task list.
+Press `Enter` at the exit prompt to return.
 
 ## 3. Run once in the repository background
 
@@ -65,10 +62,6 @@ or `l` to follow its captured output; `q` returns to the task list, and another
 `q` returns to the bookmark list. Let this run finish before the next step.
 Its result remains available in `T`.
 
-`:&test` does not create or enter the highlighted bookmark's workspace.
-Use the `&` prefix as shown: a trailing shell `&` (`:!uv run pytest -q &`)
-does not create a tracked sbx-tui task.
-
 ## 4. Run in both marked workspaces
 
 Back on the bookmark list, keep `feature/parser` and `fix/cache` marked and
@@ -81,11 +74,6 @@ Press `T` again. In this example, the parser tests pass and the cache tests fail
 ![Task list with :*test completed for feature/parser, failed with exit 1 for fix/cache, and the earlier completed :&test under @.](images/command-workflow/03-workspace-tasks.svg)
 
 *Three records: the earlier repository run, plus one run for each marked bookmark.*
-
-The separate results matter: a passing repository run says nothing about
-changes that exist only in another bookmark's workspace. With no rows marked,
-`:*test` runs only in the highlighted workspace. `Esc` on the bookmark list
-clears marks when you want that single-workspace behavior.
 
 ## 5. Inspect the failure
 
@@ -102,23 +90,6 @@ To rerun just the cache tests after making a fix, return to the bookmark list,
 press `Esc` to clear marks, highlight `fix/cache`, and enter `:*test` again.
 Each invocation creates a new task record, so you can compare it with the
 earlier failure in `T`.
-
-## 6. Cancel or leave a task running
-
-To stop a background task, open `T`, select its running row, and press `x`.
-That targets just that task. If it does not stop, further presses escalate
-from SIGINT to SIGTERM and SIGKILL. On a finished row, `x` forgets the task
-and removes its captured output instead.
-
-On the bookmark list, `x` acts on the target bookmarks and can affect several
-running tasks or sandbox runs. Use the task list when you want to cancel only
-one command.
-
-Both `:&` and `:*` tasks keep running if you quit sbx-tui. Shell tasks alone do
-not trigger a quit confirmation; reopening sbx-tui in the same repository
-lets you inspect their status and logs. Background commands capture output
-and have no interactive input, so use the foreground form for commands that
-need terminal interaction.
 
 For the complete controls, see [Tasks](usage.md#tasks) and the
 [log viewer](usage.md#log-viewer).

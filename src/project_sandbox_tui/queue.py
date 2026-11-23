@@ -18,7 +18,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from project_sandbox_tui import feedback
+from project_sandbox_tui import capabilities, feedback
 from project_sandbox_tui.config import (
     HOST_STEP_PREFIX,
     HUMAN_REVIEW,
@@ -34,7 +34,7 @@ from project_sandbox_tui.config import (
     write_state,
 )
 from project_sandbox_tui.jobs import BusyError, JobManager, JobRecord, SessionSource, _now
-from project_sandbox_tui.review import SeenFiles
+from project_sandbox_tui.review import SeenFiles, empty_review_key
 from project_sandbox_tui.sandbox import LaunchSpec, SessionRecord
 from project_sandbox_tui.tasks import TaskManager, TaskRecord
 from project_sandbox_tui.vcs import VcsError, commit_revset, detect, main_branch
@@ -824,15 +824,20 @@ class TaskQueue:
         timeout = parent.timeout if action.timeout is None else action.timeout
         level = action.level or parent.level
         if action.persona or action.profile:
+            last = LastUsed.load(jobs.repo)
             if action.persona:
+                provider = parent.provider
+                if not provider:
+                    caps = capabilities.cached(cfg.sandbox_command(), jobs.repo)
+                    provider = capabilities.default_provider(cfg, last, caps)
                 selection = Selection(
-                    StepChoice("persona", persona=action.persona), parent.provider
+                    StepChoice("persona", persona=action.persona), provider, level
                 )
             else:
                 if action.profile not in cfg.profiles:
                     raise ConfigError(f"unknown successor profile {action.profile!r}")
                 selection = Selection(StepChoice("profile", action.profile), level=level)
-            setup = resolve_selection(cfg, LastUsed.load(jobs.repo), selection, action)
+            setup = resolve_selection(cfg, last, selection, action)
             spec = LaunchSpec.from_setup(setup, parent.branch, "background", prompt)
             spec.timeout = timeout
             return spec
@@ -969,7 +974,9 @@ class TaskQueue:
             backend = detect(jobs.repo)
             base = workflow.review_base
             target = backend._bookmark_commit(task.branch, snapshot=True)
-            keys = backend.review_file_keys(base, target)
+            keys = backend.review_file_keys(base, target) or {
+                empty_review_key(task.id, base, target)
+            }
             if not keys <= SeenFiles.for_repo(jobs.repo).seen():
                 return
             if isinstance(script, str):

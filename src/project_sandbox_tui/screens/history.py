@@ -19,10 +19,8 @@ PREVIEW_CHARS = 110
 
 def _preview(prompt: str) -> Text:
     lines = prompt.splitlines() or [""]
-    first = lines[0]
-    if len(first) > PREVIEW_CHARS:
-        first = first[: PREVIEW_CHARS - 1] + "…"
-    text = Text(first)
+    text = Text(lines[0].expandtabs(), overflow="ellipsis")
+    text.truncate(PREVIEW_CHARS)
     if len(lines) > 1:
         text.append(f"  (+{len(lines) - 1} lines)", style="dim")
     return text

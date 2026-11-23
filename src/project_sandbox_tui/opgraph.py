@@ -252,24 +252,24 @@ class State:
                         found.append(other)
             return found
 
-        memo: dict[str, list[str]] = {}
+        edges = {lineage: direct(lineage) for lineage in by_lineage}
 
-        def collapse(lineage: str, seen: frozenset[str]) -> list[str]:
-            if lineage in memo:
-                return memo[lineage]
+        def collapse(lineage: str) -> list[str]:
             found: list[str] = []
-            for parent in direct(lineage):
+            seen = {lineage}
+            pending = list(reversed(edges.get(lineage, [])))
+            while pending:
+                parent = pending.pop()
                 if parent in seen:
-                    continue  # a cycle; recorded history never has one
-                reached = [parent] if parent in shown else collapse(parent, seen | {parent})
-                found += [p for p in reached if p not in found]
-            memo[lineage] = found
+                    continue
+                seen.add(parent)
+                if parent in shown:
+                    found.append(shown[parent])
+                else:
+                    pending.extend(reversed(edges[parent]))
             return found
 
-        return {
-            name: [shown[p] for p in collapse(lineage, frozenset({lineage})) if p != lineage]
-            for lineage, name in shown.items()
-        }
+        return {name: collapse(lineage) for lineage, name in shown.items()}
 
     def undo_entry(self) -> UndoEntry | None:
         return self.undo[self.position - 1] if self.position > 0 else None
@@ -384,9 +384,17 @@ class State:
         if not commit:
             return []
 
-        def rank(name: str) -> tuple[bool, float, str]:
+        branches = list(branches)
+        timestamps = {b.name: b.timestamp for b in branches}
+
+        def rank(name: str) -> tuple[bool, float, int, str]:
             lineage = self.nodes.get(self.current.get(name, ""))
-            return (name != main, lineage.at if lineage else float("inf"), name)
+            return (
+                name != main,
+                lineage.at if lineage else float("inf"),
+                timestamps.get(name, 0),
+                name,
+            )
 
         own = rank(bookmark)
         same = [
@@ -411,7 +419,11 @@ class State:
         for branch in unknown:
             root = self.nodes[self.current[branch.name]]
             parents = self.infer_parents(branch.name, branch.commit, branches, ancestors, main)
-            root.parents = [h.id for p in parents if (h := self.head(p)) is not None]
+            root.parents = list(
+                dict.fromkeys(
+                    h.id for p in parents if p != branch.name and (h := self.head(p)) is not None
+                )
+            )
 
     def _run_outcome(
         self, node: Node, jobs: Mapping[str, JobRecord], listed_at: float

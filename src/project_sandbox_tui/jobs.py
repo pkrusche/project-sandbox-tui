@@ -653,25 +653,30 @@ class JobManager:
                 require_feedback=bool(queue_id),
                 blocked_guidance=blocked_guidance,
             )
-            launch_argv = (
-                argv
-                if argv is not None
-                else build_argv(self.cfg, self.repo, spec, feedback_dir=feedback_dir)
-            )
-            job = JobRecord(
-                branch=spec.branch,
-                spec=spec,
-                pid=os.getpid(),  # the TUI itself holds the terminal
-                started_at=_now(),
-                argv=launch_argv,
-                notified=True,  # nothing to notify: the user is watching
-                host=host,
-                queue_id=queue_id,
-                base_commit=commit,
-            )
-            self._attach_feedback(job, run_id, feedback_dir)
-            self._archive(spec.branch)
-            self.save(job)
+            try:
+                launch_argv = (
+                    argv
+                    if argv is not None
+                    else build_argv(self.cfg, self.repo, spec, feedback_dir=feedback_dir)
+                )
+                job = JobRecord(
+                    branch=spec.branch,
+                    spec=spec,
+                    pid=os.getpid(),  # the TUI itself holds the terminal
+                    started_at=_now(),
+                    argv=launch_argv,
+                    notified=True,  # nothing to notify: the user is watching
+                    host=host,
+                    queue_id=queue_id,
+                    base_commit=commit,
+                )
+                self._attach_feedback(job, run_id, feedback_dir)
+                self._archive(spec.branch)
+                self.save(job)
+            except Exception:
+                if feedback_dir:
+                    shutil.rmtree(feedback_dir, ignore_errors=True)
+                raise
             # The caller owns the exit code until it returns. Polling can reload
             # the cached record from disk while the terminal is still active.
             self.jobs[spec.branch] = JobRecord.from_dict(job.to_dict())
@@ -760,31 +765,36 @@ class JobManager:
                 require_feedback=bool(queue_id),
                 blocked_guidance=blocked_guidance,
             )
-            paths = self.new_run_paths(spec.branch) if host or feedback_dir else None
-            if paths:
-                private_dir(paths.summary.parent)
-            if feedback_dir and not host:
-                assert paths is not None
-                argv = [*argv, *feedback_transport.mounts(feedback_dir)]
-                if not queue_id:
-                    argv.append(f"--json-summary={paths.summary}")
-            job = JobRecord(
-                branch=spec.branch,
-                spec=spec,
-                pid=0,
-                started_at=_now(),
-                argv=argv,
-                notified=not (host or queue_id),
-                external=True,
-                host=host,
-                queue_id=queue_id,
-                base_commit=commit,
-            )
-            self._attach_feedback(job, run_id, feedback_dir)
-            if paths:
-                job.summary_path = str(paths.summary)
-            self._archive(spec.branch)
-            self.save(job)
+            try:
+                paths = self.new_run_paths(spec.branch) if host or feedback_dir else None
+                if paths:
+                    private_dir(paths.summary.parent)
+                if feedback_dir and not host:
+                    assert paths is not None
+                    argv = [*argv, *feedback_transport.mounts(feedback_dir)]
+                    if not queue_id:
+                        argv.append(f"--json-summary={paths.summary}")
+                job = JobRecord(
+                    branch=spec.branch,
+                    spec=spec,
+                    pid=0,
+                    started_at=_now(),
+                    argv=argv,
+                    notified=not (host or queue_id),
+                    external=True,
+                    host=host,
+                    queue_id=queue_id,
+                    base_commit=commit,
+                )
+                self._attach_feedback(job, run_id, feedback_dir)
+                if paths:
+                    job.summary_path = str(paths.summary)
+                self._archive(spec.branch)
+                self.save(job)
+            except Exception:
+                if feedback_dir:
+                    shutil.rmtree(feedback_dir, ignore_errors=True)
+                raise
             self.jobs[spec.branch] = job
             return job
 
@@ -1019,12 +1029,12 @@ class JobManager:
         if last is not None and now - last < self.STOP_DEBOUNCE_S:
             return f"{branch}: cancel already requested"
         stage = min(self._stop_stage.get(branch, 0), len(self.STOP_SIGNALS) - 1)
+        self._stop_stage[branch] = stage + 1
+        self._stop_last[branch] = now
         if job.mode != "background" or job.pid <= 0:
             if stage == len(self.STOP_SIGNALS) - 1:
                 self._forget(branch)
                 return f"{branch}: record forgotten (no process was signalled)"
-            self._stop_stage[branch] = stage + 1
-            self._stop_last[branch] = now
             reason = (
                 "interactive sessions are stopped from their terminal"
                 if job.mode != "background"
@@ -1035,12 +1045,16 @@ class JobManager:
         sig = self.STOP_SIGNALS[stage]
         try:
             os.killpg(job.pid, sig)
-        except ProcessLookupError:
-            return f"{branch}: process already gone"
-        except PermissionError:
-            return f"{branch}: not permitted to signal pid {job.pid}"
-        self._stop_stage[branch] = stage + 1
-        self._stop_last[branch] = now
+        except (ProcessLookupError, PermissionError) as exc:
+            reason = (
+                "process already gone"
+                if isinstance(exc, ProcessLookupError)
+                else f"not permitted to signal pid {job.pid}"
+            )
+            if stage == len(self.STOP_SIGNALS) - 1:
+                self._forget(branch)
+                return f"{branch}: {reason}; record forgotten"
+            return f"{branch}: {reason}; press x again to escalate"
         name = signal.Signals(sig).name
         if sig != signal.SIGKILL:
             more = "harder" if stage + 2 < len(self.STOP_SIGNALS) else "with SIGKILL and forget it"

@@ -10,10 +10,9 @@ interactive. The form adds:
   else `@-`. Accepts any jj revset naming one commit.
 - **Prompt:** follows field changes until edited.
 
-The form also offers the same [agent profiles](configuration.md#agent-profiles)
-as a single-bookmark launch. Choose a profile for the integration agent, or
-**custom** to adjust agent settings and extra project-sandbox arguments. Profiles
-do not store the merge action, input order, result bookmark, base or prompt.
+Choose a provider and persona, a saved agent profile, or Custom controls for the
+integration agent. The level field sets isolation for this run.
+See [launch settings](usage.md#launch-form).
 
 sbx-tui prepares the result on the host, then launches the agent to resolve
 conflicts, review and test. Input bookmarks stay unchanged.

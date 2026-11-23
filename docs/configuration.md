@@ -189,7 +189,7 @@ rebase launches. To create one in the TUI:
    fields to set the agent, model, effort and fast mode. Choose **custom (enter
    model name)** in the model field to enter a model that is not suggested.
 3. Optionally fill **CLI args** with project-sandbox switches, such as
-   `--extra-domain example.org --memory '16g'`. Shell quoting groups arguments;
+   `--cpus 4 --memory '16g'`. Shell quoting groups arguments;
    shell expressions are passed literally. Unclosed quotes prevent saving or
    launching until corrected.
 4. Press `ctrl+s` or click **save**. Then open a launch form with `i` or `r`,
@@ -315,10 +315,6 @@ is the starting value of the launch form's gateway field for `pi`, `opencode` an
 `defaults.gateway` set to `true` without `network.agent_proxy` is a configuration
 error. A profile with `gateway = true` and another agent is reported by `sbx-tui
 doctor`, and its launches are refused.
-
-Before this change, `network.agent_proxy` was added to every launch, which made
-Claude and Codex launches fail. Existing configurations now need `gateway = true`
-on the profiles (or `defaults.gateway`) that should use the gateway.
 
 ## Model catalogue and personas
 
@@ -468,15 +464,9 @@ settings take effect:
 
 ## Settings reference
 
-For Custom launches, precedence is remembered launch choices → trusted project
-→ global → built-in. The last agent, effort, timeout and per-agent model and
-fast mode are remembered per repository after an interactive launch or an
-accepted `r` submission, including queued prompts. A named-profile submission also
-updates these agent choices; the profile's fields take precedence when it is
-selected. Profile selection and Custom CLI arguments are remembered separately;
-see [agent profiles](#agent-profiles). A persona launch remembers only its
-provider and persona (and an `r` timeout), never the custom agent settings,
-CLI arguments or per-agent gateway choices. Security levels are never remembered.
+For Custom fields, remembered values take precedence over trusted project settings,
+then global settings and built-in defaults. See [launch setup selection](#agent-profiles)
+and [action settings](#agent-actions). Security levels apply per run.
 
 ```toml
 [defaults]
@@ -591,7 +581,8 @@ as `eval` can execute them even when passed safely.
 `:name args` runs the command with `sh -c` in the repository foreground, with `args`
 appended (`:test -k merge` runs `uv run pytest -k merge`). Names start with a
 letter and use letters, digits, `_` and `-`; built-in commands (`help`, `doctor`,
-`quit`, `q`, `refresh`, `reload`, `host`, `workflow`, `config-profiles`) cannot be redefined.
+`init`, `update-models`, `quit`, `q`, `refresh`, `reload`, `host`, `workflow`, `reorganise`,
+`reorganize`, `config-profiles`) cannot be redefined.
 Unlike `ui.*_command`, these are shell code: use `SBX_REPO`, `SBX_BOOKMARK` and
 `SBX_WORKSPACE` rather than placeholders, quoted as in `cd "$SBX_WORKSPACE"`.
 
@@ -607,8 +598,7 @@ inactive. Other workspaces' empty working-copy commits are empty heads too, so
 abandoning them leaves those workspaces stale; bookmarks on empty heads are
 deleted. A redefined `abandon-empty` runs without asking.
 
-The same entry supports foreground (`:name`), repository background (`:&name`)
-and workspace background (`:*name`) execution. See the
+See the
 [command comparison](usage.md#choosing-how-to-run-a-shell-command) for selection,
 directories, environment variables, output and cancellation.
 
@@ -705,6 +695,10 @@ sbx-tui config set --project actions.e2e.level 1
 | `<repo>-<hash>/command_history.json` | Command-line history |
 | `<repo>-<hash>/opgraph.json` | [Bookmark history](usage.md#bookmark-history) and undo stack |
 | `<repo>-<hash>/diff_review.json` | File changes marked seen in the [diff review](usage.md#diff-review) |
+| `<repo>-<hash>/capabilities.json` | Cached launcher capabilities |
+| `<repo>-<hash>/guidance.lock` | Serializes installation of reporting guidance |
+| `<repo>-<hash>/trusted-workflows/` | Reviewed copies of workflow files |
+| `<repo>-<hash>/runs/<run_id>/` | Per-run feedback context, helper, skill and report |
 | `<repo>-<hash>/trusted-project-config.toml` | Reviewed project config |
 | `<repo>-<hash>/queue.json`, `<repo>-<hash>/queue.lock` | Prompt task IDs and order, pause state, pending-task undo/redo and named marks |
 | `<repo>-<hash>/queue-tasks/` | Records for pending, running and completed prompt tasks and workflow steps |
@@ -736,8 +730,7 @@ The `[feedback]` section controls reporting, success-only queue progression,
 selected state handoff, and bounded retries/successor actions. Reporting defaults
 to enabled with capability detection; queue behavior is unchanged until a policy
 is configured. See [agent feedback](feedback.md#queue-policies) for all defaults
-and examples. `runs/<run_id>/` in repository state stores each run's reporting
-context, helper, skill, and raw feedback independently of workspace lifetime.
+and examples.
 
 Use `[workflows.NAME]` to run `[actions.NAME]` prompts, `human-review` stages,
 and `host:NAME` commands on the same bookmark. Set `first_step_interactive = false`

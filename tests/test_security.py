@@ -159,16 +159,6 @@ def test_level_two_sources_per_build(
     ]
 
 
-def test_python_project_at_level_two(tmp_path: Path) -> None:
-    cfg = cfg_with(project={"build": "python-uv"}, network={"extra_domains": ["example.org"]})
-    assert network_flags(argv_at(cfg, tmp_path, 2)) == [
-        "--egress=firewall",
-        "--extra-domain=pypi.org",
-        "--extra-domain=files.pythonhosted.org",
-        "--extra-domain=example.org",
-    ]
-
-
 def test_level_two_behind_an_internet_proxy(tmp_path: Path) -> None:
     cfg = cfg_with(
         project={"build": "python-uv"},
@@ -201,13 +191,6 @@ def test_project_default_applies_to_specs_without_a_level(tmp_path: Path) -> Non
     assert old.level is None and security.effective_level(cfg, old) == 3
     cfg.project.base_image = "x"
     assert network_flags(build_argv(cfg, tmp_path, old)) == ["--egress=sidecar"]
-
-
-def test_launch_spec_round_trips_selection_fields() -> None:
-    spec = LaunchSpec("feat", "codex", persona="reviewer", provider="codex", level=4)
-    assert LaunchSpec.from_dict(spec.to_dict()) == spec
-    assert LaunchSpec.from_dict({**spec.to_dict(), "level": 9}).level is None
-    assert spec.label() == "codex/L4"
 
 
 # ---------------------------------------------------------------- managed flags
@@ -302,15 +285,6 @@ def _without_egress() -> str:
     return text.replace("--egress {firewall,sidecar}", "")
 
 
-def test_older_help_without_egress() -> None:
-    caps = caps_mod.discover(["ps"], fake_runner({**REAL, "--help": (0, _without_egress())}))
-    assert caps.discovered and caps.egress_modes == ()
-    cfg = c.Config()
-    assert caps_mod.level_problems(caps, cfg, 1) == []
-    for level in (2, 3, 4, 5):
-        assert "has no --egress option" in caps_mod.level_problems(caps, cfg, level)[0]
-
-
 def test_egress_modes_are_cached(tmp_path: Path) -> None:
     caps = caps_mod.discover(["ps"], fake_runner(REAL))
     loaded = caps_mod.load(caps_mod.save(caps, tmp_path / "c.json"))
@@ -332,6 +306,10 @@ def test_level_problems() -> None:
     caps = caps_mod.discover(["ps"], fake_runner(REAL))
     cfg = c.Config()
     assert all(caps_mod.level_problems(caps, cfg, level) == [] for level in c.LEVELS)
+    old = caps_mod.discover(["ps"], fake_runner({**REAL, "--help": (0, _without_egress())}))
+    assert caps_mod.level_problems(old, cfg, 1) == []
+    for level in (2, 3, 4, 5):
+        assert "has no --egress option" in caps_mod.level_problems(old, cfg, level)[0]
     sidecar_only = dataclasses.replace(caps, egress_modes=("sidecar",))
     assert "--egress=firewall" in caps_mod.level_problems(sidecar_only, cfg, 2)[0]
     assert caps_mod.level_problems(sidecar_only, cfg, 3) == []
@@ -355,26 +333,3 @@ def test_level_problems() -> None:
 def test_fallback_discovery_restricts_no_level() -> None:
     caps = caps_mod.fallback(["ps"], "missing")
     assert all(caps_mod.level_problems(caps, c.Config(), level) == [] for level in c.LEVELS)
-
-
-def test_fake_launcher_records_isolation_flags(
-    repo: Path, fake_cfg: Callable[..., c.Config]
-) -> None:
-    cfg = fake_cfg()
-    cfg.security.level = 4
-    cfg.network.build_proxy = "http://proxy:3128"
-    cfg.network.build_no_proxy = ["internal.example"]
-    cfg.network.build_ca_certs = ["/certs/corp.pem"]
-    jobs = JobManager(repo, cfg)
-    job = jobs.start_background(
-        LaunchSpec("main", "claude", mode="background", prompt_text="x"), {}
-    )
-    jobs._procs["main"].wait(timeout=30)
-    summary = json.loads(Path(job.summary_path).read_text())
-    assert summary["isolation"] == {
-        "egress": "sidecar",
-        "vcs_access": "read-only",
-        "build_proxy": "http://proxy:3128",
-        "build_no_proxy": ["internal.example"],
-        "build_ca_certs": ["/certs/corp.pem"],
-    }

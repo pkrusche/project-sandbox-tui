@@ -36,6 +36,9 @@ from project_sandbox_tui.config import (
     GATEWAY_AGENTS,
     RUNTIMES,
     Config,
+    LastUsed,
+    private_dir,
+    remembered_provider,
     repo_state_dir,
     state_home,
 )
@@ -377,7 +380,7 @@ def cache_path(repo: Path | None = None) -> Path:
 
 
 def save(caps: Capabilities, path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_dir(path.parent)
     when = caps.discovered_at or datetime.now(UTC)
     doc = {
         "version": CACHE_VERSION,
@@ -622,6 +625,18 @@ def provider_availability(
     return agent_sources(agent, caps, home=home, cfg=cfg)
 
 
+def default_provider(
+    cfg: Config, last: LastUsed, caps: Capabilities, *, home: Path | None = None
+) -> str:
+    """Resolve the initial provider using this host's capability snapshot."""
+
+    def available(row_id: str) -> bool:
+        row = catalogue.ROW_BY_ID[row_id]
+        return provider_availability(cfg, caps, row, home=home).available is not False
+
+    return remembered_provider(cfg, last, available)
+
+
 def gateway_problems(agent: str, model: str, gateway: bool) -> list[str]:
     """project-sandbox's fixed rules for ``--agent-proxy``; apply without discovery."""
     if not gateway:
@@ -716,7 +731,7 @@ def setup_summary(
         runtimes = "status unknown; choices: " + ", ".join(caps.runtimes)
     lines = [
         f"Profile agents and how they can run: {agents or 'none'}.",
-        "VCS access modes for profile extra_args: "
+        "Launcher VCS access modes (managed by security levels): "
         + (", ".join(f"--vcs-access={m}" for m in caps.vcs_modes) or "none")
         + ".",
         f"Isolation runtimes: {runtimes}.",

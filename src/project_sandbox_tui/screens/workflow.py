@@ -109,13 +109,13 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
             else []
             for stage in stages
         ]
-        self.default_provider = next(
-            (s.initial.provider for s in stages if s.initial and s.initial.provider),
-            catalogue.ROWS[0].id,
-        )
 
     def compose(self) -> ComposeResult:
         caps = app_capabilities(self)
+        default_provider = next(
+            (s.initial.provider for s in self.stages if s.initial and s.initial.provider),
+            caps_mod.default_provider(self.cfg, self.last, caps),
+        )
         with Vertical():
             yield Static(Text(self.title_text), classes="title")
             for index, stage in enumerate(self.stages):
@@ -136,7 +136,7 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
                 provider = CycleField(
                     "provider",
                     [row.id for row in catalogue.ROWS],
-                    initial.provider or self.default_provider,
+                    initial.provider or default_provider,
                     labels=provider_labels(self.cfg, caps, self._tier(choice)),
                     id=f"stage-provider-{index}",
                 )
@@ -164,6 +164,11 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
                 self._reset_level(index)
         if self.stages and self.query(f"#stage-{self._first_agent()}"):
             self.query_one(f"#stage-{self._first_agent()}", CycleField).focus()
+
+    def capabilities_changed(self) -> None:
+        for index, stage in enumerate(self.stages):
+            if stage.action is not None:
+                self._update(index)
 
     def _first_agent(self) -> int:
         return next((i for i, stage in enumerate(self.stages) if stage.action), 0)
@@ -215,6 +220,8 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
         level_field = self.query_one(f"#stage-level-{index}", CycleField)
         level_hint = self.query_one(f"#stage-level-hint-{index}", Static)
         level_hint.display = level_field.display
+        level_field.labels = level_labels(self.cfg, app_capabilities(self))
+        level_field.refresh()
         show_level(level_field, self.cfg, selection.level)
         setup = resolve_selection(self.cfg, self.last, selection, action)
         if level_field.display:
@@ -243,7 +250,8 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
                 continue
             if problem := self._resolved(index).problem:
                 self.notify(f"{stage.name}: {problem}", severity="warning")
-                self.query_one(f"#stage-provider-{index}", CycleField).focus()
+                field = "stage-provider" if self._choice(index).kind == "persona" else "stage"
+                self.query_one(f"#{field}-{index}", CycleField).focus()
                 return
             level = self._selection(index).level
             if problems := caps_mod.level_problems(app_capabilities(self), self.cfg, level):

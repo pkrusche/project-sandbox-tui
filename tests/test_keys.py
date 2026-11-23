@@ -8,16 +8,28 @@ from pathlib import Path
 import pytest
 from textual.binding import Binding
 
+from project_sandbox_tui import commands
 from project_sandbox_tui.app import CHEATSHEET, MAIN_BINDINGS
+from project_sandbox_tui.screens.command import CommandScreen
 from project_sandbox_tui.screens.dialogs import HELP, CleanupScreen
+from project_sandbox_tui.screens.history import HistorySearchScreen
+from project_sandbox_tui.screens.launch import LaunchScreen
 from project_sandbox_tui.screens.log import LogScreen
 from project_sandbox_tui.screens.oplog import OpLogScreen
+from project_sandbox_tui.screens.profiles import ProfilesScreen
 from project_sandbox_tui.screens.queue import QueueScreen
+from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen
 from project_sandbox_tui.screens.tasks import TasksScreen
+from project_sandbox_tui.screens.workflow import WorkflowProfilesScreen
+from tests.test_docs_examples import section
 
 DOCS = Path(__file__).parent.parent / "docs"
 # Textual key names as the references spell them.
 SPELLING = {
+    "up": "↑",
+    "down": "↓",
+    "left_square_bracket": "[",
+    "right_square_bracket": "]",
     "slash": "/",
     "equals_sign": "=",
     "at": "@",
@@ -50,8 +62,14 @@ def reference_keys(cells: list[str]) -> set[str]:
     return found
 
 
-def docs_keys(name: str) -> set[str]:
-    return set(re.findall(r"`([^`\s]+)`", (DOCS / name).read_text()))
+def key_column(doc: str, heading: str, column: str = "Key") -> set[str]:
+    table = next(
+        block
+        for block in section(doc, heading).strip().split("\n\n")
+        if block.startswith(f"| {column} |")
+    )
+    cells = [line.split("|")[1] for line in table.splitlines()[2:]]
+    return {key for cell in cells for key in re.findall(r"`([^`]+)`", cell)}
 
 
 def main_bindings() -> list[Binding]:
@@ -76,17 +94,36 @@ def test_cheatsheet_lists_every_bookmark_list_key_but_esc() -> None:
 
 
 @pytest.mark.parametrize(
-    ("bindings", "doc"),
+    ("bindings", "heading"),
     [
-        (main_bindings(), "usage.md"),
-        (LogScreen.BINDINGS, "usage.md"),
-        (OpLogScreen.BINDINGS, "usage.md"),
-        (TasksScreen.BINDINGS, "usage.md"),
-        (QueueScreen.BINDINGS, "usage.md"),
-        (CleanupScreen.BINDINGS, "cleanup.md"),
+        (main_bindings(), "## Bookmark list"),
+        (LogScreen.BINDINGS, "## Log viewer"),
+        (OpLogScreen.BINDINGS, "## Op history"),
+        (TasksScreen.BINDINGS, "## Tasks"),
+        (QueueScreen.BINDINGS, "## Prompt queue"),
+        (DiffReviewScreen.BINDINGS, "## Diff review"),
+        (CommitReviewScreen.BINDINGS, "## Diff review"),
+        (LaunchScreen.BINDINGS, "## Launch form"),
+        (ProfilesScreen.BINDINGS, "### Profile editor"),
+        (WorkflowProfilesScreen.BINDINGS, "### Workflow setup"),
+        (CommandScreen.BINDINGS, "## Command line"),
+        (HistorySearchScreen.BINDINGS, "### History search"),
     ],
-    ids=["bookmark-list", "log-viewer", "op-history", "tasks", "queue", "cleanup"],
 )
-def test_docs_list_every_key(bindings: list[Binding], doc: str) -> None:
-    missing = bound_keys([b for b in bindings if isinstance(b, Binding)]) - docs_keys(doc)
-    assert not missing, f"keys missing from docs/{doc}: {sorted(missing)}"
+def test_docs_list_every_key(bindings: list[Binding], heading: str) -> None:
+    missing = bound_keys([b for b in bindings if isinstance(b, Binding)]) - key_column(
+        "usage.md", heading
+    )
+    assert not missing, f"keys missing from {heading}: {sorted(missing)}"
+
+
+def test_cleanup_keys() -> None:
+    assert bound_keys([b for b in CleanupScreen.BINDINGS if isinstance(b, Binding)]) <= key_column(
+        "cleanup.md", "## Cleanup keys"
+    )
+
+
+def test_command_table_lists_builtins() -> None:
+    entries = key_column("usage.md", "## Command line", "Command")
+    names = {entry.split()[0][1:] for entry in entries if entry.startswith(":")}
+    assert (commands.BUILTINS.keys() | commands.ALIASES.keys()) <= names

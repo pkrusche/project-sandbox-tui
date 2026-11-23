@@ -32,18 +32,21 @@ from project_sandbox_tui.config import (
     AgentProfile,
     Config,
     ConfigError,
+    LastUsed,
     ProjectTrust,
+    Selection,
     WorkflowTrust,
     _load,
+    initial_choice,
     load,
+    resolve_selection,
 )
 from project_sandbox_tui.sandbox import runtime_cli
 from project_sandbox_tui.vcs import Branch, VcsError, detect, main_branch
 
 # The jj release CI tests against; older ones may lack template keywords or flags.
 TESTED_JJ = (0, 46, 0)
-# --node-npm (project.build = "node-npm") first shipped in project-sandbox 0.2.2.
-MIN_PROJECT_SANDBOX = (0, 2, 2)
+MIN_PROJECT_SANDBOX = (0, 4, 1)
 
 Status = Literal["ok", "warn", "fail"]
 MARKS: dict[Status, str] = {"ok": "✓", "warn": "!", "fail": "✗"}
@@ -572,7 +575,9 @@ def _check_providers(cfg: Config, caps: Capabilities, home: Path | None) -> list
     return checks
 
 
-def _selections(cfg: Config) -> list[tuple[str, AgentProfile]]:
+def _selections(
+    cfg: Config, caps: Capabilities, home: Path | None, last: LastUsed
+) -> tuple[list[tuple[str, AgentProfile]], list[Check]]:
     """Every configured agent selection, keyed by its config table."""
     d = cfg.defaults
     out: list[tuple[str, AgentProfile]] = [
@@ -588,18 +593,34 @@ def _selections(cfg: Config) -> list[tuple[str, AgentProfile]]:
         )
     ]
     out += [(f"profiles.{name}", profile) for name, profile in cfg.profiles.items()]
-    out += [
-        (f"actions.{name}", AgentProfile(agent=action.agent, model=action.model))
-        for name, action in cfg.actions.items()
-        if action.agent
-    ]
+    problems: list[Check] = []
+    for name, action in cfg.actions.items():
+        if not (action.persona or action.has_own_settings):
+            continue
+        choice, _ = initial_choice(cfg, last, name, action)
+        provider = ""
+        if action.persona:
+            provider = capabilities.default_provider(cfg, last, caps, home=home)
+        setup = resolve_selection(cfg, last, Selection(choice, provider), action)
+        key = f"actions.{name}"
+        if setup.problem:
+            problems.append(Check(f"{key}.persona", "fail", setup.problem))
+        else:
+            out.append(
+                (
+                    key,
+                    AgentProfile(
+                        setup.agent, setup.model, setup.effort, setup.fast, gateway=setup.gateway
+                    ),
+                )
+            )
     if not cfg.commit_review.profile:
         try:
             name, profile = cfg.commit_summary_profile()
         except ConfigError:
-            return out  # check_security reports the unavailable provider
+            return out, problems  # check_security reports the unavailable provider
         out.append((f"commit review ({name})", profile))
-    return out
+    return out, problems
 
 
 def _model_listed(
@@ -623,10 +644,10 @@ def check_agent_selections(
     caps: Capabilities,
     store: models_mod.Store | None = None,
     home: Path | None = None,
+    last: LastUsed | None = None,
 ) -> list[Check]:
     """Configured selections the launcher would reject (fail) or that look wrong (warn)."""
-    checks: list[Check] = []
-    selections = _selections(cfg)
+    selections, checks = _selections(cfg, caps, home, last or LastUsed())
     who = capabilities.launcher_name(caps)
     for key, profile in selections:
         agent = profile.agent
@@ -704,12 +725,16 @@ def check_agent_selections(
         )
     elif status is not None and status.status == "unavailable":
         checks.append(Check("sandbox.runtime", "fail", f"{runtime}: {status.detail}", status.hint))
-    if cfg.network.agent_proxy and not any(p.gateway for _key, p in selections):
+    providers = (cfg.catalogue.default_provider, cfg.commit_review.provider)
+    if cfg.network.agent_proxy and not (
+        any(p.gateway for _key, p in selections)
+        or any(row.startswith("gateway-") for row in providers)
+    ):
         checks.append(
             Check(
                 "agent gateway",
                 "ok",
-                "network.agent_proxy is configured but no default or profile uses it",
+                "network.agent_proxy is configured but no configured selection uses it",
                 "set gateway = true on a pi, opencode or bash profile, or defaults.gateway",
             )
         )
@@ -746,7 +771,9 @@ def run_checks(
         checks.append(check_runtime(cfg, runner, which))
     checks += check_capabilities(cfg, caps)
     checks += check_security(cfg, caps)
-    checks += check_agent_selections(cfg, caps, models_mod.load_store())
+    checks += check_agent_selections(
+        cfg, caps, models_mod.load_store(), last=LastUsed.load(repo) if repo else None
+    )
     checks += check_config(cfg, repo)
     checks += check_feedback(cfg, repo, runner, caps)
     if repo is not None:

@@ -27,6 +27,10 @@ from project_sandbox_tui.config import (
 MAX_MARKS = 5000  # per repository; the oldest go first
 
 
+def empty_review_key(task_id: str, base: str, target: str) -> str:
+    return f"empty-review:{task_id}:{base}:{target}"
+
+
 class SeenFiles:
     def __init__(self, path: Path, max_marks: int = MAX_MARKS) -> None:
         self.path = path

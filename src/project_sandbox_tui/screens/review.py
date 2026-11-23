@@ -118,7 +118,7 @@ class DiffReviewScreen(Screen[ReviewPosition]):
             table.add_column(label, key=key)
         for index, change in enumerate(self.files):
             table.add_row(*self._cells(change), key=str(index))
-        table.move_cursor(row=self._initial_row)
+        table.move_cursor(row=self._initial_row, animate=False)
         self._title()
         table.focus()
 
@@ -204,7 +204,9 @@ class DiffReviewScreen(Screen[ReviewPosition]):
     def action_cursor(self, step: int) -> None:
         table = self.query_one(DataTable)
         if self.files:
-            table.move_cursor(row=min(max(table.cursor_row + step, 0), len(self.files) - 1))
+            table.move_cursor(
+                row=min(max(table.cursor_row + step, 0), len(self.files) - 1), animate=False
+            )
 
     def action_page(self, direction: int) -> None:
         self.action_cursor(direction * max(1, self.query_one(DataTable).size.height // 2))
@@ -342,8 +344,11 @@ class CommitReviewScreen(DiffReviewScreen):
         self.files = self.changes[index].files
         self.seen = self.seen_files.seen() & {f.key for f in self.files}
         table = self.query_one(DataTable)
+        self.priority_files = frozenset()
+        for column in table.columns.values():
+            column.content_width = column.label.cell_len
         table.clear()
         for row, change in enumerate(self.files):
             table.add_row(*self._cells(change), key=str(row))
-        table.move_cursor(row=0)
+        table.move_cursor(row=0, animate=False)
         self._title()

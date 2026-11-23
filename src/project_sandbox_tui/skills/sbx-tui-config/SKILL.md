@@ -1,6 +1,6 @@
 ---
 name: sbx-tui-config
-description: Configure project-sandbox-tui container images, launch defaults, shared sandbox settings, agent profiles with per-launch project-sandbox flags, commands, agent actions, and the agent profile used by each action and workflow step.
+description: Configure sbx-tui images, sandbox settings, security levels, providers, personas, profiles, commands, actions and workflow steps.
 ---
 
 # Configure sbx-tui
@@ -46,15 +46,7 @@ sbx-tui config set --project network.extra_domains '["registry.example.org"]'
 ## Choose one image source
 
 Set exactly one nonempty `project.base_image`, `project.dockerfile`, or
-`project.build`. Initialization checks root-level files in this order:
-
-| Evidence | Starter settings |
-| --- | --- |
-| `Dockerfile` | `dockerfile = "Dockerfile"`, `docker_context = "."` |
-| `pyproject.toml` or `uv.lock` | `build = "python-uv"` |
-| `Cargo.toml` | `build = "rust-cargo"` |
-| `package.json` | `build = "node-npm"` |
-| None of these | `base_image = "python:3.12-slim"` |
+`project.build`. See the [image detection order](https://github.com/pkrusche/project-sandbox-tui/blob/main/docs/configuration.md#initialization).
 
 Detection is a starting point. Check whether the Dockerfile provides a useful
 development environment and whether the generated build fits the actual package
@@ -98,8 +90,7 @@ launcher supports, even one that is not installed on the host. Run
 - `agent NAME`: each agent `sandbox.command` supports and how it can run here:
   `host credentials` (forwarded from the host), `token login` (copilot),
   `no credentials needed` (bash), or `unavailable` with the reason;
-- `vcs access`: the `--vcs-access` modes for profile `extra_args` (for example
-  `--vcs-access=read-only` for a review profile);
+- `vcs access` lists launcher modes used by security levels 4 and 5.
 - `runtimes`: which isolation runtimes are usable and what `auto` selects;
 - `providers`: each provider row and whether it can run here;
 - `egress backend`: `security.egress`, whether the launcher supports it and, for
@@ -113,43 +104,13 @@ profile's `extra_args`: the user logs in inside the sandbox each time.
 
 ### Choose a security level, providers and personas
 
-`[security] level` sets the project's default isolation on a 1–5 scale; a
-higher level isolates more. sbx-tui compiles it to launcher flags:
+Choose `security.level` for the project's normal work. Use level 2 for dependency
+downloads, level 3 for API-only egress, or levels 4–5 for restricted VCS access.
+See the [security settings and managed flags](https://github.com/pkrusche/project-sandbox-tui/blob/main/docs/configuration.md#security-levels).
 
-| Level | Flags | Use for |
-| --- | --- | --- |
-| 1 | `--no-firewall` | jobs that need open internet; avoid as a default |
-| 2 | `--egress=firewall` plus `--extra-domain` for `project.build`'s package sources and `network.extra_domains` (and `--allow-github` with `network.allow_github`) | implementing and testing with dependency downloads |
-| 3 | the egress backend only: agent API hosts | planning and work without downloads |
-| 4 | level 3 plus `--vcs-access=read-only` | reviews that need history |
-| 5 | level 3 plus `--vcs-access=hidden` | source-only reviews |
-
-Levels 3 to 5 use `security.egress` from the global config: `sidecar` (default,
-needs `project-sandbox-egress` set up) or `firewall`. sbx-tui never switches
-backends. With `network.internet_proxy` set, level 2 adds no `--extra-domain`:
-the proxy's policy decides. Levels 4 and 5 keep source files writable. With a
-level in effect, `--no-firewall`, `--egress`, `--extra-domain`, `--allow-github`,
-`--vcs-access`, `--pi-ollama` and proxy or CA flags in `sandbox.extra_args`,
-profile or custom arguments are refused; `network.no_firewall` is ignored; and
-`network.internet_proxy`, `ca_certs`, `build_proxy`, `build_no_proxy`,
-`build_ca_certs`, `no_internet_proxy_preflight` and `security.egress` may only be
-set in the global config. Without `[security]`, launches keep their earlier flags.
-
-Provider rows pick the agent and model IDs: `codex`, `claude-code`,
-`gateway-openai`, `gateway-anthropic`, `gateway-gemini` (through
-`network.agent_proxy` with `catalogue.gateway_agent`, `pi` or `opencode`),
-`copilot-openai`, `copilot-anthropic` and `copilot-gemini`. Set
-`catalogue.default_provider` to one that `sbx-tui doctor` lists as available.
-Personas choose tier, effort, fast mode and starting level:
-
-| Persona | Tier | Effort | Fast | Level |
-| --- | --- | --- | --- | --- |
-| planner | high | high | off | 3 |
-| checker | medium | low | on | 2 |
-| implementer | medium | medium | off | 2 |
-| debugger | frontier | xhigh | off | 2 |
-| chore-runner | fast | medium | on | 2 |
-| reviewer | high | high | off | 4 |
+Use `sbx-tui doctor` to select an available `catalogue.default_provider`. The
+[provider and persona catalogue](https://github.com/pkrusche/project-sandbox-tui/blob/main/docs/models.md) lists model tiers, effort,
+fast mode and starting level.
 
 `[personas.NAME]` overrides fields of a built-in persona or adds one (`tier` is
 then required). `[catalogue.models.<vendor|row>] TIER = "model"` pins a model;
@@ -231,9 +192,7 @@ sbx-tui config set --project profiles.browser-tests.extra_args '["--memory=12g",
 Each TOML array element is one argument. In the TUI, shell quoting groups words
 and shell expressions are passed literally. The TUI appends profile arguments
 after its shared flags and `sandbox.extra_args`. Upstream uses the last value
-for `--memory` and accumulates repeatable flags like `--extra-domain`. Omit a
-domain from the shared allowlist if only one profile should add it. Upstream
-rejects `--extra-domain` when using an Internet proxy or sidecar egress.
+for `--memory`.
 Keep the image source in `[project]` and use the profile fields for agent
 selection. Leave branch, prompt, log, and summary flags to the TUI.
 
@@ -265,25 +224,10 @@ its mapping.
 
 ### Choose agent profiles for actions and workflow steps
 
-Each action gets its agent settings in one of four ways. Pick one per action:
-
-| Action sets | Agent, model, effort, fast | Extra CLI args |
-| --- | --- | --- |
-| `persona = "NAME"` | the persona on the remembered or default provider | none |
-| `profile = "NAME"` | from `[profiles.NAME]` | the profile's `extra_args` |
-| `agent`, `model` or `effort` | those fields; unset ones from the launch defaults | none |
-| neither | the profile the `i`/`r` launch forms would select | that profile's, or the remembered Custom args |
-
-`profile` cannot be combined with `agent`, `model`, `effort` or `persona`, and
-`persona` cannot be combined with `agent`, `model` or `effort`; config
-validation rejects it, as it does the reserved name `custom` and unknown
-personas. `timeout` applies in every case. `level = 1..5` sets the action's
-security level, else the persona's, else the project's; a run below the
-project default asks for confirmation. Prefer personas for unattended work:
-workflows then move to another provider without config edits. In the third row, the launch forms select the remembered profile,
-or the first configured profile before the user has chosen one. Prefer an
-explicit `profile` for unattended work so its setup doesn't depend on the last
-interactive launch. Use a profile to set `fast` or extra CLI flags for an action.
+Prefer an explicit persona for unattended work that should run across providers.
+Choose a named profile when an action needs its own launcher arguments.
+With no explicit setup, an action uses the repository's remembered selection.
+See [action fields and precedence](https://github.com/pkrusche/project-sandbox-tui/blob/main/docs/configuration.md#agent-actions).
 
 Workflows run agent actions, human review stages, and host commands on a bookmark.
 Assign each agent step's launch settings through its action:
@@ -326,13 +270,8 @@ local path.
 
 Workflows require `feedback.enabled` (the default), and every referenced action
 must exist. Before anything starts, `:workflow NAME [TOPIC]` shows a picker with
-a setup field for each agent action. Each field starts at the action's persona
-(with a provider field), then its profile, then **action settings** for an
-action with its own fields, then the launch forms' selection. With a security
-level in effect each step also has a level field, red below the project default.
-The user can change any field for that run; choices are not remembered, so put
-lasting choices in the action. Steps keep the settings chosen at start even if
-profiles or the catalogue change later.
+a setup field for each agent action. Changes apply to this run. Save lasting
+choices in the action.
 
 `host:test` runs `test` from `[commands]`. Config loading verifies the command
 name and inserts `human-review` immediately before it unless that stage already

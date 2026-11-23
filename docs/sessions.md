@@ -83,9 +83,9 @@ Sessions reuse a bookmark's workspace when it is kept (`keep_workspace`, or
 
 ## Interactive sessions
 
-`i` opens the [launch form](usage.md#launch-form). Select a saved
-[agent profile](configuration.md#agent-profiles) or **custom**, check the command
-preview, then press `enter`. For background prompts, use `r` and `ctrl+s` to
+`i` opens the [launch form](usage.md#launch-form). Choose a persona and provider, a saved
+[agent profile](configuration.md#agent-profiles), or **custom**. Review the security
+level and command preview, then press `enter`. For background prompts, use `r` and `ctrl+s` to
 [run or queue](#unsupervised-task-queues).
 
 `ui.terminal` controls where `i` opens the agent. Inline sessions suspend the TUI
@@ -172,8 +172,8 @@ a desktop notification via `osascript` (macOS), `notify-send` (Linux) or
 
 `r` accepts prompts even while a bookmark is busy. Submitting starts the task
 when the bookmark is free, or appends it to that bookmark's FIFO queue. Each
-entry saves its agent, model, effort, profile settings, extra arguments, prompt
-and timeout. Later profile changes do not alter queued entries. Interactive
+entry saves its agent, model, effort, fast mode, gateway, profile or persona and
+provider, security level, extra arguments, prompt and timeout. Later profile changes do not alter queued entries. Interactive
 sessions (`i` and `I`) must still be started manually and are never queued.
 
 The bookmark list shows the pending count and whether dispatch is paused.

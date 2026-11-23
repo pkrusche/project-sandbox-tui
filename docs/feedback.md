@@ -171,9 +171,10 @@ Retries repeat the task with a new run/task ID and an incremented attempt.
 `max_attempts` includes the first attempt. `on_success`, `on_failure`, and
 `on_blocked` name existing `[actions.NAME]` entries. Successor actions inherit
 the parent's launch settings unless the action overrides them. A named profile
-supplies its agent settings and arguments. A persona resolves its model and
-level using the parent's provider, or the remembered or default provider when
-the parent has none. An explicit action level or timeout takes precedence.
+supplies its agent settings and arguments. A persona resolves its model using
+the parent's provider, or the remembered or default provider when the parent has
+none. Both selections inherit the parent's level when set. An explicit action
+level or timeout takes precedence.
 A missing profile or unavailable persona tier pauses the queue for repair.
 Each successor increments the workflow step. `max_steps` includes the initial task.
 Both limits must be between 1 and 100. Reaching a configured limit pauses the queue. Rules apply to
@@ -252,23 +253,9 @@ Before anything starts, `:workflow` lists every step and shows a **setup** field
 for each agent action. Use `tab` or `j` / `k` to move between fields and `h` / `l`
 to change one; the line below each step shows the resulting agent settings and
 CLI args. Press `enter` to start the workflow or `esc` to cancel without
-starting or queueing anything. Each field offers the action's persona, the
-configured profiles and **custom**, plus **action settings** for an action that
-sets its own agent, model, or effort. A field starts at the action's `persona`,
-then its `profile`, then **action settings**, then the setup the `i` / `r`
-launch forms would select (a remembered persona selection, the remembered
-profile, or the first configured one).
-
-A persona step also has a **provider** field, starting at the remembered or
-default provider. Setting `spec/implement` (persona implementer) and
-`spec/check` (persona checker) to Gateway/Gemini runs both with
-`gemini-4-argon` through the gateway at level 2. A provider without the
-persona's tier, such as Copilot/Anthropic for the frontier debugger, is shown
-with the reason and `enter` is refused until the step changes. When a
-[security level](configuration.md#security-levels) is in effect, every step
-shows a **level** field starting at the action's `level`, else the persona's
-level, else the project default, in red when below the project default: with
-`security.level = 3`, a reviewer step starts at 4.
+starting or queueing anything. A persona step also has a provider field. Each
+step shows its effective security level when one applies. For setup and level
+precedence, see [agent actions](configuration.md#agent-actions).
 
 Choices made here, including providers and levels, are not remembered for the
 launch forms or the next workflow; set `persona`, `profile` or `level` on the
@@ -325,7 +312,8 @@ press `enter` to open the per-commit diff review. Mark file changes with `space`
 or mark the current commit with `A`. Use `[` and `]` to move between commits. The stage completes when
 every file change in the bookmark's commits outside the main revision captured
 at workflow start is marked as reviewed. Existing marks count for matching
-commit and file changes.
+commit and file changes. When the range has no changed files, select the awaiting
+stage and press `enter`, then `y` to approve that exact revision.
 
 A `host:NAME` step runs the named `[commands]` entry. For example, to run tests
 after implementation, set `steps = ["implement", "host:test"]` and define

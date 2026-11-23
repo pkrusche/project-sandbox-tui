@@ -326,3 +326,29 @@ def test_cleanup_enter_asks_before_removing() -> None:
             assert results == [rows]
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(80, 10), (40, 14)])
+def test_scrolling_dialog_hints_fit(size: tuple[int, int]) -> None:
+    from project_sandbox_tui.screens.dialogs import (
+        ConfirmScreen,
+        MessageScreen,
+        StaleWorkspaceScreen,
+    )
+
+    async def scenario() -> None:
+        app = App[None]()
+        async with app.run_test(size=size) as pilot:
+            for screen in (
+                ConfirmScreen("Confirm", "long body\n" * 40, "approve"),
+                MessageScreen("Details", "long body\n" * 40),
+                StaleWorkspaceScreen("/some/project"),
+            ):
+                await app.push_screen(screen)
+                await pilot.pause()
+                hint = screen.query_one(".hint")
+                assert hint.region.height > 0 and hint.region.bottom <= screen.region.bottom
+                assert screen.query_one(VerticalScroll).size.height > 0
+                await app.pop_screen()
+
+    asyncio.run(scenario())

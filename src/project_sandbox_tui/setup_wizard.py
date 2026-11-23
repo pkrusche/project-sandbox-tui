@@ -91,7 +91,7 @@ Additional instructions from me:
 {self.instructions or "(none)"}"""
 
 
-class SetupDialog(App[Interview]):
+class SetupDialog(App[Interview | None]):
     TITLE = "Project setup"
     CSS = """
     Screen { align: center middle; }
@@ -201,14 +201,17 @@ class SetupDialog(App[Interview]):
         self.exit()
 
 
-def discover(repo: Path) -> tuple[Capabilities, bool]:
-    """The launcher's capabilities for ``repo`` and whether a gateway is configured."""
+def discover(repo: Path) -> tuple[Capabilities, Config]:
+    """The launcher's capabilities for ``repo`` and the configuration used to probe them."""
     try:
         cfg = load(repo)
+    except ConfigError:
+        return capabilities.fallback(), Config()
+    try:
         command = cfg.sandbox_command()
     except ConfigError:
-        return capabilities.fallback(), False
-    return capabilities.refresh(command, repo), bool(cfg.network.agent_proxy)
+        return capabilities.fallback(), cfg
+    return capabilities.refresh(command, repo), cfg
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -227,11 +230,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"install a supported host agent on PATH: {', '.join(HOST_AGENTS)}")
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         parser.error("the setup interview requires an interactive terminal")
-    caps, gateway_configured = discover(repo)
-    try:
-        cfg = load(repo)
-    except ConfigError:
-        cfg = Config()
+    caps, cfg = discover(repo)
+    gateway_configured = bool(cfg.network.agent_proxy)
     interview = SetupDialog(list(paths), caps, gateway_configured=gateway_configured, cfg=cfg).run()
     if interview is None:
         return 0

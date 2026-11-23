@@ -50,8 +50,30 @@ def human_age(seconds: float) -> str:
     return f"{seconds // 86400}d"
 
 
+def update_table_cells(
+    table: DataTable[Text],
+    previous: list[tuple[str, tuple[Text, ...]]],
+    rows: list[tuple[str, tuple[Text, ...]]],
+) -> bool:
+    """Refresh changed cells in place when row identities and order are stable."""
+    if [key for key, _ in rows] != [key for key, _ in previous]:
+        return False
+    for (_, old), (key, new) in zip(previous, rows, strict=True):
+        for column, before, after in zip(table.columns, old, new, strict=True):
+            if before != after:
+                table.update_cell(
+                    key, column, after, update_width=before.cell_len != after.cell_len
+                )
+    return True
+
+
 def restore_table_view(
-    table: DataTable[Text], scroll_x: float, scroll_y: float, row: int | None
+    table: DataTable[Text],
+    scroll_x: float,
+    scroll_y: float,
+    row: int | None,
+    *,
+    preserve_y: bool = False,
 ) -> None:
     """Restore scrolling after rebuilding a row table with ``clear()``."""
     if row is not None:
@@ -61,7 +83,12 @@ def restore_table_view(
     table.scroll_to(x=scroll_x, animate=False)
     # The rebuilt table may have a different width once layout settles.
     table.call_after_refresh(
-        lambda: table.scroll_to(x=min(scroll_x, table.max_scroll_x), animate=False, force=True)
+        lambda: table.scroll_to(
+            x=min(scroll_x, table.max_scroll_x),
+            y=min(scroll_y, table.max_scroll_y) if preserve_y else None,
+            animate=False,
+            force=True,
+        )
     )
 
 
@@ -133,7 +160,7 @@ class CycleField(Widget, can_focus=True):
     def render(self) -> Text:
         shown = self.labels.get(self.value, self.value) or self.empty_label
         text = Text()
-        text.append(f"{self.label:<9}", style="dim")
+        text.append(f"{self.label:<8} ", style="dim")
         text.append("‹ ", style="dim")
         text.append(shown, style="bold" if self.value else "italic")
         text.append(" ›", style="dim")
@@ -219,6 +246,8 @@ class PromptArea(TextArea):
         if self.prompt_history is None:
             return
         if self._browse is None:
+            if step < 0:
+                return
             self._browse_origin = self.text
             self._browse = [e for e in self.prompt_history.with_prefix(self.text) if e != self.text]
             self._browse_index = -1

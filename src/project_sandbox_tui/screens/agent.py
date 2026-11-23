@@ -43,7 +43,7 @@ class AgentControls(Vertical):
     AgentControls Input { background: $panel; }
     AgentControls Input:focus { background: $boost; }
     AgentControls .field { height: 1; }
-    AgentControls .field-label { width: 10; color: $text-muted; padding: 0 0 0 1; }
+    AgentControls .field-label { width: 12; color: $text-muted; padding: 0 0 0 1; }
     AgentControls .field Input { width: 1fr; padding: 0; }
     AgentControls .prompt-hint { color: $text-disabled; height: auto; padding: 0 1; }
     """

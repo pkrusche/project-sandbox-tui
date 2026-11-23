@@ -125,7 +125,7 @@ class TasksScreen(Screen[None]):
             Text(age, style="dim"),
             Text(task.bookmark),
             Text(status, style=colour),
-            table_preview(f":{task.line}"),
+            table_preview(f"{task.display_line}"),
         )
 
     def _render_rows(self) -> None:
@@ -206,7 +206,7 @@ class TasksScreen(Screen[None]):
 
     def action_show_command(self) -> None:
         if task := self.selected_task():
-            self.app.push_screen(MessageScreen("Command", f":{task.line}"))
+            self.app.push_screen(MessageScreen("Command", f"{task.display_line}"))
 
     def action_details(self) -> None:
         task = self.selected_task()
@@ -214,7 +214,7 @@ class TasksScreen(Screen[None]):
             return
         lines = [
             f"bookmark    {task.bookmark}",
-            f"command     :{task.line}",
+            f"command     {task.display_line}",
             f"runs        sh -c {task.script!r}",
             f"directory   {task.cwd}",
             f"status      {status_text(task)}",
@@ -223,7 +223,9 @@ class TasksScreen(Screen[None]):
         if task.ended_at:
             lines.append(f"ended       {_clock(_parse_ts(task.ended_at))}")
         lines += [f"pid         {task.pid}", f"output      {task.out_path}"]
-        self.app.push_screen(MessageScreen(f"{task.bookmark} :{task.name}", "\n".join(lines)))
+        self.app.push_screen(
+            MessageScreen(f"{task.bookmark} {task.display_name}", "\n".join(lines))
+        )
 
     def action_cancel(self) -> None:
         task = self.selected_task()

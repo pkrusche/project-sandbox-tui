@@ -380,3 +380,30 @@ def test_forgotten_job_gets_its_outcome() -> None:
     assert (run.status, run.commit) == ("interrupted", "")
     state.record_outcome(job, "completed", "c9")  # recorded once
     assert run.status == "interrupted"
+
+
+def test_adopt_orders_shared_commit_by_timestamp_and_deduplicates_parents() -> None:
+    state = State()
+    branches = [
+        Branch("z", "", "", 10, commit="same"),
+        Branch("a", "", "", 20, commit="same"),
+        Branch("c", "", "", 30, commit="child"),
+    ]
+    state.adopt(branches, lambda commit: [["z"], ["z"], ["c"]] if commit == "child" else [], "main")
+    assert state.nodes[state.current["a"]].parents == [state.current["z"]]
+    assert state.nodes[state.current["c"]].parents == [state.current["z"]]
+
+
+def test_cyclic_hidden_lineages_keep_all_reachable_parents() -> None:
+    state = State()
+    root = state.add_lineage("root", "existing", [])
+    a = state.add_lineage("a", "existing", [])
+    b = state.add_lineage("b", "existing", ["a"])
+    a.parents = [b.id, root.id]
+    state.add_lineage("left", "create", ["a"])
+    state.add_lineage("right", "create", ["b"])
+    assert state.bookmark_parents(["left", "right", "root"]) == {
+        "left": ["root"],
+        "right": ["root"],
+        "root": [],
+    }

@@ -28,7 +28,6 @@ from project_sandbox_tui.config import (
     ResolvedSetup,
     Selection,
     StepChoice,
-    remembered_provider,
     remembered_selection,
     resolve_selection,
 )
@@ -43,7 +42,6 @@ from project_sandbox_tui.screens.selection import (
     app_capabilities,
     describe_level,
     level_labels,
-    provider_available,
     provider_labels,
     show_level,
 )
@@ -79,7 +77,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
     LaunchScreen Input:focus { background: $boost; }
     LaunchScreen .row-label { color: $text-muted; height: 1; padding: 0 1; margin-top: 1; }
     LaunchScreen .field { height: 1; }
-    LaunchScreen .field-label { width: 10; color: $text-muted; padding: 0 0 0 1; }
+    LaunchScreen .field-label { width: 12; color: $text-muted; padding: 0 0 0 1; }
     LaunchScreen .field Input { width: 1fr; padding: 0; }
     LaunchScreen .field-value { width: 1fr; height: 1; }
     LaunchScreen TextArea { height: 6; border: none; margin: 0; }
@@ -240,7 +238,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             provider = CycleField(
                 "provider",
                 [row.id for row in catalogue.ROWS],
-                remembered_provider(self.cfg, self.last, provider_available(self.cfg, caps)),
+                caps_mod.default_provider(self.cfg, self.last, caps),
                 labels=provider_labels(self.cfg, caps, self._tier(self.initial_persona)),
                 id="provider",
             )
@@ -736,8 +734,9 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             return
         if any(ch.isspace() for ch in spec.model):
             self.notify(f"invalid model name: {spec.model!r}", severity="warning")
-            custom = self.query_one("#custom-model-row").display
-            self.query_one("#custom-model" if custom else "#model").focus()
+            if not self._selected_profile() and not self._persona_mode():
+                custom = self.query_one("#custom-model-row").display
+                self.query_one("#custom-model" if custom else "#model").focus()
             return
         if spec.mode == "background" and not spec.prompt_text.strip():
             self.notify("an unsupervised run needs a prompt", severity="warning")

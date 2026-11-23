@@ -315,6 +315,7 @@ def test_missing_sidecar_support_is_reported(repo: Path) -> None:
     from tests.test_capabilities import HELP, REAL, fake_runner
 
     cfg = Config()
+    cfg.sandbox.command = "./tools/launcher"
     help_text = HELP.replace("{firewall,sidecar}", "{firewall}")
     caps = capabilities.discover(["ps"], fake_runner({**REAL, "--help": (0, help_text)}))
     snapshot = dataclasses.replace(caps, command=tuple(cfg.sandbox_command()))

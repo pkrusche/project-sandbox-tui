@@ -370,7 +370,7 @@ def test_feedback_successors_apply_configured_launch_overrides(
     assert (job.spec.operation, job.spec.inputs, job.spec.base) == ("", [], "")
     if named_setup == "persona":
         assert (job.spec.provider, job.spec.persona) == ("claude-code", "reviewer")
-        assert job.spec.model == "claude-opus-5-5" and job.spec.level == 4
+        assert job.spec.model == "claude-opus-5-5" and job.spec.level == 2
     elif named_setup == "profile":
         assert job.spec.agent_settings() == cfg.profiles["local"]
         assert job.spec.profile == "local" and not job.spec.persona and job.spec.level == 2

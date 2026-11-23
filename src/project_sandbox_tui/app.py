@@ -77,7 +77,6 @@ from project_sandbox_tui.config import (
     load_workflow_candidate,
     project_level,
     remember,
-    remembered_provider,
     resolve_launch_defaults,
     resolve_selection,
 )
@@ -92,7 +91,7 @@ from project_sandbox_tui.queue import (
     WorkflowRun,
     WorkflowStep,
 )
-from project_sandbox_tui.review import SeenFiles
+from project_sandbox_tui.review import SeenFiles, empty_review_key
 from project_sandbox_tui.sandbox import (
     LaunchSpec,
     Mode,
@@ -119,7 +118,6 @@ from project_sandbox_tui.screens.oplog import OpLogScreen
 from project_sandbox_tui.screens.profiles import ProfileEdit, ProfilesScreen
 from project_sandbox_tui.screens.queue import QueueScreen
 from project_sandbox_tui.screens.review import CommitReviewScreen, DiffReviewScreen, ReviewPosition
-from project_sandbox_tui.screens.selection import provider_available
 from project_sandbox_tui.screens.tasks import TasksScreen
 from project_sandbox_tui.screens.workflow import Stage, WorkflowProfilesScreen
 from project_sandbox_tui.settings import Editor
@@ -239,12 +237,12 @@ class Row:
         if running:
             task = running[0]
             more = f" +{len(running) - 1}" if len(running) > 1 else ""
-            return f":{task.name} ▶{more}"
+            return f"{task.display_name} ▶{more}"
         if task.status == "completed":
-            return f":{task.name} ✓"
+            return f"{task.display_name} ✓"
         if task.status == "failed":
-            return f":{task.name} ✗{task.exit_code if task.exit_code is not None else ''}"
-        return f":{task.name} {task.status}"
+            return f"{task.display_name} ✗{task.exit_code if task.exit_code is not None else ''}"
+        return f"{task.display_name} {task.status}"
 
     def graph_cell(self) -> Text:
         """The history graph line, its node showing the run status."""
@@ -458,6 +456,8 @@ class MainScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = MAIN_BINDINGS
 
+    _modifier_hint = ""
+
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
         table: DataTable[Text] = DataTable(cursor_type="row", zebra_stripes=False)
@@ -488,18 +488,23 @@ class MainScreen(Screen[None]):
         console = self.app.console
         options = console.options.update(width=width, height=None)
         content = self.cheatsheet()
-        sheet.update(content)
+        sheet.update(KeyHints(self._modifier_hint) if self._modifier_hint else content)
         sheet_height = len(console.render_lines(content, options)) + gutter.height
         # Header, table header + working copy + bookmark + horizontal scrollbar,
         # and room for the filter even before it opens.
         app = cast("SandboxTUI", self.app)
         expanded = app.cheatsheet_visible and sheet_height + 6 <= self.size.height
+        sheet.styles.height = sheet_height
         sheet.set_class(not expanded, "hidden")
         self.set_class(expanded, "with-cheatsheet")
 
     def on_key(self, event: events.Key) -> None:
         modifier = modifier_key(event.key)
         if not modifier:  # gg / dd only when typed in a row
+            if self._modifier_hint:
+                self._modifier_hint = ""
+                self.query_one("#cheatsheet", Static).update(self.cheatsheet())
+                self.query_one("#footer", Static).update(_footer(FOOTER, *SHORT_FOOTERS))
             app = cast("SandboxTUI", self.app)
             if app._prefix.pending:
                 app._prefix.other_key(event.key)
@@ -515,12 +520,10 @@ class MainScreen(Screen[None]):
                 " · R refresh · W clean up · H sheet",
             }
             hint = hints.get(modifier, f"{modifier}: no shortcuts on the bookmark list")
+            self._modifier_hint = hint
             self.query_one("#cheatsheet", Static).update(KeyHints(hint))
             self.query_one("#footer", Static).update(_footer(f"? full help · {hint}", hint))
             event.stop()
-        else:
-            self.query_one("#cheatsheet", Static).update(self.cheatsheet())
-            self.query_one("#footer", Static).update(_footer(FOOTER, *SHORT_FOOTERS))
 
 
 def _summary_line(script: str) -> str:
@@ -748,12 +751,14 @@ class SandboxTUI(App[None]):
             ):
                 # Finalise the previous run against a fresh bookmark snapshot
                 # before a queued launch replaces its job record.
+                listed_at = time.time()
                 self.branches = sort_branches(
                     await asyncio.to_thread(
                         self.backend.list_branches, compare_to_main=self.cfg.project.main_branch
                     )
                 )
-                await self._sync_graph(time.time())
+                self._listed_at = listed_at
+                await self._sync_graph(listed_at)
                 for job in await asyncio.to_thread(self._dispatch_queue):
                     self._record_run(job)
                     self.notify(f"{job.branch}: started queued {job.spec.label()} (pid {job.pid})")
@@ -876,11 +881,11 @@ class SandboxTUI(App[None]):
         if task.exit_code is not None and status != "completed":
             status += f" ({task.exit_code})"
         self.notify(
-            f"{task.bookmark}: :{task.line} {status}",
+            f"{task.bookmark}: {task.display_line} {status}",
             severity="information" if task.status == "completed" else "warning",
             timeout=10,
         )
-        title = f"sbx-tui: {task.bookmark} :{task.name} {status}"
+        title = f"sbx-tui: {task.bookmark} {task.display_name} {status}"
         notify.send(title, task.line, self.cfg.ui.notify_command)
         if self.cfg.ui.bell:
             self.bell()
@@ -1361,7 +1366,7 @@ class SandboxTUI(App[None]):
             self.notify("select one or two revisions to diff", severity="warning")
             return
         if len(chosen) == 1:
-            base = main_branch({b.name for b in self.branches}, self.cfg.project.main_branch)
+            base = self.main_name()
             if base is None:
                 self.notify(
                     "no main bookmark found; configure project.main_branch", severity="warning"
@@ -1377,16 +1382,21 @@ class SandboxTUI(App[None]):
 
     @work(exclusive=True, group="diff")
     async def _review_commits(
-        self, base: str, target: str, *, snapshot: bool = True, base_is_commit: bool = False
+        self, base: str, target: str, *, snapshot: bool = True, review_task: str = ""
     ) -> None:
         """Review files separately in each of the bookmark's pinned commits."""
         try:
+            bookmark = target
+            if review_task:
+                target = await asyncio.to_thread(
+                    self.backend._bookmark_commit, bookmark, snapshot=True
+                )
+                snapshot = False
             commits = await asyncio.to_thread(
                 self.backend.review_commits,
                 base,
                 target,
                 snapshot=snapshot,
-                base_is_commit=base_is_commit,
             )
             changes = await asyncio.to_thread(
                 lambda: [self.backend.changed_files_for_commit(commit) for commit in commits]
@@ -1394,13 +1404,36 @@ class SandboxTUI(App[None]):
         except VcsError as exc:
             self.notify(f"could not diff {base} and {target}: {exc}", severity="error")
             return
+        if review_task and not any(change.files for change in changes):
+
+            async def approve(confirmed: bool | None) -> None:
+                if confirmed:
+                    try:
+                        seen = await asyncio.to_thread(SeenFiles.for_repo, self.repo)
+                        await asyncio.to_thread(
+                            seen.mark, [empty_review_key(review_task, base, target)], True
+                        )
+                    except OSError as exc:
+                        self.notify(f"could not save review approval: {exc}", severity="error")
+                        return
+                    await self.refresh_data()
+
+            self.push_screen(
+                ConfirmScreen(
+                    f"Review {bookmark}",
+                    f"No changed files in {base[:12]} → {target[:12]}. Approve this step?",
+                    "approve",
+                ),
+                approve,
+            )
+            return
         if not commits:
             self.notify(f"no commits to review from {base} to {target}")
             return
         seen = await asyncio.to_thread(
             SeenFiles.for_repo, self.repo, review_size=sum(len(change.files) for change in changes)
         )
-        title = f"{base[:12] if base_is_commit or not snapshot else base} → {target}"
+        title = f"{base[:12] if not snapshot else base} → {bookmark}"
 
         def view(commit: ReviewCommit, files: Sequence[FileChange]) -> None:
             shown = files[0].display if len(files) == 1 else f"{len(files)} files"
@@ -1410,7 +1443,7 @@ class SandboxTUI(App[None]):
                 self.backend.diff_commit_files_command(commit, paths),
             )
 
-        key = ("commits", base, target)
+        key = ("commits", base, bookmark)
 
         async def closed(position: ReviewPosition | None) -> None:
             if position is not None:
@@ -1731,8 +1764,8 @@ class SandboxTUI(App[None]):
             )
         )
 
-    def _review_workflow_bookmark(self, branch: str, base: str) -> None:
-        self._review_commits(base, branch, base_is_commit=True)
+    def _review_workflow_bookmark(self, branch: str, base: str, task_id: str) -> None:
+        self._review_commits(base, branch, review_task=task_id)
 
     def _edit_queued_task(self, name: str, task: QueuedTask | None) -> None:
         try:
@@ -2359,7 +2392,7 @@ class SandboxTUI(App[None]):
         self, names: list[str], title: str, body: str, verb: str, go: Callable[[], object]
     ) -> None:
         """Run ``go`` at once unless ``names`` have running host tasks; then ask first."""
-        running = [f"{n}  :{t.line}" for n in names for t in self.tasks.running(n)]
+        running = [f"{n}  {t.display_line}" for n in names for t in self.tasks.running(n)]
         if not running:
             go()
             return
@@ -2625,7 +2658,7 @@ class SandboxTUI(App[None]):
             status += f" ({task.exit_code})"
         started = _ts(task.started_at)
         when = f"{_clock(started)}  " if started else ""
-        return f"{when}{status:<16} :{task.line}"
+        return f"{when}{status:<16} {task.display_line}"
 
     def action_open_editor(self) -> None:
         chosen = self._action_branches()
@@ -3007,7 +3040,7 @@ class SandboxTUI(App[None]):
             if job and job.running and not self.jobs.cancel_started(name):
                 fresh.append(f"{name}  {job.spec.label()}")
             fresh.extend(
-                f"{name}  :{t.line}" for t in tasks if not self.tasks.cancel_requested(t.id)
+                f"{name}  {t.display_line}" for t in tasks if not self.tasks.cancel_requested(t.id)
             )
         if len(fresh) < 2:
             self._cancel(chosen)
@@ -3138,7 +3171,7 @@ class SandboxTUI(App[None]):
         except ConfigError as exc:
             self.notify(f"Config reload failed: {exc}", severity="error")
             return
-        if self.dry_run:
+        if self.dry_run and "--dry-run" not in cfg.sandbox.extra_args:
             cfg.sandbox.extra_args.append("--dry-run")
         self.cfg = cfg
         self.jobs.cfg = cfg
@@ -3311,7 +3344,7 @@ class SandboxTUI(App[None]):
         for screen in self.screen_stack:
             for controls in screen.query(AgentControls):
                 controls.set_capabilities(caps)
-            if isinstance(screen, LaunchScreen):
+            if isinstance(screen, (LaunchScreen, WorkflowProfilesScreen)):
                 screen.capabilities_changed()
 
     @work(group="models")
@@ -3532,8 +3565,7 @@ class SandboxTUI(App[None]):
         """A step's selection: persona choices start at the remembered or default provider."""
         if choice.kind != "persona":
             return Selection(choice)
-        available = provider_available(self.cfg, self.capabilities)
-        return Selection(choice, remembered_provider(self.cfg, last, available))
+        return Selection(choice, capabilities.default_provider(self.cfg, last, self.capabilities))
 
     def _level_line(self, spec: LaunchSpec) -> str:
         """The level a spec runs at and the flags it compiles to; "" without levels."""

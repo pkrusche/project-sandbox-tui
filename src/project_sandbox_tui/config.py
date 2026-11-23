@@ -1057,6 +1057,7 @@ def _merge_workflow_files(
 ) -> Config:
     """Add each trusted workflow file (or ``candidate_file``'s text) to ``cfg``.
 
+    A name shared with an inline workflow raises ConfigError for the combined configuration.
     A file that fails to parse or validate is left out and recorded in
     ``cfg.workflow_problems``. Review state and scan warnings are not added to
     ``cfg.warnings``: callers report them from :meth:`WorkflowTrust.scan`, as for
@@ -1905,7 +1906,7 @@ keep_workspace = true                  # -> --keep-workspace
 # gateway = false                      # pi / opencode / bash via network.agent_proxy
 
 # [profiles.review]                    # :config-profiles edits these in the TUI
-# agent = "codex"                      # launch forms offer profiles and custom
+# agent = "codex"                      # launch forms offer personas, profiles and custom
 # model = ""
 # effort = "high"
 # fast = false

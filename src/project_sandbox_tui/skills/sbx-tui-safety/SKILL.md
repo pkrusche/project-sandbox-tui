@@ -11,19 +11,11 @@ The latter shows the file on disk. A pending trust review can make these differ.
 Use the launcher's discovered capabilities in the wizard or `sbx-tui doctor`
 before proposing flags.
 
-Prefer a project `[security] level` over hand-written network flags. Levels run
-from 1 (no firewall) through 2 (firewall plus package sources), 3 (agent API
-only), 4 (VCS read-only) to 5 (no VCS metadata); `sbx-tui doctor` and the setup
-summary say which ones the launcher supports. Propose the lowest-risk project
-default that the common tasks need, usually 2 when tests download packages and
-3 otherwise, and raise individual actions with personas or `level`. Explain that
-a launch form level below the default is shown in red and that `:NAME` asks
-before running an action below it. Corporate settings (`network.internet_proxy`,
-`ca_certs`, `build_proxy`, `build_no_proxy`, `build_ca_certs`,
-`no_internet_proxy_preflight`) and `security.egress` belong in the user's global
-config, never the project file. The sidecar's `egress.toml` is shared by every
-project on the runtime: review its hosts in doctor with the owner, and do not
-edit it from sbx-tui.
+Set a project `security.level` that fits everyday work. Use `sbx-tui doctor`
+to check launcher support. Discuss any action that needs a lower level with
+the owner. Keep corporate proxy, CA and egress backend settings in the global
+config. The sidecar policy is shared across projects on the runtime.
+See the [security levels and global-only settings](https://github.com/pkrusche/project-sandbox-tui/blob/main/docs/configuration.md#security-levels).
 
 | Scenario | Decision to make with the owner |
 | --- | --- |

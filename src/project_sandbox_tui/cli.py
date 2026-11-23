@@ -33,7 +33,8 @@ def build_parser() -> ArgumentParser:
     p = ArgumentParser(
         prog="sbx-tui",
         description="Minimal vim/ranger-style TUI for project-sandbox sessions per jj bookmark.",
-        epilog="subcommands: sbx-tui config {list,get,set,unset,path} …, sbx-tui doctor "
+        epilog="subcommands: sbx-tui config {list,get,set,unset,path} …, sbx-tui workflow import, "
+        "sbx-tui doctor "
         "(use --help after a subcommand for details)",
     )
     p.add_argument("repo", nargs="?", default=".", help="repository (default: current directory)")
@@ -69,8 +70,7 @@ def build_parser() -> ArgumentParser:
     p.add_argument(
         "--trust-config",
         action="store_true",
-        help="show how the repository's .project-sandbox-tui.toml differs from the trusted "
-        "copy and ask whether to trust it, then exit",
+        help="review changes to repository configuration and workflow files and confirm trust",
     )
     p.add_argument(
         "--dry-run",
@@ -528,6 +528,8 @@ def _print_config(repo: Path, backend: JjBackend, cfg: config_mod.Config) -> int
     data = dataclasses.asdict(cfg)
     del data["profile_sources"]
     del data["warnings"]
+    del data["workflow_problems"]
+    del data["persona_config"]
     data["sources"] = [str(p) for p in cfg.sources]
     print(json.dumps(data, indent=2))
     try:

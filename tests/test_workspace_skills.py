@@ -499,3 +499,13 @@ def test_failed_preparation_starts_nothing_and_pauses_queue(
     assert queue.dispatch(jobs, dict, lambda _b: None) == []
     state = queue.get("feature/x")
     assert state.paused and "cannot deploy" in state.error and state.tasks
+
+
+def test_bundled_skill_uses_ignore_rules_without_git_backend(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ignore_on_bookmark(repo, "feature/x", "/.agents/", "/.claude/")
+    preparer = _preparer(repo)
+    monkeypatch.setattr(preparer.backend, "git_dir", lambda: None)
+    path = preparer.prepare(Config(), "feature/x", sandbox=False)
+    assert all((path / target / "SKILL.md").is_file() for target in BUNDLED)

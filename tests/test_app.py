@@ -241,9 +241,14 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
                     mode="background",
                     prompt_text=long_prompt if i else prompt,
                 )
+                if not i:
+                    spec.agent = "bash"
+                    spec.level = 3
                 job = JobRecord("feature/x", spec, 1, f"2026-01-0{i + 1}T00:00:00Z")
                 job.argv = ["project-sandbox", "--prompt", prompt]
-                job.log_path, job.stdout_path = str(log), str(log.with_suffix(".out"))
+                job.log_path, job.stdout_path = (
+                    (str(log), str(log.with_suffix(".out"))) if i else ("", str(log))
+                )
                 state.add_run(job).status = "completed" if i else "failed"
         await pilot.press("j", "O")  # starts on feature/x's newest run
         screen = app.screen
@@ -264,7 +269,7 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         assert pane.region.y >= screen.table.region.bottom
         assert pane.max_scroll_y > 0 and pane.max_scroll_x == 0
         assert screen.table.max_scroll_x == 0
-        await pilot.press("tab", "end")
+        await pilot.press("tab", "G")
         assert app.focused is pane
         await wait_until(pilot, lambda: pane.scroll_y > 0)  # scroll_end waits for a refresh
         screen._render_rows()
@@ -272,7 +277,7 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         assert pane.scroll_y > 0  # refresh does not reset reading position
         await pilot.press("shift+tab", "enter")
         assert isinstance(app.screen, MessageScreen)
-        assert "after       feature/x: background codex → failed: first try" in app.screen.body
+        assert "after       feature/x: background bash/L3 → failed: first try" in app.screen.body
         await pilot.press("q", "j")
         assert "prompt      first try" in str(details.content)
         assert "second try" not in str(details.content)
@@ -282,11 +287,46 @@ def test_op_history_view(repo: Path, tmp_path: Path, fake_cfg: Callable[..., Con
         assert "agent" not in str(details.content)
         await pilot.press("k", "l")  # an earlier run's log
         screen = await wait_for_screen(app, pilot, LogScreen)
+        assert not screen._markdown_file and not screen._raw_log
         assert "output of first try" in "\n".join(screen.query_one(LiveLog).lines)
         await pilot.press("q", "O")
         assert app.screen is app.main
 
     run_app(repo, fake_cfg(), scenario, size=(80, 24))
+
+
+def test_op_history_refresh_preserves_scrolled_table(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui.screens.oplog import OpLogScreen
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app._refresh_timer.pause()
+        with app.graph.transaction() as state:
+            for i in range(30):
+                state.add_lineage("long-bookmark-" + "x" * 70 + str(i), "create", [])
+        await pilot.press("O")
+        screen = await wait_for_screen(app, pilot, OpLogScreen)
+        table = screen.table
+        await pilot.pause()
+        assert table.max_scroll_x > 10 and table.max_scroll_y > 10
+        table.scroll_to(x=10, y=10, animate=False, immediate=True)
+        chosen = screen.selected_id()
+        with app.graph.transaction() as state:
+            for node in state.nodes.values():
+                node.at -= 5
+        screen._render_rows()
+        await pilot.pause()
+        assert (table.scroll_x, table.scroll_y) == (10, 10)
+        assert screen.selected_id() == chosen
+        with app.graph.transaction() as state:
+            state.add_lineage("new", "create", [])
+        screen._render_rows()
+        await pilot.pause()
+        assert (table.scroll_x, table.scroll_y) == (10, 10)
+        assert screen.selected_id() == chosen
+
+    run_app(repo, fake_cfg(), scenario, size=(60, 22))
 
 
 def test_list_navigation_and_filter(repo: Path, fake_cfg: Callable[..., Config]) -> None:
@@ -1653,10 +1693,13 @@ def test_untrusted_project_config_is_reviewed_at_start(repo: Path) -> None:
 def test_modifier_hints(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     async def scenario(app: SandboxTUI, pilot: Any) -> None:
         await pilot.press("j")  # select feature/x for sessions
+        sheet = app.main.query_one("#cheatsheet", Static)
+        height = app.table.region.height
         await pilot.press("left_control")
-        assert "ctrl+l reload" in str(app.main.query_one("#cheatsheet", Static).content)
+        assert "ctrl+l reload" in str(sheet.content)
+        assert app.table.region.height == height
         await pilot.press("right_shift")
-        assert "G bottom" in str(app.main.query_one("#cheatsheet", Static).content)
+        assert "G bottom" in str(app.main.query_one("#footer", Static).content)
         await pilot.press("left_alt")
         assert "no shortcuts" in str(app.main.query_one("#footer", Static).content)
         await pilot.press("r")
@@ -1664,15 +1707,17 @@ def test_modifier_hints(repo: Path, fake_cfg: Callable[..., Config]) -> None:
         assert isinstance(form, LaunchScreen)
         await pilot.press("right_control")
         hint = str(form.query_one("#launch-hint", Static).content)
-        assert "ctrl+s / ctrl+enter launch" in hint and "ctrl+r search" in hint
+        assert "ctrl+s / ctrl+enter run / queue" in hint and "ctrl+r search" in hint
         await pilot.press("left_shift")
         assert "shift+tab" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("a")
-        assert "ctrl+s launch" in str(form.query_one("#launch-hint", Static).content)
+        assert "ctrl+s run / queue" in str(form.query_one("#launch-hint", Static).content)
         await pilot.press("escape", "question_mark", "left_control")
         assert isinstance(app.screen, HelpScreen)
         await pilot.press("q")
         assert app.screen is app.main
+
+    run_app(repo, fake_cfg(), scenario)
 
 
 # ---------------------------------------------------------------- octopus
