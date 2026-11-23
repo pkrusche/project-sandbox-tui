@@ -778,3 +778,49 @@ def test_workflow_dry_run_preview_shows_stage_profiles(
         assert not app.queue.get("feature/x").tasks and not app.jobs.jobs
 
     run_app(repo, cfg, scenario)
+
+
+def test_workflow_file_and_inline_previews(
+    repo: Path, fake_cfg: Callable[..., Config], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from project_sandbox_tui import config
+    from project_sandbox_tui.cli import main
+
+    root = Path(__file__).resolve().parents[1]
+    (repo / config.PROJECT_CONFIG_NAME).write_text((root / config.PROJECT_CONFIG_NAME).read_text())
+    target = config.workflow_dir(repo) / "spec.toml"
+    target.parent.mkdir(parents=True)
+    target.write_text((root / ".project-sandbox-tui/workflows/spec.toml").read_text())
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert main([str(repo), "--trust-config"]) == 0
+    loaded = config.load(repo)
+    cfg = fake_cfg()
+    cfg.actions, cfg.commands, cfg.workflows = loaded.actions, loaded.commands, loaded.workflows
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.dry_run = True
+        await pilot.press("j")
+        await app.run_command(":workflow")
+        await pilot.pause()
+        assert any(
+            "pre-release" in str(n.message) and "spec" in str(n.message) for n in app._notifications
+        )
+        await app.run_command(":workflow spec CSV export")
+        picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+        stages = " ".join(str(item.render()) for item in picker.query(".stage"))
+        for name in ("spec/plan", "spec/check", "spec/implement", "spec/chores"):
+            assert name in stages
+        await pilot.press("enter")
+        preview = await wait_for_screen(app, pilot, MessageScreen)
+        assert all(
+            name in preview.body
+            for name in ("spec/plan", "spec/check", "spec/implement", "spec/chores")
+        )
+        await pilot.press("escape")
+        await start_workflow(app, pilot, ":workflow pre-release")
+        preview = await wait_for_screen(app, pilot, MessageScreen)
+        assert all(
+            name in preview.body for name in ("release-docs", "check", "Human review", "smoke")
+        ), preview.body
+
+    run_app(repo, cfg, scenario)
