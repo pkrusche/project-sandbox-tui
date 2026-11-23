@@ -573,3 +573,24 @@ persona = "house-style"
         "locally configured persona house-style" in check.detail
         for check in check_config(cfg, tmp_path)
     )
+
+
+def test_imported_workflow_source_checksum(tmp_path: Path) -> None:
+    import hashlib
+
+    from project_sandbox_tui import config
+    from project_sandbox_tui.doctor import check_config
+
+    body = '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "hi"\n'
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    path = config.workflow_dir(tmp_path) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(body + f'[source]\nsha256 = "{digest}"\n')
+    assert any(
+        "matches source" in check.detail for check in check_config(config.load(tmp_path), tmp_path)
+    )
+    path.write_text(path.read_text().replace('"hi"', '"edited"'))
+    assert any(
+        "edited since import" in check.detail
+        for check in check_config(config.load(tmp_path), tmp_path)
+    )

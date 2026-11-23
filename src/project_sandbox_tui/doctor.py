@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -12,6 +13,8 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Literal
+
+import tomlkit
 
 from project_sandbox_tui import (
     capabilities,
@@ -229,6 +232,26 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
             status = "warn" if file.needs_review else "ok"
             detail = file.describe() if file.needs_review else f"{file.path} is trusted"
             checks.append(Check("workflow file", status, detail))
+            try:
+                document = tomlkit.parse(file.current or "")
+                source = document.pop("source", None)
+                if isinstance(source, dict) and isinstance(source.get("sha256"), str):
+                    body = tomlkit.dumps(document)
+                    digest = hashlib.sha256(body.encode()).hexdigest()
+                    # A source table needs a separating newline when the fetched
+                    # body had none. Account for that separator on reparse.
+                    without_separator = hashlib.sha256(body.removesuffix("\n").encode()).hexdigest()
+                    matches = source["sha256"] in (digest, without_separator)
+                    checks.append(
+                        Check(
+                            "workflow source",
+                            "ok" if matches else "warn",
+                            f"{file.path}: "
+                            + ("matches source" if matches else "edited since import"),
+                        )
+                    )
+            except ValueError:
+                pass
         for path, problem in cfg.workflow_problems:
             checks.append(Check("workflow file", "warn", f"{path}: {problem}"))
         for name, action in cfg.actions.items():
