@@ -654,3 +654,6 @@ the workflow after any current process finishes. See
 | `X` | Terminate the active workflow and prevent further steps in that run |
 | `q` / `h` / `L` | Return to the bookmark list |
 | `esc` | Clear filter or selection; otherwise return to the bookmark list |
+
+Workflow-file actions and commands use namespaced names on the command line,
+for example `:spec/implement`, `:&spec/test -k x` or `:*spec/test`.

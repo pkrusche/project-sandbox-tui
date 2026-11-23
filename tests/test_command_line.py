@@ -1177,3 +1177,32 @@ def test_reorganise_opens_a_prefilled_unsupervised_form(
         assert form.query_one("#prompt", TextArea).text == "edited"
 
     run_app(repo, cfg, scenario)
+
+
+def test_namespaced_action_uses_persona(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    from project_sandbox_tui import config
+
+    path = config.workflow_dir(repo) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text("""
+[workflow]
+planning_action = "implement"
+steps = ["implement"]
+[actions.implement]
+prompt = "implement {bookmark}"
+persona = "implementer"
+""")
+    config.WorkflowTrust.scan(repo)[0][0].trust()
+    cfg = fake_cfg()
+    cfg.actions = config.load(repo).actions
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")
+        await app.run_command(":spec/implement")
+        await wait_until(pilot, lambda: "feature/x" in app.jobs.jobs)
+        job = app.jobs.jobs["feature/x"]
+        assert job.spec.persona == "implementer"
+        assert any("implement feature/x" in arg for arg in job.argv)
+        assert any(arg.startswith("--model=") for arg in job.argv)
+
+    run_app(repo, cfg, scenario)
