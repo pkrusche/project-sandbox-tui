@@ -33,6 +33,7 @@ def test_release_artifacts_exclude_local_state_and_build_from_sdist(tmp_path: Pa
         ".devcontainer/credentials.json",
         ".project-sandbox/session.json",
         ".project-sandbox-tui.toml",
+        ".project-sandbox-tui/workflows/spec.toml",
         ".release-status/1.0.0-deadbeef/hashes",
         "private-notes.txt",
     ):

@@ -460,8 +460,10 @@ settings take effect:
 - Startup and `ctrl+l` show new or changed files as a diff against the trusted
   copy; `y` trusts exactly that version. Invalid files are not offered.
 - Until reviewed, new files are ignored; changed files use the trusted copy.
-- `--trust-config` offers the same review in the terminal. `--print-config` and
-  `--cleanup-workspaces` warn about untrusted files.
+- `--trust-config` offers the same review in the terminal, one file at a time.
+  It reports invalid files and continues with the rest; it exits 2 if a file was
+  invalid, 1 if one was declined. `--print-config` and `--cleanup-workspaces`
+  warn about untrusted files.
 - `--init` trusts its new template.
 
 ## Settings reference
@@ -773,7 +775,9 @@ sharing; use inline `[workflows.NAME]` for project-specific dependencies.
 
 Each file is reviewed separately with `sbx-tui --trust-config` or at TUI
 startup. A new file is ignored until trusted, and a changed file keeps its
-previously trusted contents until reviewed. Deleting it removes the workflow.
+previously trusted contents until reviewed, as does a file that cannot be read
+as UTF-8. Deleting it removes the workflow. Symlinked files, and a symlinked
+`.project-sandbox-tui` or `workflows` directory, are ignored with a warning.
 To copy a file into the current project, run
 `sbx-tui workflow import SOURCE [--name NAME]`, where SOURCE is an HTTPS URL or
 local path. Import validates and previews the file and its provenance before

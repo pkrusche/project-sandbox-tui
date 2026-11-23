@@ -214,6 +214,64 @@ def check_runtime(cfg: Config, runner: Runner, which: Callable[[str], str | None
     return Check("container runtime", "ok", f"{cli} is running")
 
 
+def _check_workflow_files(cfg: Config, repo: Path) -> list[Check]:
+    """Trust, validity, provenance and persona dependencies of each workflow file."""
+    try:
+        files, scan_warnings = WorkflowTrust.scan(repo)
+    except (ConfigError, OSError) as exc:
+        return [Check("workflow file", "fail", f"cannot scan workflow files: {exc}")]
+    checks = [Check("workflow file", "warn", warning) for warning in scan_warnings]
+    problems: dict[Path, list[str]] = {}
+    for path, problem in cfg.workflow_problems:
+        problems.setdefault(path, []).append(problem)
+    for file in files:
+        if file.needs_review:
+            checks.append(Check("workflow file", "warn", file.describe(), "sbx-tui --trust-config"))
+        elif file.path in problems:
+            pass  # reported below instead of "trusted"
+        elif file.current is not None and file.trusted is not None:
+            checks.append(Check("workflow file", "ok", f"{file.path} is trusted"))
+        checks.extend(_check_workflow_source(file.path, file.current))
+    for path, messages in problems.items():
+        checks.extend(
+            Check("workflow file", "warn", f"{path}: {message}")
+            for message in dict.fromkeys(messages)
+        )
+    dependencies = dict.fromkeys(
+        (name.split("/", 1)[0], action.persona)
+        for name, action in cfg.actions.items()
+        if "/" in name and action.persona and action.persona not in catalogue.BUILTIN_PERSONAS
+    )
+    checks.extend(
+        Check(
+            "workflow file",
+            "warn",
+            f"workflow {workflow} depends on locally configured persona {persona}",
+        )
+        for workflow, persona in dependencies
+    )
+    return checks
+
+
+def _check_workflow_source(path: Path, text: str | None) -> list[Check]:
+    """Whether an imported workflow file still matches the recorded ``[source]`` hash."""
+    if text is None:
+        return []
+    try:
+        document = tomlkit.parse(text)
+    except ValueError:
+        return []
+    source = document.pop("source", None)
+    if not isinstance(source, dict) or not isinstance(source.get("sha256"), str):
+        return []
+    body = tomlkit.dumps(document)
+    if not body.endswith("\n"):
+        body += "\n"
+    matches = source["sha256"] == hashlib.sha256(body.encode()).hexdigest()
+    detail = "matches source" if matches else "edited since import"
+    return [Check("workflow source", "ok" if matches else "warn", f"{path}: {detail}")]
+
+
 def check_config(cfg: Config, repo: Path | None) -> list[Check]:
     checks = [Check("project config", "warn", warning) for warning in cfg.warnings]
     if repo is not None:
@@ -226,45 +284,7 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
                 checks.append(
                     Check("project config", "warn", trust.describe(), "sbx-tui --trust-config")
                 )
-        files, scan_warnings = WorkflowTrust.scan(repo)
-        checks.extend(Check("workflow file", "warn", warning) for warning in scan_warnings)
-        for file in files:
-            status = "warn" if file.needs_review else "ok"
-            detail = file.describe() if file.needs_review else f"{file.path} is trusted"
-            checks.append(Check("workflow file", status, detail))
-            try:
-                document = tomlkit.parse(file.current or "")
-                source = document.pop("source", None)
-                if isinstance(source, dict) and isinstance(source.get("sha256"), str):
-                    body = tomlkit.dumps(document)
-                    digest = hashlib.sha256(body.encode()).hexdigest()
-                    # A source table needs a separating newline when the fetched
-                    # body had none. Account for that separator on reparse.
-                    without_separator = hashlib.sha256(body.removesuffix("\n").encode()).hexdigest()
-                    matches = source["sha256"] in (digest, without_separator)
-                    checks.append(
-                        Check(
-                            "workflow source",
-                            "ok" if matches else "warn",
-                            f"{file.path}: "
-                            + ("matches source" if matches else "edited since import"),
-                        )
-                    )
-            except ValueError:
-                pass
-        for path, problem in cfg.workflow_problems:
-            checks.append(Check("workflow file", "warn", f"{path}: {problem}"))
-        for name, action in cfg.actions.items():
-            if "/" in name and action.persona and action.persona not in catalogue.BUILTIN_PERSONAS:
-                workflow = name.split("/", 1)[0]
-                checks.append(
-                    Check(
-                        "workflow file",
-                        "warn",
-                        f"workflow {workflow} depends on locally configured "
-                        f"persona {action.persona}",
-                    )
-                )
+        checks.extend(_check_workflow_files(cfg, repo))
         if not cfg.has_image_source():
             checks.append(
                 Check(

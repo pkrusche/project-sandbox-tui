@@ -41,8 +41,8 @@ persona = "implementer"
 [actions.chores]
 prompt = '''
 Read the spec at previous_state.spec_path in the run feedback context. Finish
-related formatting, documentation, and cleanup. Follow AGENTS.md and
-docs/development.md for the development checks, including scripts/test.sh.
+related formatting, documentation, and cleanup. Run the development checks
+described in AGENTS.md and the project's development docs, including the tests.
 Record the checks actually run and their results in the feedback report. Fix
 in-scope failures, and report blocked if a prerequisite or decision is needed.
 Report success once the required checks pass.

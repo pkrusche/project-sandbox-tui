@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import difflib
 import hashlib
@@ -187,10 +188,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sbx-tui: config error: {exc}", file=sys.stderr)
         return 2
     headless = args.cleanup_workspaces or args.print_config
-    if headless:
+    if headless:  # the TUI shows these and asks for a review itself
         for warning in cfg.warnings:
             _warn_config(warning)
-    if headless:  # the TUI asks for a review itself
         _warn_untrusted(repo)
         for path, problem in cfg.workflow_problems:
             _warn_config(f"{path}: {problem}")
@@ -211,11 +211,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_config:
         return _print_config(repo, backend, cfg)
 
-    files, _ = config_mod.WorkflowTrust.scan(repo)
-    review_warnings = {file.describe() for file in files if file.needs_review}
-    other_warnings = [warning for warning in cfg.warnings if warning not in review_warnings]
-    if other_warnings:
-        for warning in other_warnings:
+    if cfg.warnings:
+        for warning in cfg.warnings:
             _warn_config(warning)
         if not _confirm("Start sbx-tui with these items ignored? [y/N] "):
             return 1
@@ -258,7 +255,7 @@ def _import_workflow(args: Namespace, repo: Path) -> int:
     if parsed.scheme and parsed.scheme != "https":
         raise ConfigError("workflow import accepts only https:// URLs and local files")
     fetch_source = source
-    if parsed.scheme == "https" and parsed.netloc.lower() == "github.com":
+    if parsed.scheme == "https" and parsed.hostname == "github.com":
         parts = parsed.path.strip("/").split("/")
         if len(parts) >= 5 and parts[2] == "blob":
             fetch_source = "https://raw.githubusercontent.com/" + "/".join(parts[:2] + parts[3:])
@@ -269,6 +266,8 @@ def _import_workflow(args: Namespace, repo: Path) -> int:
         raise ConfigError(f"workflow import: {exc}") from exc
     doc.pop("source", None)
     body = tomlkit.dumps(doc)
+    if not body.endswith("\n"):  # so the hash survives re-import and doctor's reparse
+        body += "\n"
     name = args.name or Path(parsed.path if parsed.scheme else source).stem
     directory = config_mod.workflow_dir(repo)
     if not commands.NAME.fullmatch(name):
@@ -287,8 +286,11 @@ def _import_workflow(args: Namespace, repo: Path) -> int:
             raise ConfigError(f"invalid workflow name {name!r}")
         cfg = config_mod.load(repo, args.config)
         target = directory / f"{name}.toml"
-        inline = name in cfg.workflows and not target.exists()
-        if not inline and not target.exists() and not target.is_symlink():
+        present = target.exists() or target.is_symlink()
+        if target.is_symlink() or (present and not target.is_file()):
+            raise ConfigError(f"{target}: refusing to replace a symlink or non-regular file")
+        inline = name in cfg.workflows and not present
+        if not inline and not present:
             break
         if not sys.stdin.isatty():
             raise ConfigError(f"workflow {name!r} already exists")
@@ -319,10 +321,8 @@ def _import_workflow(args: Namespace, repo: Path) -> int:
     source_table.add("sha256", hashlib.sha256(body.encode()).hexdigest())
     provenance = tomlkit.document()
     provenance.add("source", source_table)
-    final = body + ("" if body.endswith("\n") else "\n") + tomlkit.dumps(provenance)
-    if target.is_symlink():
-        raise ConfigError(f"{target}: refusing symlink")
-    before = target.read_text(encoding="utf-8") if target.exists() else None
+    final = body + tomlkit.dumps(provenance)
+    before = _read_workflow_file(target)
     if before is None:
         print(final, end="" if final.endswith("\n") else "\n")
     else:
@@ -341,23 +341,56 @@ def _import_workflow(args: Namespace, repo: Path) -> int:
         return 1
     if directory.is_symlink() or directory.parent.is_symlink() or target.is_symlink():
         raise ConfigError(f"{target}: refusing symlink")
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigError(f"cannot create {directory}: {exc}") from exc
     trusted_path = config_mod.repo_state_dir(repo) / "trusted-workflows" / target.name
     with config_mod.config_lock():
         if target.is_symlink() or directory.is_symlink() or directory.parent.is_symlink():
             raise ConfigError(f"{target}: refusing symlink")
-        current = target.read_text(encoding="utf-8") if target.exists() else None
-        if current != before:
+        if _read_workflow_file(target) != before:
             raise ConfigError(f"{target}: file changed during review")
-        tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        _write_workflow_file(target, final)
         try:
-            tmp.write_text(final, encoding="utf-8")
-            os.replace(tmp, target)
-        finally:
-            tmp.unlink(missing_ok=True)
-        config_mod._write_trusted_file(trusted_path, final)
+            config_mod._write_trusted_file(trusted_path, final)
+        except OSError as exc:
+            raise ConfigError(f"cannot write {trusted_path}: {exc}") from exc
     print(f"imported and trusted: {target}")
     return 0
+
+
+def _read_workflow_file(target: Path) -> str | None:
+    """The workflow file's text; None when absent. Refuses anything but a regular file."""
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise ConfigError(f"{target}: refusing to replace a symlink or non-regular file")
+    try:
+        return target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f"cannot read {target}: {exc}") from exc
+
+
+def _write_workflow_file(target: Path, text: str) -> None:
+    """Replace ``target`` atomically, keeping an existing file's mode."""
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        try:
+            mode: int | None = target.stat().st_mode & 0o777
+        except FileNotFoundError:
+            mode = None
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666 if mode is None else 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            if mode is not None:
+                os.fchmod(stream.fileno(), mode)
+            stream.write(text)
+        os.replace(tmp, target)
+    except OSError as exc:
+        raise ConfigError(f"cannot write {target}: {exc}") from exc
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def _config(args: Namespace, repo: Path | None) -> int:
@@ -436,23 +469,37 @@ def _warn_untrusted(repo: Path | None) -> None:
 
 
 def _trust_config(repo: Path, global_path: Path | None) -> int:
+    """Review the project config and each workflow file that changed, one by one.
+
+    Exits 2 if a candidate is invalid, otherwise 1 if one was declined.
+    """
     project = config_mod.ProjectTrust.check(repo)
     files, warnings = config_mod.WorkflowTrust.scan(repo)
     for warning in warnings:
         _warn_config(warning)
+    for item in [project, *files]:
+        if not item.needs_review and item.current is not None and item.current == item.trusted:
+            print(f"{item.path}: trusted")
+    if project.current is None:
+        print(f"{project.path}: not present")
     pending = [item for item in [project, *files] if item.needs_review]
-    if not pending:
-        state = "trusted" if project.current is not None else "not present"
-        print(f"{project.path}: {state}")
-        return 0
-    declined = False
+    invalid = declined = False
+    shown: set[str] = set()
     for trust in pending:
-        if isinstance(trust, config_mod.ProjectTrust):
-            cfg = config_mod.load_candidate(trust, global_path)
-        else:
-            cfg = config_mod.load_workflow_candidate(trust, repo, global_path)
+        try:
+            if isinstance(trust, config_mod.ProjectTrust):
+                cfg = config_mod.load_candidate(trust, global_path)
+            else:
+                cfg = config_mod.load_workflow_candidate(trust, repo, global_path)
+        except ConfigError as exc:
+            print(f"sbx-tui: config error: {exc}", file=sys.stderr)
+            print(f"not trusted: {trust.path}")
+            invalid = True
+            continue
         for warning in cfg.warnings:
-            _warn_config(warning)
+            if warning not in shown:
+                shown.add(warning)
+                _warn_config(warning)
         print(trust.diff(), end="")
         if not _confirm(f"Trust {trust.path}? It can run commands on this machine. [y/N] "):
             print("not trusted")
@@ -460,7 +507,7 @@ def _trust_config(repo: Path, global_path: Path | None) -> int:
             continue
         trust.trust(repo)
         print(f"trusted: {trust.path}")
-    return 1 if declined else 0
+    return 2 if invalid else 1 if declined else 0
 
 
 def _update_models(source: str, *, required: bool = True) -> int:

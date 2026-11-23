@@ -104,16 +104,34 @@ def test_workflow_example_with_project_actions(tmp_path: Path) -> None:
     assert workflow.pass_state_keys == ["spec_path"] and not workflow.result_state_keys
 
 
-def test_project_workflow_matches_documented_example() -> None:
-    project = DOCS.parent / ".project-sandbox-tui/workflows/spec.toml"
-    if not project.exists():
-        pytest.skip("checkout-local workflow is excluded from the source distribution")
+def test_project_workflow_matches_documented_example(tmp_path: Path) -> None:
+    root = DOCS.parent
+    project = root / c.PROJECT_CONFIG_NAME
+    spec = c.workflow_dir(root) / "spec.toml"
+    if (root / "PKG-INFO").is_file() and not (project.exists() and spec.exists()):
+        pytest.skip("checkout-local configuration is excluded from the source distribution")
+    # This repository's project config and workflow file load together.
+    repo = tmp_path / "repo"
+    (repo / c.PROJECT_CONFIG_NAME).parent.mkdir(parents=True)
+    (repo / c.PROJECT_CONFIG_NAME).write_text(project.read_text())
+    c.ProjectTrust.check(repo).trust()
+    copy = c.workflow_dir(repo) / "spec.toml"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(spec.read_text())
+    c.WorkflowTrust.scan(repo)[0][0].trust()
+    cfg = c.load(repo)
+    assert not cfg.workflow_problems and set(cfg.workflows) == {"pre-release", "spec"}
+    assert cfg.workflows["pre-release"].steps == ["check", "human-review", "host:smoke"]
     (block,) = toml_blocks(section("feedback.md", "## Project workflows"))
-    example = tomllib.loads(block)
-    actual = tomllib.loads(project.read_text())
-    assert actual["workflow"] == example["workflow"]
-    for name, action in example["actions"].items():
-        assert actual["actions"][name]["persona"] == action["persona"]
+    example_repo = tmp_path / "example"
+    example = c.workflow_dir(example_repo) / "spec.toml"
+    example.parent.mkdir(parents=True)
+    example.write_text(block)
+    c.WorkflowTrust.scan(example_repo)[0][0].trust()
+    documented = c.load(example_repo)
+    assert cfg.workflows["spec"] == documented.workflows["spec"]
+    for name, action in documented.actions.items():
+        assert cfg.actions[name].persona == action.persona
 
 
 def test_shareable_workflow_example(tmp_path: Path) -> None:

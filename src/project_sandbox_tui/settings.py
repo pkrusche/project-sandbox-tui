@@ -32,6 +32,7 @@ from project_sandbox_tui.config import (
     ProjectTrust,
     Workflow,
     _load,
+    _merge_workflow_files,
     config_lock,
     global_config_path,
     load,
@@ -39,6 +40,7 @@ from project_sandbox_tui.config import (
     project_config_path,
     valid_name,
     validate_profile_name,
+    workflow_dir,
     write_trusted_config,
 )
 
@@ -249,9 +251,20 @@ class Editor:
         except OSError as exc:
             raise ConfigError(f"cannot write {self.path}: {exc}") from exc
 
-    def set(self, key: Key, value: Any) -> None:
+    def _check_writable(self, key: Key) -> None:
+        """Refuse keys that come from a workflow file rather than this config file."""
         if key.section in ("actions", "commands") and "/" in key.name:
             raise ConfigError("workflow file settings are read-only; edit the workflow file")
+        if key.section == "workflows" and self.repo is not None:
+            path = workflow_dir(self.repo) / f"{key.name.rpartition('.')[0]}.toml"
+            if path.exists() or path.is_symlink():
+                raise ConfigError(
+                    f"workflows.{key.name} comes from {path}, which is read-only here; "
+                    "edit the workflow file"
+                )
+
+    def set(self, key: Key, value: Any) -> None:
+        self._check_writable(key)
         with self._edit() as doc:
             table: Any = doc
             # Tables that only hold other tables, so no empty [x] header is written.
@@ -285,8 +298,7 @@ class Editor:
 
     def unset(self, key: Key) -> bool:
         """Remove ``key``; returns False if the file did not set it."""
-        if key.section in ("actions", "commands") and "/" in key.name:
-            raise ConfigError("workflow file settings are read-only; edit the workflow file")
+        self._check_writable(key)
         return self._unset(key.path)
 
     def delete_profile(self, name: str) -> bool:
@@ -334,7 +346,15 @@ class Editor:
         else:
             project_path = project_config_path(self.repo) if self.repo is not None else None
             cfg = merge_config(mine, other, project_path)
-        cfg.validate()  # nothing is written when this raises
+        # Nothing is written when validation raises. [leader] may refer to
+        # commands and actions of trusted workflow files, so check it with them.
+        leader = cfg.leader
+        if self.repo is not None:
+            cfg.leader = {}
+        cfg.validate()
+        if self.repo is not None:
+            cfg.leader = leader
+            cfg = _merge_workflow_files(cfg, self.repo)
 
         tmp = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         self.path.parent.mkdir(parents=True, exist_ok=True)

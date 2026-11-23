@@ -515,3 +515,165 @@ prompt = "hello"
     assert main(["workflow", "import", str(source), "--name", "inline", "-R", str(repo)]) == 0
     assert (config.workflow_dir(repo) / "renamed.toml").exists()
     assert "defined inline" in capsys.readouterr().out
+
+
+WORKFLOW = '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "hi"\n'
+
+
+def test_trust_config_continues_after_an_invalid_workflow_file(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directory = config.workflow_dir(repo)
+    directory.mkdir(parents=True)
+    (directory / "a.toml").write_text('[workflow]\nplanning_action = "missing"\n')
+    (directory / "b.toml").write_text(WORKFLOW + "future = 1\n")
+    (directory / "c.toml").write_text(WORKFLOW + "future = 1\n")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    assert main([str(repo), "--trust-config"]) == 2
+    out, err = capsys.readouterr()
+    assert "a.toml" in err and "unknown action 'missing'" in err and "not trusted:" in out
+    files, _ = config.WorkflowTrust.scan(repo)
+    assert [file.trusted is not None for file in files] == [False, True, True]
+    # Warnings for each candidate are printed once, not again for every later file.
+    assert err.count("b.toml: [actions.plan] has unknown key future") == 1
+    (directory / "a.toml").unlink()
+    assert main([str(repo), "--trust-config"]) == 0
+    out, _ = capsys.readouterr()
+    assert f"{directory / 'b.toml'}: trusted" in out and "not present" in out
+
+
+def test_headless_warnings_are_printed_once(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    directory = config.workflow_dir(repo)
+    directory.mkdir(parents=True)
+    (directory / "spec.toml").write_text(WORKFLOW)
+    (directory / "2bad.toml").write_text(WORKFLOW)
+    for args in (
+        [str(repo), "--print-config"],
+        ["config", "list", "-R", str(repo)],
+        ["config", "get", "defaults.agent", "-R", str(repo)],
+    ):
+        main(args)
+        err = capsys.readouterr().err
+        assert err.count("spec.toml is not trusted yet") == 1, (args, err)
+        assert err.count("invalid workflow name") == 1, (args, err)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "directory"])
+def test_import_refuses_symlinks_and_non_regular_targets(
+    repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+) -> None:
+    import io
+
+    source = tmp_path / "spec.toml"
+    source.write_text(WORKFLOW)
+    target = config.workflow_dir(repo) / "spec.toml"
+    target.parent.mkdir(parents=True)
+    if kind == "directory":
+        target.mkdir()
+    else:
+        other = tmp_path / "other.toml"
+        if kind == "symlink":
+            other.write_text(WORKFLOW)
+        target.symlink_to(other)
+
+    class Interactive(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    prompts: list[str] = []
+    monkeypatch.setattr("sys.stdin", Interactive())
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "o")
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 2
+    assert "refusing" in capsys.readouterr().err and prompts == []
+    assert not (tmp_path / "other.toml").exists() or kind == "symlink"
+
+
+def test_import_keeps_mode_and_hash_without_trailing_newline(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+    import stat
+
+    from project_sandbox_tui.doctor import check_config
+
+    source = tmp_path / "spec.toml"
+    source.write_text(WORKFLOW.rstrip("\n"))
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 0
+    target = config.workflow_dir(repo) / "spec.toml"
+    first = target.read_text()
+    target.chmod(0o640)
+
+    class Interactive(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("sys.stdin", Interactive())
+    answers = iter(("o", "y"))
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 0
+    capsys.readouterr()
+    second = target.read_text()
+
+    def sha(text: str) -> str:
+        return next(line for line in text.splitlines() if line.startswith("sha256"))
+
+    assert sha(first) == sha(second)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    details = [check.detail for check in check_config(config.load(repo), repo)]
+    assert f"{target}: matches source" in details
+
+
+@pytest.mark.parametrize(
+    ("url", "fetched"),
+    [
+        (
+            "https://GitHub.com:443/org/repo/blob/main/spec.toml",
+            "https://raw.githubusercontent.com/org/repo/main/spec.toml",
+        ),
+        (
+            "https://github.com.evil.example/org/repo/blob/main/spec.toml",
+            "https://github.com.evil.example/org/repo/blob/main/spec.toml",
+        ),
+    ],
+)
+def test_import_github_rewrite_uses_the_hostname(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, url: str, fetched: str
+) -> None:
+    from project_sandbox_tui import models
+
+    seen: list[str] = []
+
+    def fetch(source: str) -> bytes:
+        seen.append(source)
+        return WORKFLOW.encode()
+
+    monkeypatch.setattr(models, "fetch", fetch)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert main(["workflow", "import", url, "--name", "spec", "-R", str(repo)]) == 1
+    assert seen == [fetched]
+
+
+def test_import_reports_unreadable_existing_file(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+
+    source = tmp_path / "spec.toml"
+    source.write_text(WORKFLOW)
+    target = config.workflow_dir(repo) / "spec.toml"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xff\xfe")
+
+    class Interactive(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("sys.stdin", Interactive())
+    monkeypatch.setattr("builtins.input", lambda _: "o")
+    assert main(["workflow", "import", str(source), "-R", str(repo)]) == 2
+    assert f"cannot read {target}" in capsys.readouterr().err

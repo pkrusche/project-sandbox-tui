@@ -11,6 +11,11 @@ All notable changes to this project are documented in this file.
   `sbx-tui workflow import` command. The bundled `spec-*` actions are now
   `spec/plan`, `spec/check`, `spec/implement` and `spec/chores`.
 
+### Fixed
+
+- `Ctrl+C` pressed just after an interactive or host agent session or a `:!`
+  command started no longer stops the TUI waiting for it or skips its exit prompt.
+
 ## [0.3.1] - 2026-11-23
 
 ### Fixed

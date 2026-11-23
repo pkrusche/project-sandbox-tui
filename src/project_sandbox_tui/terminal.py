@@ -74,6 +74,27 @@ def preserved(fd: int | None = None) -> Generator[TerminalState | None, None, No
         restore(state)
 
 
+def _ignore_interrupt(_signum: int, _frame: Any) -> None:
+    """A handler, not SIG_IGN: exec resets it, so the child still gets SIGINT."""
+
+
+def run_shared(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> int:
+    """Run a child in the TUI's process group and wait for it, however it ends.
+
+    Ctrl+C at the terminal reaches the child. The TUI ignores SIGINT from before
+    the launch until the child has exited, so an interrupt that arrives between
+    starting the child and waiting for it cannot skip the wait or the caller's
+    exit prompt. Restores the terminal afterwards; raises OSError if the command
+    cannot start.
+    """
+    with preserved():
+        previous = signal.signal(signal.SIGINT, _ignore_interrupt)
+        try:
+            return subprocess.Popen(argv, cwd=cwd, env=env).wait()
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+
 def _foreground(fd: int, group: int) -> None:
     """Give a process group the tty, including when we are in the background."""
     previous = signal.signal(signal.SIGTTOU, signal.SIG_IGN)

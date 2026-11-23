@@ -300,3 +300,25 @@ def test_namespaced_commands_and_actions() -> None:
     assert background.background and background.script == "pytest -k x"
     each = cmd.parse(":*spec/test", configured)
     assert each.each and each.name == "spec/test"
+
+
+def test_multi_line_command_takes_arguments_on_its_last_line() -> None:
+    configured = {"test": "echo preparing\nscripts/test.sh\n"}
+    assert cmd.parse(":test -k x", configured).script == "echo preparing\nscripts/test.sh -k x"
+    assert cmd.parse(":test", configured).script == "echo preparing\nscripts/test.sh"
+
+
+@pytest.mark.parametrize(
+    ("line", "target"),
+    [
+        ("spec/test -k x", "spec/test"),
+        (": *spec/test", "spec/test"),
+        ("& spec/test", "spec/test"),
+        ("!./scripts/test.sh", ""),
+        ("*!scripts/test.sh", ""),
+        ("*&spec/test", "&spec/test"),
+        ("", ""),
+    ],
+)
+def test_target_reads_lines_like_parse(line: str, target: str) -> None:
+    assert cmd.target(line) == target

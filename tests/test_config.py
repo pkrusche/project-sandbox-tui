@@ -928,3 +928,129 @@ test = "true"
     c.WorkflowTrust.scan(tmp_path)[0][0].trust()
     cfg = c.load(tmp_path)
     assert cfg.leader == {"t": "*spec/test"}
+
+
+SPEC_FILE = """
+[workflow]
+planning_action = "plan"
+steps = ["host:test"]
+[actions.plan]
+prompt = "plan"
+[commands]
+test = "true"
+"""
+
+
+@pytest.mark.parametrize("line", ["!./scripts/test.sh", "!/usr/bin/make", "*!scripts/test.sh"])
+def test_leader_shell_commands_with_slashes_are_kept(tmp_path: Path, line: str) -> None:
+    write(tmp_path / c.PROJECT_CONFIG_NAME, f"[leader]\nm = {line!r}\n")
+    c.ProjectTrust.check(tmp_path).trust()
+    cfg = c.load(tmp_path)
+    assert cfg.leader == {"m": line} and not cfg.warnings
+
+
+def test_leader_workflow_targets_follow_command_parsing(tmp_path: Path) -> None:
+    project = write(tmp_path / c.PROJECT_CONFIG_NAME, '[leader]\nt = ": *spec/test"\n')
+    c.ProjectTrust.check(tmp_path).trust()
+    cfg = c.load(tmp_path)  # spec is not available yet: skipped with a warning
+    assert not cfg.leader and "unavailable workflow 'spec'" in cfg.warnings[0]
+    write(c.workflow_dir(tmp_path) / "spec.toml", SPEC_FILE)
+    c.WorkflowTrust.scan(tmp_path)[0][0].trust()
+    assert c.load(tmp_path).leader == {"t": ": *spec/test"}
+    for line in ("*&spec/test", "**spec/test", "spec/a/b"):
+        project.write_text(f"[leader]\nt = {line!r}\n")
+        c.ProjectTrust.check(tmp_path).trust()
+        with pytest.raises(c.ConfigError, match="unknown command"):
+            c.load(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ('[ui]\nleader = ""\n[leader]\nt = "spec/test"\n', "mappings need ui.leader"),
+        ('[leader]\nt = "spec/test"\ntt = "spec/test"\n', "is a prefix of"),
+        ('[leader]\n"\\t" = "spec/test"\n', "printable"),
+    ],
+)
+def test_leader_keys_validated_while_workflow_is_unavailable(
+    tmp_path: Path, text: str, error: str
+) -> None:
+    write(tmp_path / c.PROJECT_CONFIG_NAME, text)
+    c.ProjectTrust.check(tmp_path).trust()
+    with pytest.raises(c.ConfigError, match=error):
+        c.load(tmp_path)
+
+
+def test_workflow_problems_are_not_prefixed_and_steps_checked(tmp_path: Path) -> None:
+    path = c.workflow_dir(tmp_path) / "bad.toml"
+    cases = {
+        '[workflow]\nplanning_action = "human-review"\nsteps = ["plan"]\n'
+        '[actions.plan]\nprompt = "x"\n': "planning_action: unknown action 'human-review'",
+        '[workflow]\nplanning_action = "host:test"\nsteps = ["plan"]\n'
+        '[actions.plan]\nprompt = "x"\n[commands]\ntest = "true"\n': "planning_action: unknown",
+        '[workflow]\nplanning_action = ""\nsteps = ["plan"]\n'
+        '[actions.plan]\nprompt = "x"\n': "needs a planning_action",
+        '[workflow]\nplanning_action = "plan"\nsteps = ["human-review"]\n'
+        '[actions.plan]\nprompt = "x"\n[actions.human-review]\nprompt = "x"\n': "reserved",
+        '[workflow]\nplanning_action = "plan"\nsteps = ["host:nope"]\n'
+        '[actions.plan]\nprompt = "x"\n': "unknown host command 'nope'",
+        "[workflow\n": "Expected",
+    }
+    for text, error in cases.items():
+        write(path, text)
+        files, _ = c.WorkflowTrust.scan(tmp_path)
+        files[0].trust()
+        cfg = c.load(tmp_path)
+        assert [p for p, _ in cfg.workflow_problems] == [path]
+        problem = cfg.workflow_problems[0][1]
+        assert error in problem and str(path) not in problem, problem
+
+
+def test_unreadable_workflow_files_are_isolated(tmp_path: Path) -> None:
+    directory = c.workflow_dir(tmp_path)
+    good = write(directory / "spec.toml", SPEC_FILE)
+    c.WorkflowTrust.scan(tmp_path)[0][0].trust()
+    broken = directory / "broken.toml"
+    broken.write_bytes(b"\xff\xfe not utf-8")
+    files, warnings = c.WorkflowTrust.scan(tmp_path)
+    assert [f.path for f in files] == [broken, good]
+    assert files[0].current is None and not files[0].needs_review
+    assert len(warnings) == 1 and str(broken) in warnings[0] and "ignored" in warnings[0]
+    cfg = c.load(tmp_path)
+    assert "spec" in cfg.workflows and not cfg.workflow_problems
+    # A trusted file that becomes unreadable keeps its trusted copy in effect.
+    good.write_bytes(b"\xff")
+    files, warnings = c.WorkflowTrust.scan(tmp_path)
+    assert any("using the trusted version" in w for w in warnings)
+    assert "spec" in c.load(tmp_path).workflows
+
+
+@pytest.mark.parametrize("link", ["parent", "workflows"])
+def test_symlinked_workflow_directories_are_refused(tmp_path: Path, link: str) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    directory = c.workflow_dir(repo)
+    if link == "parent":
+        write(elsewhere / "workflows" / "spec.toml", SPEC_FILE)
+        directory.parent.symlink_to(elsewhere)
+    else:
+        write(elsewhere / "spec.toml", SPEC_FILE)
+        directory.parent.mkdir()
+        directory.symlink_to(elsewhere)
+    files, warnings = c.WorkflowTrust.scan(repo)
+    assert files == [] and "not a directory" in warnings[0]
+    assert not c.load(repo).workflows
+
+
+def test_workflow_directory_that_is_a_file(tmp_path: Path) -> None:
+    write(tmp_path / ".project-sandbox-tui", "not a directory")
+    files, warnings = c.WorkflowTrust.scan(tmp_path)
+    assert files == [] and "not a directory" in warnings[0]
+    c.load(tmp_path)
+
+
+def test_review_state_is_not_a_config_warning(tmp_path: Path) -> None:
+    write(c.workflow_dir(tmp_path) / "spec.toml", SPEC_FILE)
+    write(c.workflow_dir(tmp_path) / "2bad.toml", SPEC_FILE)
+    assert c.load(tmp_path).warnings == []

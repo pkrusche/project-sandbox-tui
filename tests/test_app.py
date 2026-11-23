@@ -3643,27 +3643,55 @@ def test_commit_summary_dry_run(
     run_app(repo, cfg, scenario)
 
 
-def test_workflow_files_reviewed_independently(repo: Path) -> None:
-    from project_sandbox_tui.config import WorkflowTrust, load, workflow_dir
+def test_workflow_files_reviewed_independently(repo: Path, fake_cfg: Callable[..., Config]) -> None:
+    import sys
 
+    from project_sandbox_tui.config import WorkflowTrust, global_config_path, workflow_dir
+    from tests.conftest import FAKE
+
+    # The review reloads the config from disk: keep the fake sandbox and quiet notifications.
+    global_path = global_config_path()
+    global_path.parent.mkdir(parents=True, exist_ok=True)
+    global_path.write_text(
+        f'[sandbox]\ncommand = "{sys.executable} {FAKE}"\n'
+        '[project]\nbase_image = "python:3.12-slim"\n[ui]\nnotify_command = "true"\nbell = false\n'
+    )
     directory = workflow_dir(repo)
     directory.mkdir(parents=True)
     body = '[workflow]\nplanning_action = "plan"\nsteps = ["plan"]\n[actions.plan]\nprompt = "hi"\n'
     (directory / "a.toml").write_text(body)
     (directory / "b.toml").write_text(body)
-    app = SandboxTUI(repo, detect(repo), load(repo))
+    (directory / "c.toml").write_text(body)
+    files, _ = WorkflowTrust.scan(repo)
+    files[2].trust()
+    (directory / "c.toml").write_text(body.replace("hi", "changed"))
 
-    async def scenario() -> None:
-        async with app.run_test(size=(120, 30)) as pilot:
-            await pilot.pause()
-            assert isinstance(app.screen, ConfirmScreen)
-            await pilot.press("y")
-            await pilot.pause()
-            assert isinstance(app.screen, ConfirmScreen)
-            await pilot.press("n")
-            await pilot.pause()
-            files, _ = WorkflowTrust.scan(repo)
-            assert files[0].trusted == body and files[1].trusted is None
-            assert "a" in app.cfg.workflows and "b" not in app.cfg.workflows
+    async def review(app: SandboxTUI, pilot: Any, title: str) -> ConfirmScreen:
+        await wait_until(
+            pilot,
+            lambda: isinstance(app.screen, ConfirmScreen) and app.screen.title_text == title,
+        )
+        return await wait_for_screen(app, pilot, ConfirmScreen)
 
-    asyncio.run(scenario())
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        screen = await review(app, pilot, "trust workflow a?")
+        assert "[commands]" in screen.body and "sandbox.command" not in screen.body
+        await pilot.press("y")
+        await review(app, pilot, "trust workflow b?")
+        await pilot.press("n")
+        await review(app, pilot, "workflow c changed")
+        await pilot.press("n")
+        await wait_until(pilot, lambda: "a" in app.cfg.workflows)
+        files, _ = WorkflowTrust.scan(repo)
+        assert files[0].trusted == body and files[1].trusted is None
+        assert "b" not in app.cfg.workflows
+        assert app.cfg.actions["c/plan"].prompt == "hi"  # the trusted copy stays in effect
+
+    run_app(repo, fake_cfg(), scenario)
+
+
+def test_help_summarizes_multi_line_commands() -> None:
+    from project_sandbox_tui.app import _summary_line
+
+    assert _summary_line("\necho preparing\nscripts/test.sh\n") == "echo preparing …"
+    assert _summary_line("scripts/test.sh") == "scripts/test.sh"

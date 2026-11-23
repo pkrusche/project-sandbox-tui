@@ -523,6 +523,14 @@ class MainScreen(Screen[None]):
             self.query_one("#footer", Static).update(_footer(FOOTER, *SHORT_FOOTERS))
 
 
+def _summary_line(script: str) -> str:
+    """A multi-line script's first non-empty line, marked as continuing."""
+    lines = [line.strip() for line in script.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return lines[0] + (" …" if len(lines) > 1 else "")
+
+
 class SandboxTUI(App[None]):
     TITLE = "sbx-tui"
     ENABLE_COMMAND_PALETTE = False
@@ -651,8 +659,8 @@ class SandboxTUI(App[None]):
         self.watch(table, "virtual_size", self._clamp_table_scroll, init=False)
         await self.refresh_data()
         self._refresh_timer = self.set_interval(self.cfg.ui.refresh_seconds, self.refresh_data)
-        self._notify_config_warnings()
-        self._review_project_config()
+        if not self._review_project_config():  # a review reloads and notifies afterwards
+            self._notify_config_warnings()
         self._refresh_capabilities()
 
     async def on_unmount(self) -> None:
@@ -2135,8 +2143,9 @@ class SandboxTUI(App[None]):
         ``resume_application_mode()`` and leaves the TUI deaf to input.
 
         asyncio's SIGINT handler cancels the app's main task on the first
-        Ctrl+C. While a child owns the terminal, use ordinary KeyboardInterrupt
-        instead so the caller can wait for the child and return to the TUI.
+        Ctrl+C. While suspended, use ordinary KeyboardInterrupt instead so Ctrl+C
+        dismisses prompts and returns to the TUI. ``terminal.run_shared`` ignores
+        SIGINT while a child runs, so the caller always waits for it.
         """
         error: BaseException | None = None
         previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -2199,18 +2208,11 @@ class SandboxTUI(App[None]):
                         input("\n── press Enter to start the session ──")
                 # The agent's `container run -it` may die with the terminal still
                 # raw or non-blocking; put it back before prompting or resuming.
-                with terminal.preserved():
-                    try:
-                        proc = subprocess.Popen(job.argv, cwd=self.repo)
-                    except OSError:
-                        job.exit_code = 127  # like a shell: command could not be run
-                        raise
-                    while True:
-                        try:
-                            job.exit_code = proc.wait()
-                            break
-                        except KeyboardInterrupt:
-                            continue  # the child got the SIGINT too; wait for it to wind down
+                try:
+                    job.exit_code = terminal.run_shared(job.argv, cwd=self.repo)
+                except OSError:
+                    job.exit_code = 127  # like a shell: command could not be run
+                    raise
                 if job.exit_code:
                     with contextlib.suppress(EOFError, KeyboardInterrupt):
                         input(
@@ -2749,19 +2751,12 @@ class SandboxTUI(App[None]):
                 self._record_run(job)
                 print(f"\n── sbx-tui: host agent on {name} ──\n{shlex.join(argv)}\n", flush=True)
                 self._print_preparation()
-                with terminal.preserved():
-                    try:
-                        proc = subprocess.Popen(job.launch_argv(), cwd=path)
-                    except OSError:
-                        job.exit_code = 127
-                        raise
-                    self._remember_host_command(command)
-                    while True:
-                        try:
-                            job.exit_code = proc.wait()
-                            break
-                        except KeyboardInterrupt:
-                            continue
+                try:
+                    job.exit_code = terminal.run_shared(job.launch_argv(), cwd=path)
+                except OSError:
+                    job.exit_code = 127
+                    raise
+                self._remember_host_command(command)  # it started
                 if job.exit_code:
                     with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
                         input(
@@ -3102,24 +3097,31 @@ class SandboxTUI(App[None]):
                         self.notify(str(exc), severity="error")
                 review_next()
 
-            body = (
-                "This file comes with the repository. It can set commands that run on this "
-                "machine (sandbox.command, ui.*_command, [commands]) and loosen the sandbox "
-                "(network, credentials, extra_args). "
+            if isinstance(trust, ProjectTrust):
+                body = (
+                    "This file comes with the repository. It can set commands that run on this "
+                    "machine (sandbox.command, ui.*_command, [commands]) and loosen the sandbox "
+                    "(network, credentials, extra_args). "
+                )
+                label = "project config"
+                title = "trust the project config?"
+            else:
+                body = (
+                    "This workflow file comes with the repository. Its [commands] are shell "
+                    "scripts that run on this machine, and its [actions.*] prompts start "
+                    "sandboxed agent runs. "
+                )
+                label = f"workflow {trust.path.stem}"
+                title = f"trust {label}?"
+            if trust.trusted is not None:
+                title = f"{label} changed"
+            body += (
                 f"Trusting it copies it to {trust.trusted_path}; "
                 "later changes are shown here again before they take effect."
             )
             if candidate.warnings:
                 body += "\n\n" + "\n".join(f"Warning: {warning}" for warning in candidate.warnings)
             body += "\n\n" + trust.diff()
-            if isinstance(trust, ProjectTrust):
-                title = (
-                    "trust the project config?"
-                    if trust.trusted is None
-                    else "project config changed"
-                )
-            else:
-                title = f"trust workflow {trust.path.stem}?"
             self.push_screen(ConfirmScreen(title, body, "trust"), decided)
 
         review_next()
@@ -3201,7 +3203,10 @@ class SandboxTUI(App[None]):
         extra = []
         if self.cfg.commands:
             extra.append(
-                ("configured commands", tuple((f":{n}", c) for n, c in self.cfg.commands.items()))
+                (
+                    "configured commands",
+                    tuple((f":{n}", _summary_line(c)) for n, c in self.cfg.commands.items()),
+                )
             )
         if self.cfg.actions:
             extra.append(
@@ -3437,16 +3442,9 @@ class SandboxTUI(App[None]):
                     else f"{command.line} → {command.script}"
                 )
                 print(f"\n── sbx-tui: :{shown} ──\n", flush=True)
-                with terminal.preserved():
-                    proc = subprocess.Popen(
-                        ["sh", "-c", command.script], cwd=self.repo, env=self._shell_env()
-                    )
-                    while True:
-                        try:
-                            code = proc.wait()
-                            break
-                        except KeyboardInterrupt:
-                            continue  # the command got the SIGINT too; let it wind down
+                code = terminal.run_shared(
+                    ["sh", "-c", command.script], cwd=self.repo, env=self._shell_env()
+                )
                 with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
                     input(f"\n── exited with {code}; press Enter to return to sbx-tui ──")
         except OSError as exc:

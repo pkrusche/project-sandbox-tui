@@ -65,13 +65,27 @@ class Command:
     argv: tuple[str, ...] = ()  # parsed arguments for built-in commands
 
 
+def _split(line: str) -> tuple[str, str, str]:
+    """Return ``(line, prefix, body)`` the way :func:`parse` reads them."""
+    line = line.strip().removeprefix(":").strip()
+    prefix = line[:1] if line[:1] in ("*", "&") else ""
+    body = line[1:].strip() if prefix else line
+    return line, prefix, body
+
+
+def target(line: str) -> str:
+    """The command or action name a line refers to; "" for ``!`` shell lines."""
+    _, _, body = _split(line)
+    if not body or body.startswith("!"):
+        return ""
+    return body.split(maxsplit=1)[0]
+
+
 def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ()) -> Command:
     """Interpret a command line typed after ``:`` (a leading ``:`` is ignored)."""
-    line = line.strip().removeprefix(":").strip()
-    each = line.startswith("*")
-    background = line.startswith("&")
-    prefix = line[:1] if each or background else ""
-    body = line[1:].strip() if prefix else line
+    line, prefix, body = _split(line)
+    each = prefix == "*"
+    background = prefix == "&"
     if not body:
         raise CommandError(
             f":{prefix} needs a command, e.g. :{prefix}!make" if prefix else "empty command"
@@ -115,7 +129,8 @@ def parse(line: str, commands: Mapping[str, str], actions: Collection[str] = ())
     if name in commands:
         return Command(
             line,
-            script=f"{commands[name]} {args}".strip(),
+            # A multi-line script takes its arguments on its last line.
+            script=f"{commands[name].rstrip()} {args}".strip(),
             each=each,
             background=background,
             name=name,
@@ -155,11 +170,21 @@ def validate(
         check_name("actions", name)
         if name in commands:
             raise CommandError(f"[actions] {name} is also in [commands]; rename one")
+    validate_keys(leader, mappings)
+    for keys, line in mappings.items():
+        try:
+            parse(line, commands, actions)
+        except CommandError as exc:
+            raise CommandError(f"[leader] {keys!r}: {exc}") from exc
+
+
+def validate_keys(leader: str, mappings: Collection[str]) -> None:
+    """Check ``ui.leader`` and the ``[leader]`` keys, without parsing their lines."""
     if leader and (len(leader) != 1 or not leader.isprintable() or leader == ":"):
         raise CommandError('ui.leader must be one printable character other than ":", or ""')
     if mappings and not leader:
         raise CommandError('[leader] mappings need ui.leader (e.g. "\\\\")')
-    for keys, line in mappings.items():
+    for keys in mappings:
         if not keys or not keys.isprintable():
             raise CommandError(f"[leader] {keys!r}: keys must be printable characters")
         longer = next((k for k in mappings if k != keys and k.startswith(keys)), None)
@@ -167,10 +192,6 @@ def validate(
             raise CommandError(
                 f"[leader] {keys!r} is a prefix of {longer!r}; it could never wait for the rest"
             )
-        try:
-            parse(line, commands, actions)
-        except CommandError as exc:
-            raise CommandError(f"[leader] {keys!r}: {exc}") from exc
 
 
 class LeaderKeys:

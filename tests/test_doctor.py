@@ -594,3 +594,56 @@ def test_imported_workflow_source_checksum(tmp_path: Path) -> None:
         "edited since import" in check.detail
         for check in check_config(config.load(tmp_path), tmp_path)
     )
+
+
+def test_workflow_file_checks_are_reported_once(tmp_path: Path) -> None:
+    from project_sandbox_tui import config
+    from project_sandbox_tui.doctor import check_config
+
+    directory = config.workflow_dir(tmp_path)
+    directory.mkdir(parents=True)
+    broken = directory / "broken.toml"
+    broken.write_text('[workflow]\nplanning_action = "missing"\nsteps = ["missing"]\n')
+    shared = directory / "shared.toml"
+    shared.write_text("""
+[workflow]
+planning_action = "plan"
+steps = ["review"]
+[actions.plan]
+prompt = "hi"
+persona = "house-style"
+[actions.review]
+prompt = "hi"
+persona = "house-style"
+""")
+    (directory / "pending.toml").write_text(shared.read_text())
+    (directory / "unreadable.toml").write_bytes(b"\xff")
+    project = tmp_path / config.PROJECT_CONFIG_NAME
+    project.write_text('[personas.house-style]\ntier = "high"\n')
+    config.ProjectTrust.check(tmp_path).trust()
+    for file in config.WorkflowTrust.scan(tmp_path)[0]:
+        if file.path.stem in ("broken", "shared"):
+            file.trust()
+    checks = check_config(config.load(tmp_path), tmp_path)
+    details = [check.detail for check in checks]
+    assert len(details) == len(set(details)), details
+    assert not any(check.name == "project config" for check in checks)
+    assert f"{broken} is trusted" not in details
+    assert sum(str(broken) in detail for detail in details) == 1
+    assert f"{shared} is trusted" in details
+    pending = next(c for c in checks if "pending.toml is not trusted" in c.detail)
+    assert pending.status == "warn" and pending.hint == "sbx-tui --trust-config"
+    assert any("unreadable.toml" in detail and "ignored" in detail for detail in details)
+    assert not any("unreadable.toml is trusted" in detail for detail in details)
+    assert details.count("workflow shared depends on locally configured persona house-style") == 1
+
+
+def test_doctor_survives_unreadable_workflow_files(tmp_path: Path) -> None:
+    from project_sandbox_tui import config
+    from project_sandbox_tui.doctor import check_config
+
+    path = config.workflow_dir(tmp_path) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe")
+    checks = check_config(config.load(tmp_path), tmp_path)
+    assert any(check.status == "warn" and "spec.toml" in check.detail for check in checks)

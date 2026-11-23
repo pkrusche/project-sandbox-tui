@@ -390,12 +390,3 @@ through in-tree ignore rules or the repository's local `info/exclude`. Existing
 copies, including local edits, are kept: to refresh one, remove its directory
 while the workspace is idle and reopen it. `project.deploy_config_skill = false`
 stops automatic copies; `[[workspace_skills]]` deploys additional skills.
-
-For a workflow intended to be shared, use a separately trusted
-`.project-sandbox-tui/workflows/NAME.toml` with `[workflow]`, `[actions.SHORT]`
-and optional `[commands]`. Use short references within the file and
-`NAME/SHORT` elsewhere. Bundled actions use personas rather than profiles or
-agent settings. Keep commands and prompts portable. Prefer inline workflows
-for project-specific dependencies; review workflow files independently with
-`sbx-tui --trust-config`. See the workflow file example in the configuration
-documentation.

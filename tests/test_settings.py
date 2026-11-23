@@ -348,3 +348,82 @@ test = "true"
         capsys, "config", "set", "--project", "-R", str(repo), "commands.spec/test", "false"
     )
     assert code == 2 and "read-only" in err
+
+
+SPEC_FILE = """
+[workflow]
+planning_action = "plan"
+steps = ["host:test"]
+[actions.plan]
+prompt = "plan"
+[commands]
+test = "true"
+"""
+
+
+def test_edits_validate_with_trusted_workflow_files(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = config.workflow_dir(repo) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(SPEC_FILE)
+    config.WorkflowTrust.scan(repo)[0][0].trust()
+    r = ("-R", str(repo))
+    # [leader] may refer to a trusted workflow file's commands and actions.
+    code, _, err = cli(capsys, "config", "set", "--project", "leader.t", "&spec/test", *r)
+    assert code == 0, err
+    code, _, err = cli(capsys, "config", "set", "--project", "leader.p", "spec/plan", *r)
+    assert code == 0, err
+    code, _, err = cli(capsys, "config", "set", "--project", "defaults.agent", "codex", *r)
+    assert code == 0, err
+    code, _, err = cli(capsys, "config", "unset", "--project", "leader.p", *r)
+    assert code == 0, err
+    editor = s.Editor("project", repo)
+    editor.save_profile("deep", config.AgentProfile(agent="codex"))
+    assert editor.delete_profile("deep")
+    assert config.load(repo).leader == {"t": "&spec/test"}
+
+
+def test_workflow_file_names_cannot_be_set_inline(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = config.workflow_dir(repo) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(SPEC_FILE)
+    config.WorkflowTrust.scan(repo)[0][0].trust()
+    project = config.project_config_path(repo)
+    r = ("-R", str(repo))
+    for scope in ("--project", "--global"):
+        code, _, err = cli(
+            capsys, "config", "set", scope, "workflows.spec.planning_action", "x", *r
+        )
+        assert code == 2 and "edit the workflow file" in err
+        code, _, err = cli(capsys, "config", "unset", scope, "workflows.spec.steps", *r)
+        assert code == 2 and "edit the workflow file" in err
+    assert not project.exists()
+    # An untrusted file of that name is not merged, but a clash is still refused.
+    config.WorkflowTrust.scan(repo)[0][0].trusted_path.unlink()
+    code, _, err = cli(
+        capsys, "config", "set", "--project", "workflows.spec.planning_action", "x", *r
+    )
+    assert code == 2 and not project.exists()
+
+
+def test_inline_workflow_clashing_with_trusted_file_is_not_written(repo: Path) -> None:
+    path = config.workflow_dir(repo) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(SPEC_FILE)
+    config.WorkflowTrust.scan(repo)[0][0].trust()
+    project = config.project_config_path(repo)
+    project.write_text('[actions.plan]\nprompt = "x"\n')
+    config.ProjectTrust.check(repo).trust()
+    editor = s.Editor("project", repo)
+    # Hand-edited text with a clash: even unrelated edits are validated against the file.
+    project.write_text(
+        '[actions.plan]\nprompt = "x"\n'
+        '[workflows.spec]\nplanning_action = "plan"\nsteps = ["plan"]\n'
+    )
+    config.ProjectTrust.check(repo).trust()
+    with pytest.raises(config.ConfigError, match=r"workflows.spec.*conflicts"):
+        editor.set(s.parse_key("defaults.agent"), "codex")
+    assert "codex" not in project.read_text()

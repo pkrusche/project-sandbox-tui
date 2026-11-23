@@ -787,10 +787,13 @@ def test_workflow_file_and_inline_previews(
     from project_sandbox_tui.cli import main
 
     root = Path(__file__).resolve().parents[1]
-    (repo / config.PROJECT_CONFIG_NAME).write_text((root / config.PROJECT_CONFIG_NAME).read_text())
+    project, spec = root / config.PROJECT_CONFIG_NAME, config.workflow_dir(root) / "spec.toml"
+    if (root / "PKG-INFO").is_file() and not (project.exists() and spec.exists()):
+        pytest.skip("checkout-local configuration is excluded from the source distribution")
+    (repo / config.PROJECT_CONFIG_NAME).write_text(project.read_text())
     target = config.workflow_dir(repo) / "spec.toml"
     target.parent.mkdir(parents=True)
-    target.write_text((root / ".project-sandbox-tui/workflows/spec.toml").read_text())
+    target.write_text(spec.read_text())
     monkeypatch.setattr("builtins.input", lambda _: "y")
     assert main([str(repo), "--trust-config"]) == 0
     loaded = config.load(repo)

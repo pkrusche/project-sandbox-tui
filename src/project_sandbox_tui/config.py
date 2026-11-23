@@ -964,11 +964,14 @@ def _build_action(name: str, data: Any) -> Action:
 def parse_workflow_file(
     text: str, path: Path
 ) -> tuple[Workflow, dict[str, Action], dict[str, str], list[str]]:
-    """Parse a standalone workflow and ignore unknown keys with warnings."""
+    """Parse a standalone workflow and ignore unknown keys with warnings.
+
+    Errors do not name ``path`` (callers report them next to it); warnings do.
+    """
     try:
         data = tomllib.loads(text)
     except ValueError as exc:
-        raise ConfigError(f"{path}: {exc}") from exc
+        raise ConfigError(str(exc)) from exc
     warnings: list[str] = []
     for key in data.keys() - {"workflow", "actions", "commands", "source"}:
         warnings.append(f"{path}: unknown section or key {key} (ignored)")
@@ -977,10 +980,10 @@ def parse_workflow_file(
         for key in source_data.keys() - {"url", "path", "imported_at", "sha256"}:
             warnings.append(f"{path}: [source] has unknown key {key} (ignored)")
     elif "source" in data:
-        raise ConfigError(f"{path}: [source] must be a table")
+        raise ConfigError("[source] must be a table")
     workflow_data = data.get("workflow")
     if not isinstance(workflow_data, dict):
-        raise ConfigError(f"{path}: missing [workflow] table")
+        raise ConfigError("missing [workflow] table")
     workflow_keys = {f.name for f in dataclasses.fields(Workflow)}
     for key in workflow_data.keys() - workflow_keys:
         warnings.append(f"{path}: [workflow] has unknown key {key} (ignored)")
@@ -989,26 +992,43 @@ def parse_workflow_file(
     )
     action_data = data.get("actions", {})
     if not isinstance(action_data, dict):
-        raise ConfigError(f"{path}: [actions] must be a table")
+        raise ConfigError("[actions] must be a table")
     actions: dict[str, Action] = {}
     for name, table in action_data.items():
         if not commands.NAME.fullmatch(name):
-            raise ConfigError(f"{path}: invalid action name {name!r}")
+            raise ConfigError(f"invalid action name {name!r}")
+        if name == HUMAN_REVIEW:
+            raise ConfigError(f"[actions] {HUMAN_REVIEW} is reserved for human review steps")
         if not isinstance(table, dict):
-            raise ConfigError(f"{path}: [actions.{name}] must be a table")
+            raise ConfigError(f"[actions.{name}] must be a table")
         if table.keys() & {"profile", "agent", "model", "effort"}:
-            raise ConfigError(f"{path}: workflow file actions select agents with persona only")
+            raise ConfigError("workflow file actions select agents with persona only")
         for key in table.keys() - ACTION_KEYS.keys():
             warnings.append(f"{path}: [actions.{name}] has unknown key {key} (ignored)")
         actions[name] = _build_action(name, {k: v for k, v in table.items() if k in ACTION_KEYS})
     command_data = data.get("commands", {})
     if not isinstance(command_data, dict):
-        raise ConfigError(f"{path}: [commands] must be a table")
+        raise ConfigError("[commands] must be a table")
     bundled_commands: dict[str, str] = {}
     for name, value in command_data.items():
         if not commands.NAME.fullmatch(name):
-            raise ConfigError(f"{path}: invalid command name {name!r}")
+            raise ConfigError(f"invalid command name {name!r}")
         bundled_commands[name] = _coerce("commands", name, value, "")
+    if not workflow.planning_action:
+        raise ConfigError("[workflow] needs a planning_action")
+    if workflow.planning_action not in actions:
+        raise ConfigError(
+            f"[workflow] planning_action: unknown action {workflow.planning_action!r}"
+        )
+    for step in workflow.steps:
+        if step == HUMAN_REVIEW:
+            continue
+        if step.startswith(HOST_STEP_PREFIX):
+            short = step.removeprefix(HOST_STEP_PREFIX)
+            if short not in bundled_commands:
+                raise ConfigError(f"[workflow] steps: unknown host command {short!r}")
+        elif step not in actions:
+            raise ConfigError(f"[workflow] steps: unknown action {step!r}")
     return workflow, actions, bundled_commands, warnings
 
 
@@ -1035,63 +1055,66 @@ def load(repo: Path, global_path: Path | None = None) -> Config:
 def _merge_workflow_files(
     cfg: Config, repo: Path, candidate_file: WorkflowTrust | None = None
 ) -> Config:
+    """Add each trusted workflow file (or ``candidate_file``'s text) to ``cfg``.
+
+    A file that fails to parse or validate is left out and recorded in
+    ``cfg.workflow_problems``. Review state and scan warnings are not added to
+    ``cfg.warnings``: callers report them from :meth:`WorkflowTrust.scan`, as for
+    :class:`ProjectTrust`.
+    """
     leader = cfg.leader
+    try:
+        commands.validate_keys(cfg.ui.leader, leader)
+    except commands.CommandError as exc:
+        raise ConfigError(str(exc)) from exc
     cfg.leader = {}
-    files, warnings = WorkflowTrust.scan(repo)
-    cfg.warnings.extend(warnings)
+    files, _ = WorkflowTrust.scan(repo)
     if candidate_file is not None and all(f.path != candidate_file.path for f in files):
         files.append(candidate_file)
     for file in files:
         name = file.path.stem
-        candidate = candidate_file is not None and file.path == candidate_file.path
-        text = candidate_file.current if candidate and candidate_file else file.trusted
-        if file.needs_review and not candidate:
-            cfg.warnings.append(file.describe())
+        is_candidate = candidate_file is not None and file.path == candidate_file.path
+        text = candidate_file.current if is_candidate and candidate_file else file.trusted
         if text is None:
             continue
         if name in cfg.workflows:
             raise ConfigError(f"[workflows.{name}] conflicts with {file.path}")
         try:
             workflow, actions, bundled, file_warnings = parse_workflow_file(text, file.path)
-            for action_name in [workflow.planning_action, *workflow.steps]:
-                if action_name == HUMAN_REVIEW:
-                    continue
-                if action_name.startswith(HOST_STEP_PREFIX):
-                    short = action_name.removeprefix(HOST_STEP_PREFIX)
-                    if short not in bundled:
-                        raise ConfigError(f"unknown host command {short!r}")
-                elif action_name not in actions:
-                    raise ConfigError(f"unknown action {action_name!r}")
             workflow.planning_action = f"{name}/{workflow.planning_action}"
             workflow.steps = [
                 step
                 if step == HUMAN_REVIEW
-                else f"host:{name}/{step[5:]}"
+                else f"{HOST_STEP_PREFIX}{name}/{step.removeprefix(HOST_STEP_PREFIX)}"
                 if step.startswith(HOST_STEP_PREFIX)
                 else f"{name}/{step}"
                 for step in workflow.steps
             ]
-            candidate = copy.deepcopy(cfg)
-            candidate.actions.update({f"{name}/{k}": v for k, v in actions.items()})
-            candidate.commands.update({f"{name}/{k}": v for k, v in bundled.items()})
-            candidate.workflows[name] = workflow
-            candidate.validate()
+            merged = copy.deepcopy(cfg)
+            merged.actions.update({f"{name}/{k}": v for k, v in actions.items()})
+            merged.commands.update({f"{name}/{k}": v for k, v in bundled.items()})
+            merged.workflows[name] = workflow
+            merged.validate()
         except ConfigError as exc:
             cfg.workflow_problems.append((file.path, str(exc)))
             continue
-        cfg = candidate
+        cfg = merged
         cfg.warnings.extend(file_warnings)
         cfg.sources.append(file.trusted_path)
     for keys, line in leader.items():
-        target = line.strip().lstrip(":*&").split(maxsplit=1)[0] if line.strip() else ""
-        if "/" in target and target not in cfg.commands and target not in cfg.actions:
-            namespace = target.split("/", 1)[0]
-            if namespace not in cfg.workflows:
-                cfg.warnings.append(
-                    f"[leader] {keys!r} refers to {target!r} from "
-                    f"unavailable workflow {namespace!r}"
-                )
-                continue
+        target = commands.target(line)
+        namespace, _, short = target.partition("/")
+        if (
+            commands.NAME.fullmatch(namespace)
+            and commands.NAME.fullmatch(short)
+            and target not in cfg.commands
+            and target not in cfg.actions
+            and namespace not in cfg.workflows
+        ):
+            cfg.warnings.append(
+                f"[leader] {keys!r} refers to {target!r} from unavailable workflow {namespace!r}"
+            )
+            continue
         cfg.leader[keys] = line
     cfg.validate()
     return cfg
@@ -1263,19 +1286,45 @@ class WorkflowTrust(FileTrust):
 
     @classmethod
     def scan(cls, repo: Path) -> tuple[list[WorkflowTrust], list[str]]:
+        """Workflow files in the repository, and warnings about files left out.
+
+        A file that cannot be read keeps its trusted copy in effect; symlinked
+        or non-directory workflow directories are ignored.
+        """
         directory = workflow_dir(repo)
         files: list[WorkflowTrust] = []
         warnings: list[str] = []
+        for part in (directory.parent, directory):
+            if part.is_symlink() or (part.exists() and not part.is_dir()):
+                warnings.append(f"{part}: not a directory (workflow files ignored)")
+                return files, warnings
         if not directory.exists():
             return files, warnings
-        for path in sorted(directory.glob("*.toml")):
+        try:
+            paths = sorted(directory.glob("*.toml"))
+        except OSError as exc:
+            warnings.append(f"{directory}: cannot list workflow files: {exc}")
+            return files, warnings
+        for path in paths:
             if not commands.NAME.fullmatch(path.stem):
                 warnings.append(f"{path}: invalid workflow name (ignored)")
-            elif path.is_symlink() or not path.is_file():
+                continue
+            if path.is_symlink() or not path.is_file():
                 warnings.append(f"{path}: not a regular file (ignored)")
-            else:
-                target = repo_state_dir(repo) / "trusted-workflows" / path.name
-                files.append(cls(path, target, _read_text(path), _read_text(target)))
+                continue
+            target = repo_state_dir(repo) / "trusted-workflows" / path.name
+            try:
+                trusted = _read_text(target)
+            except ConfigError as exc:
+                warnings.append(f"{exc} (trusted copy ignored)")
+                trusted = None
+            try:
+                current = _read_text(path)
+            except ConfigError as exc:
+                using = "using the trusted version" if trusted is not None else "ignored"
+                warnings.append(f"{exc} ({using})")
+                current = None
+            files.append(cls(path, target, current, trusted))
         return files, warnings
 
 
