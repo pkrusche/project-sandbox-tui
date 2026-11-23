@@ -1090,6 +1090,32 @@ class ProjectTrust(FileTrust):
         return cls(path, target, _read_text(path), _read_text(target))
 
 
+def workflow_dir(repo: Path) -> Path:
+    return repo / ".project-sandbox-tui" / "workflows"
+
+
+@dataclass(frozen=True)
+class WorkflowTrust(FileTrust):
+    """Trust state for one discovered workflow file."""
+
+    @classmethod
+    def scan(cls, repo: Path) -> tuple[list[WorkflowTrust], list[str]]:
+        directory = workflow_dir(repo)
+        files: list[WorkflowTrust] = []
+        warnings: list[str] = []
+        if not directory.exists():
+            return files, warnings
+        for path in sorted(directory.glob("*.toml")):
+            if not commands.NAME.fullmatch(path.stem):
+                warnings.append(f"{path}: invalid workflow name (ignored)")
+            elif path.is_symlink() or not path.is_file():
+                warnings.append(f"{path}: not a regular file (ignored)")
+            else:
+                target = repo_state_dir(repo) / "trusted-workflows" / path.name
+                files.append(cls(path, target, _read_text(path), _read_text(target)))
+        return files, warnings
+
+
 # ---------------------------------------------------------------- state
 
 

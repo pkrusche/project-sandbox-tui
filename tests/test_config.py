@@ -801,3 +801,24 @@ def test_private_dir_creates_missing_ancestors_owner_only(tmp_path: Path) -> Non
         os.umask(old)
     for path in (tmp_path / "state", tmp_path / "state" / "app", target):
         assert stat.S_IMODE(path.stat().st_mode) == 0o700, path
+
+
+def test_workflow_trust_scan(tmp_path: Path) -> None:
+    directory = c.workflow_dir(tmp_path)
+    path = write(directory / "spec.toml", "first")
+    write(directory / "2bad.toml", "invalid")
+    (directory / "link.toml").symlink_to(path)
+    (directory / "folder.toml").mkdir()
+    files, warnings = c.WorkflowTrust.scan(tmp_path)
+    assert len(files) == 1 and len(warnings) == 3
+    assert files[0].needs_review and files[0].trusted is None
+    files[0].trust()
+    assert stat.S_IMODE(files[0].trusted_path.parent.stat().st_mode) == 0o700
+    files, _ = c.WorkflowTrust.scan(tmp_path)
+    assert not files[0].needs_review and files[0].trusted == "first"
+    path.write_text("changed")
+    files, _ = c.WorkflowTrust.scan(tmp_path)
+    assert files[0].needs_review and files[0].trusted == "first"
+    path.unlink()
+    files, _ = c.WorkflowTrust.scan(tmp_path)
+    assert files == []
