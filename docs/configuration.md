@@ -770,3 +770,7 @@ selection. They cannot set `profile`, `agent`, `model`, or `effort`. Commands
 are shell scripts; extra words typed after a command are appended to the script
 and therefore land on its last line. Keep paths and prompts portable when
 sharing; use inline `[workflows.NAME]` for project-specific dependencies.
+
+Each file is reviewed separately with `sbx-tui --trust-config` or at TUI
+startup. A new file is ignored until trusted, and a changed file keeps its
+previously trusted contents until reviewed. Deleting it removes the workflow.

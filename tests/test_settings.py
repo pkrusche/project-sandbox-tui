@@ -325,3 +325,26 @@ def test_set_action_persona_and_level(repo: Path, capsys: pytest.CaptureFixture[
     assert code == 2 and "actions.review.persona" in err
     code, _, err = cli(capsys, "config", "set", "--project", "actions.review.level", "0", *r)
     assert code == 2 and "actions.review.level must be between 1 and 5" in err
+
+
+def test_namespaced_workflow_settings_are_listed_read_only(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = config.workflow_dir(repo) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text("""
+[workflow]
+planning_action = "plan"
+steps = ["host:test"]
+[actions.plan]
+prompt = "plan"
+[commands]
+test = "true"
+""")
+    config.WorkflowTrust.scan(repo)[0][0].trust()
+    code, out, _ = cli(capsys, "config", "list", "-R", str(repo))
+    assert code == 0 and "actions.spec/plan.prompt" in out and "commands.spec/test" in out
+    code, _, err = cli(
+        capsys, "config", "set", "--project", "-R", str(repo), "commands.spec/test", "false"
+    )
+    assert code == 2 and "read-only" in err

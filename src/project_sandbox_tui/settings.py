@@ -250,6 +250,8 @@ class Editor:
             raise ConfigError(f"cannot write {self.path}: {exc}") from exc
 
     def set(self, key: Key, value: Any) -> None:
+        if key.section in ("actions", "commands") and "/" in key.name:
+            raise ConfigError("workflow file settings are read-only; edit the workflow file")
         with self._edit() as doc:
             table: Any = doc
             # Tables that only hold other tables, so no empty [x] header is written.
@@ -283,6 +285,8 @@ class Editor:
 
     def unset(self, key: Key) -> bool:
         """Remove ``key``; returns False if the file did not set it."""
+        if key.section in ("actions", "commands") and "/" in key.name:
+            raise ConfigError("workflow file settings are read-only; edit the workflow file")
         return self._unset(key.path)
 
     def delete_profile(self, name: str) -> bool:
