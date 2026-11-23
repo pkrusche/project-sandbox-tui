@@ -824,3 +824,53 @@ def test_workflow_file_and_inline_previews(
         ), preview.body
 
     run_app(repo, cfg, scenario)
+
+
+def test_file_removed_mid_workflow_survives_restart(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    from project_sandbox_tui import config
+
+    path = config.workflow_dir(repo) / "spec.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text("""
+[workflow]
+planning_action = "plan"
+first_step_interactive = false
+steps = ["implement"]
+[actions.plan]
+prompt = "report:success"
+[actions.implement]
+prompt = "report:success original"
+""")
+    config.WorkflowTrust.scan(repo)[0][0].trust()
+    cfg = fake_cfg()
+    loaded = config.load(repo)
+    cfg.actions, cfg.workflows = loaded.actions, loaded.workflows
+
+    async def first(app: SandboxTUI, pilot: Any) -> None:
+        await pilot.press("j")
+        app.queue.pause("feature/x", True)
+        await start_workflow(app, pilot, ":workflow spec")
+        await wait_until(pilot, lambda: bool(app.queue.get("feature/x").tasks))
+
+    run_app(repo, cfg, first)
+    path.unlink()
+    cfg.actions, cfg.workflows = {}, {}
+
+    async def second(app: SandboxTUI, pilot: Any) -> None:
+        app.queue.pause("feature/x", False)
+        app._dispatch_queue()
+        await wait_until(
+            pilot,
+            lambda: (
+                bool(app.queue.get("feature/x").history)
+                and app.queue.get("feature/x").history[-1].decision == "workflow complete"
+            ),
+            timeout=30,
+        )
+        history = app.queue.get("feature/x").history
+        task = next(t for t in history if t.workflow and t.workflow.action == "spec/implement")
+        assert task.job is not None and "original" in task.job.spec.prompt_text
+
+    run_app(repo, cfg, second)
