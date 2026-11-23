@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-23
+
+### Fixed
+
+- Missing state directory ancestors are created with owner-only permissions, even
+  when the process umask is permissive.
+- Initialization skips a skills location occupied by a file or symlink and
+  installs skills in the other location when available. Host runs can use the
+  staged feedback skill when neither local skills location is usable.
+
 ## [0.3.0] - 2026-11-22
 
 ### Added
@@ -318,7 +328,8 @@ Initial release.
   `sbx-tui config`, `sbx-tui doctor` and `--update-models`.
 - Project config is only loaded after review.
 
-[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.2...v0.1.3

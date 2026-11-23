@@ -350,9 +350,14 @@ tasks remain available.
 
 `sbx-tui --init` installs local reporting skills and appends an idempotent,
 marked block to `AGENTS.md`. Installation takes the workspace's `guidance.lock`
-and requires regular guidance files and directories. A symlink in a destination
-path stops installation. Appending the block preserves the existing file contents. Customized/incomplete
-blocks and customized/older skill files are preserved and reported; reconcile
-blocks manually or remove an installed skill and rerun `--init` to refresh it.
-Launch-time sandbox skill mounts use the bundled version independently of these
-local copies. `doctor` remains read-only and recommends `--init` for repairs.
+and requires regular guidance files and directories. Initialization skips a
+`skills` path occupied by a file or symlink and requires at least one usable
+`skills` directory. Appending the block preserves the existing file contents.
+Initialization reports customized or incomplete blocks and customized or older
+skill files. Reconcile blocks manually or remove an installed skill and rerun
+`--init` to refresh it.
+
+For runs with feedback, sbx-tui stages the bundled reporting skill.
+If both local `skills` paths are files or symlinks, host agents can read the
+staged copy at `$SBX_FEEDBACK_DIR/skill/SKILL.md`. `doctor` remains read-only
+and recommends `--init` for repairs.

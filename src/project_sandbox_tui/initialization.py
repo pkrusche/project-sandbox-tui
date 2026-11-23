@@ -169,7 +169,8 @@ def _install(repo: Path, *, guidance: bool, config_skill: bool) -> list[str]:
                 raise
             skipped.append(str(path))
             messages.append(f"skipped: {path} (expected a directory without symlinks)")
-    if len(skipped) == len(SKILL_ROOTS):
+    # Host launches stage a copy of the feedback skill with each run.
+    if config_skill and len(skipped) == len(SKILL_ROOTS):
         paths = ", ".join(skipped)
         raise ValueError(f"expected a directory without symlinks at one of: {paths}")
     if not guidance:

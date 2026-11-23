@@ -417,11 +417,23 @@ def test_init_preserves_user_guidance_and_skill_edits(tmp_path: Path) -> None:
     assert len([message for message in messages if "preserved" in message]) == 2
 
 
-@pytest.mark.parametrize("state_name", ["state", "state,feedback", "state\nfeedback"])
+@pytest.mark.parametrize(
+    ("state_name", "blocked_skill_roots"),
+    [("state", False), ("state,feedback", False), ("state\nfeedback", False), ("state", True)],
+)
 @pytest.mark.parametrize("sandbox_dry_run", [False, True])
 def test_host_helper_and_frozen_inline_result(
-    tmp_path: Path, state_name: str, sandbox_dry_run: bool
+    tmp_path: Path, state_name: str, blocked_skill_roots: bool, sandbox_dry_run: bool
 ) -> None:
+    agents_skills = tmp_path / ".agents/skills"
+    claude_skills = tmp_path / ".claude/skills"
+    outside = tmp_path / "external-skills"
+    if blocked_skill_roots:
+        agents_skills.parent.mkdir()
+        agents_skills.write_text("existing file\n")
+        claude_skills.parent.mkdir()
+        outside.mkdir()
+        claude_skills.symlink_to(outside, target_is_directory=True)
     cfg = Config()
     if sandbox_dry_run:
         cfg.sandbox.extra_args.append("--dry-run")
@@ -429,14 +441,23 @@ def test_host_helper_and_frozen_inline_result(
     argv = [
         sys.executable,
         "-c",
-        "import os, subprocess; subprocess.run(['python3', os.environ['SBX_FEEDBACK_DIR'] + "
-        "'/sbx-report', 'finish', '--outcome', 'success', '--summary', 'host done'], check=True)",
+        "import os, subprocess; from pathlib import Path; "
+        "root = Path(os.environ['SBX_FEEDBACK_DIR']); "
+        "assert (root / 'skill/SKILL.md').is_file(); "
+        "subprocess.run(['python3', root / 'sbx-report', 'finish', '--outcome', 'success', "
+        "'--summary', 'host done'], check=True)",
     ]
     with jobs.interactive(LaunchSpec("@", "bash"), {}, argv=argv, host=True) as job:
         job.exit_code = subprocess.run(job.launch_argv(), cwd=tmp_path).returncode
     assert job.reported_success and job.feedback_frozen
     assert job.argv == argv
-    assert (tmp_path / ".agents/skills/sbx-run-feedback/SKILL.md").is_file()
+    assert initialization.GUIDANCE in (tmp_path / "AGENTS.md").read_text()
+    if blocked_skill_roots:
+        assert agents_skills.read_text() == "existing file\n"
+        assert claude_skills.readlink() == outside
+        assert not list(outside.iterdir())
+    else:
+        assert (agents_skills / "sbx-run-feedback/SKILL.md").is_file()
 
 
 def test_old_job_records_have_unknown_outcome() -> None:
