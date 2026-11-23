@@ -1026,17 +1026,17 @@ def _read_text(path: Path) -> str | None:
 
 
 @dataclass(frozen=True)
-class ProjectTrust:
-    """The repository's project config next to the copy the user last trusted."""
+class FileTrust:
+    """A file and the copy the user last trusted."""
 
-    path: Path  # <repo>/.project-sandbox-tui.toml
+    path: Path
+    trusted_path: Path
     current: str | None  # its contents; None = the repository has no project config
     trusted: str | None  # the reviewed copy; None = never trusted
 
     @classmethod
-    def check(cls, repo: Path) -> ProjectTrust:
-        path = project_config_path(repo)
-        return cls(path, _read_text(path), _read_text(trusted_config_path(repo)))
+    def check(cls, path: Path, trusted_path: Path) -> FileTrust:
+        return cls(path, trusted_path, _read_text(path), _read_text(trusted_path))
 
     @property
     def needs_review(self) -> bool:
@@ -1054,22 +1054,22 @@ class ProjectTrust:
         )
         return "".join(line if line.endswith("\n") else line + "\n" for line in lines)
 
-    def trust(self, repo: Path) -> None:
+    def trust(self, repo: Path | None = None) -> None:
         """Trust exactly the reviewed text (not whatever the file holds by now)."""
         if self.current is None:
             raise ConfigError(f"{self.path}: nothing to trust")
         try:
             with config_lock():
-                path = trusted_config_path(repo)
+                path = self.trusted_path
                 private_dir(path.parent)
                 baseline = _read_text(path)
                 if baseline == self.current:
                     return
                 if baseline != self.trusted:
                     raise ConfigError("trusted config changed during review; review the diff again")
-                write_trusted_config(repo, self.current)
+                _write_trusted_file(path, self.current)
         except OSError as exc:
-            raise ConfigError(f"cannot write {trusted_config_path(repo)}: {exc}") from exc
+            raise ConfigError(f"cannot write {self.trusted_path}: {exc}") from exc
 
     def describe(self) -> str:
         """One line for the user: why the project config is not in effect."""
@@ -1078,12 +1078,27 @@ class ProjectTrust:
         return f"{self.path} changed since it was trusted; using the trusted version"
 
 
+@dataclass(frozen=True)
+class ProjectTrust(FileTrust):
+    """The repository's project config and its trusted copy."""
+
+    @classmethod
+    def check(cls, path: Path, trusted_path: Path | None = None) -> ProjectTrust:
+        repo = path
+        path = project_config_path(repo)
+        target = trusted_path or trusted_config_path(repo)
+        return cls(path, target, _read_text(path), _read_text(target))
+
+
 # ---------------------------------------------------------------- state
 
 
 def write_trusted_config(repo: Path, text: str) -> None:
     """Store the approved text atomically. The caller holds config_lock()."""
-    path = trusted_config_path(repo)
+    _write_trusted_file(trusted_config_path(repo), text)
+
+
+def _write_trusted_file(path: Path, text: str) -> None:
     private_dir(path.parent)
     tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
     try:
