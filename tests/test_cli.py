@@ -301,7 +301,55 @@ def test_init_reports_skill_install_errors(
     (repo / ".agents").write_text("cannot create a directory here\n")
     monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
     assert main([str(repo), "--init"]) == 2
-    assert "could not install configuration skill" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "could not install configuration skill" in error
+    assert str(repo / ".agents") in error
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_init_skips_an_unusable_skill_root(
+    repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    linked: bool,
+) -> None:
+    skills = repo / ".agents/skills"
+    skills.parent.mkdir()
+    outside = tmp_path / "external-skills"
+    outside.mkdir()
+    if linked:
+        skills.symlink_to(outside, target_is_directory=True)
+    else:
+        skills.write_text("existing file\n")
+    monkeypatch.setattr("project_sandbox_tui.models.load_store", lambda: object())
+
+    for _ in range(2):
+        assert main([str(repo), "--init"]) == 0
+        result = capsys.readouterr()
+        assert result.out.count(f"skipped: {skills}") == 1
+        assert not result.err
+    for name in ("sbx-tui-config", "sbx-tui-safety", "sbx-run-feedback"):
+        assert (repo / ".claude/skills" / name / "SKILL.md").is_file()
+    assert (repo / "AGENTS.md").is_file()
+    assert not list(outside.iterdir())
+    if linked:
+        assert skills.readlink() == outside
+    else:
+        assert skills.read_text() == "existing file\n"
+
+
+def test_init_reports_when_neither_skill_root_is_usable(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    roots = [repo / ".agents/skills", repo / ".claude/skills"]
+    for root in roots:
+        root.parent.mkdir()
+        root.touch()
+
+    assert main([str(repo), "--init"]) == 2
+    error = capsys.readouterr().err
+    assert all(str(root) in error for root in roots)
 
 
 def test_init_trusts_only_the_template_even_if_the_file_changes(

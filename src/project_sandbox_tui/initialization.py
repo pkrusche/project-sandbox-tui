@@ -1,6 +1,7 @@
 """Project detection and local agent guidance for ``sbx-tui --init`` and ``:init``."""
 
 import contextlib
+import errno
 import os
 import stat
 from collections.abc import Generator
@@ -12,12 +13,13 @@ from project_sandbox_tui import config as config_mod
 from project_sandbox_tui.config import (
     CONFIG_SKILLS,
     PROJECT_TEMPLATE,
+    SKILL_ROOTS,
     repo_state_dir,
     state_lock,
 )
 from project_sandbox_tui.feedback_transport import SKILL_NAME as FEEDBACK_SKILL
 
-FEEDBACK_DIRS = tuple(Path(root) / "skills" / FEEDBACK_SKILL for root in (".agents", ".claude"))
+FEEDBACK_DIRS = tuple(Path(root) / FEEDBACK_SKILL for root in SKILL_ROOTS)
 GUIDANCE_START = "<!-- sbx-tui feedback:start -->"
 GUIDANCE_END = "<!-- sbx-tui feedback:end -->"
 GUIDANCE = f"""{GUIDANCE_START}
@@ -85,11 +87,15 @@ def _local_file(repo: Path, relative: Path, mode: Literal["a", "r", "x"]) -> Gen
     with contextlib.ExitStack() as stack:
         parent = os.open(repo, flags)
         stack.callback(os.close, parent)
-        for component in relative.parts[:-1]:
-            if mode == "x":
-                with contextlib.suppress(FileExistsError):
-                    os.mkdir(component, dir_fd=parent)
-            parent = os.open(component, flags, dir_fd=parent)
+        for index, component in enumerate(relative.parts[:-1], start=1):
+            try:
+                if mode == "x":
+                    with contextlib.suppress(FileExistsError):
+                        os.mkdir(component, dir_fd=parent)
+                parent = os.open(component, flags, dir_fd=parent)
+            except OSError as exc:
+                path = repo.joinpath(*relative.parts[:index])
+                raise OSError(exc.errno, exc.strerror, str(path)) from exc
             stack.callback(os.close, parent)
 
         def opener(name: str, flags: int) -> int:
@@ -148,15 +154,24 @@ def install_feedback(repo: Path, *, guidance: bool = True, config_skill: bool = 
 
 
 def _install(repo: Path, *, guidance: bool, config_skill: bool) -> list[str]:
-    messages = []
-    template = skill_template(FEEDBACK_SKILL)
+    names = (*CONFIG_SKILLS, FEEDBACK_SKILL) if config_skill else (FEEDBACK_SKILL,)
+    templates = {name: skill_template(name) for name in names}
     updated = ignore_skills(repo)
-    messages.append(f"{'updated' if updated else 'exists'}: {repo / '.gitignore'}")
-    if config_skill:
-        for name, targets in CONFIG_SKILLS.items():
-            config_template = skill_template(name)
-            messages.extend(_install_skill(repo, Path(t), config_template) for t in targets)
-    messages.extend(_install_skill(repo, directory, template) for directory in FEEDBACK_DIRS)
+    messages = [f"{'updated' if updated else 'exists'}: {repo / '.gitignore'}"]
+    skipped = []
+    for root in SKILL_ROOTS:
+        try:
+            for name, template in templates.items():
+                messages.append(_install_skill(repo, Path(root) / name, template))
+        except OSError as exc:
+            path = repo / root
+            if exc.errno not in (errno.ENOTDIR, errno.ELOOP) or exc.filename != str(path):
+                raise
+            skipped.append(str(path))
+            messages.append(f"skipped: {path} (expected a directory without symlinks)")
+    if len(skipped) == len(SKILL_ROOTS):
+        paths = ", ".join(skipped)
+        raise ValueError(f"expected a directory without symlinks at one of: {paths}")
     if not guidance:
         return messages
     path = repo / "AGENTS.md"

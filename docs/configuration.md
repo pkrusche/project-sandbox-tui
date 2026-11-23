@@ -37,7 +37,9 @@ build versions cannot conflict with the detected choice.
 
 Initialization installs two configuration skills under both `.agents/skills/`
 and `.claude/skills/`. Each skill has a `SKILL.md` that other agents can also
-read directly.
+read directly. If either `skills` path is a symlink or a file, initialization
+reports it and installs the skills in the other directory. At least one of
+these paths must be available as a directory.
 
 - `sbx-tui-config` covers image selection, configuration scopes, commands,
   actions, validation and trust handling.
