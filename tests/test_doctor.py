@@ -156,6 +156,7 @@ def test_probe_timeout_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     assert check.status == "fail" and "timed out after 30s" in check.detail
 
 
+@pytest.mark.usefixtures("configured_agent_home")
 def test_warnings_do_not_fail_doctor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -170,6 +171,7 @@ def test_warnings_do_not_fail_doctor(
     assert "! repository:" in out and "all good" in out
 
 
+@pytest.mark.usefixtures("configured_agent_home")
 def test_unknown_action_profiles_warn(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -247,6 +249,13 @@ def home(tmp_path: Path) -> Path:
     path = tmp_path / "home"
     (path / ".claude").mkdir(parents=True)
     return path
+
+
+@pytest.fixture
+def configured_agent_home(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make Claude and Codex available to doctor through a temporary home."""
+    (home / ".codex").mkdir()
+    monkeypatch.setenv("HOME", str(home))
 
 
 def problems(checks: list[doctor.Check]) -> dict[str, doctor.Check]:
