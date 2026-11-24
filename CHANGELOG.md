@@ -4,11 +4,24 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
 ### Added
 
+- Share workflows as separately trusted `.project-sandbox-tui/workflows/NAME.toml`
+  files, with namespaced `NAME/SHORT` actions and commands and an HTTPS or local
+  `sbx-tui workflow import` command. `sbx-tui --trust-config` reviews repository
+  config and workflow files one at a time, and `sbx-tui doctor` checks workflow
+  trust, local persona dependencies and imported provenance. The bundled
+  `spec-*` actions are now `spec/plan`, `spec/check`, `spec/implement` and
+  `spec/chores`.
+- `:` opens a scrollable command reference above the command prompt (`PageUp` /
+  `PageDown`) listing keys, command syntax, configured commands, agent actions,
+  built-in commands and aliases.
 - `catalogue.providers` limits the provider rows that launch forms and the workflow
   picker offer (`[]`, the default, offers all). `sbx-setup-wizard` has a provider
-  checklist and saves the selection there; doctor shows the other rows as hidden.
+  checklist and saves the selection there; `sbx-tui doctor` shows the other rows
+  as hidden.
 
 ### Changed
 
@@ -18,20 +31,20 @@ All notable changes to this project are documented in this file.
   launches Copilot with `--model=auto` at every tier so Copilot Fusion picks the
   model, using the routing profile from your Copilot configuration. Configs that
   name `copilot-gemini` must switch to another provider.
-
-## [0.3.2] - 2026-11-24
-
-### Added
-
-- Share workflows as separately trusted `.project-sandbox-tui/workflows/NAME.toml`
-  files, with namespaced `NAME/SHORT` actions and commands and an HTTPS or local
-  `sbx-tui workflow import` command. The bundled `spec-*` actions are now
-  `spec/plan`, `spec/check`, `spec/implement` and `spec/chores`.
+- Profiles with `gateway = true` and `defaults.gateway = true` now load when
+  `network.agent_proxy` is empty, so shared project configs can offer gateway
+  profiles that only some users' configs can serve. `sbx-tui doctor` warns about
+  them; launching such a profile is refused and `defaults.gateway` has no effect.
+- `project-sandbox` package dependency updated to `>=0.4.2,<0.5`.
 
 ### Fixed
 
 - `Ctrl+C` pressed just after an interactive or host agent session or a `:!`
   command started no longer stops the TUI waiting for it or skips its exit prompt.
+- External terminal launches (`tmux`, `zellij`, `screen`, custom) resolve bare
+  executable names (such as `project-sandbox`) to absolute paths on sbx-tui's
+  own `PATH`, so multiplexer windows use the same launcher install instead of a
+  different one from the multiplexer server's `PATH`.
 
 ## [0.3.1] - 2026-11-23
 
@@ -357,7 +370,8 @@ Initial release.
   `sbx-tui config`, `sbx-tui doctor` and `--update-models`.
 - Project config is only loaded after review.
 
-[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pkrusche/project-sandbox-tui/compare/v0.1.3...v0.2.0

@@ -5,7 +5,7 @@
 ```sh
 sbx-tui [REPO]               # open the TUI; default: current directory
 sbx-tui --version            # show the installed package version
-sbx-tui --init               # detect project type; initialize config, setup skill and model catalog
+sbx-tui --init               # detect project type; initialize config, skills, feedback guidance and model catalog
 sbx-tui --print-config       # show effective config and a working-copy sandbox command
 sbx-tui --trust-config       # review changed project config and workflow files
 sbx-tui --dry-run            # preview sandbox calls or workspace cleanup
@@ -14,6 +14,7 @@ sbx-tui --cleanup-workspaces # remove eligible workspaces and bookmarks
 sbx-tui doctor               # check dependencies, runtime, config and comparisons to main
 sbx-tui config …             # read or edit settings
 sbx-tui workflow import SOURCE [--name NAME]  # import a local or HTTPS workflow file
+sbx-setup-wizard [-R PATH]   # interactive host-agent interview to configure a project
 ```
 
 Subcommands accept `-R/--repository PATH` and `--config PATH`. Open repositories
@@ -37,14 +38,24 @@ It asks the configured `sandbox.command` what it supports, from its `--help` and
 ✓ agent selections: 2 checked
 ```
 
-It then checks every configured agent selection: `defaults`, each
-`[profiles.NAME]`, actions with their own `agent`, and the built-in commit-review
-profile. Each problem names its config key, such as `profiles.review.extra_args`.
-**Failures:** settings the launcher would reject, namely an unsupported agent,
-an agent unavailable on this host, a `--vcs-access` mode or `--runtime` value it
+It then checks security level conflicts (`sandbox.extra_args`,
+`profiles.*.extra_args`, and `network.no_firewall`), the `egress backend` (with
+any allowed hosts read from the sidecar policy), every catalogue provider row
+(including rows hidden by `catalogue.providers`), workflow file trust, local
+persona dependencies and imported provenance, and every configured agent
+selection: `defaults`, each `[profiles.NAME]`, actions with a `persona` or their
+own `agent` / `model` / `effort`, and the `commit-reviewer` persona when
+`commit_review.profile` is unset. Each problem names its config key, such as
+`profiles.review.extra_args`. **Failures:** settings the launcher would reject,
+namely an unsupported agent, an agent unavailable on this host, an unavailable
+`catalogue.default_provider` or `commit_review.provider`, an unsupported
+`security.egress` backend, managed network or VCS flags in `extra_args` while a
+security level is set, a `--vcs-access` mode or `--runtime` value the launcher
 does not list, an unusable `sandbox.runtime`, and gateway use with another agent
-or without a model. **Warnings:** a Claude or Codex model that is not in the model
-list, and fast mode on an agent without it. A configured but unused
+or without a model. **Warnings:** a Claude or Codex model that is not in the
+model list, fast mode on an agent without it, gateway profiles or
+`defaults.gateway` set while `network.agent_proxy` is empty, and actions naming
+an unknown profile. A configured but unused
 [agent gateway](configuration.md#agent-gateway) is mentioned with a hint. When the
 launcher cannot be probed, a warning says that built-in lists are used and nothing
 is reported as unsupported. If `doctor --json` is unavailable, automatic runtime
@@ -458,7 +469,7 @@ skips a commit, **Unavailable** shows the reason it gave, such as a patch too
 large to assess reliably. The panel also identifies missing or invalid entries.
 Press `s` after completion to retry the batch. If the run fails, the panel
 shows the failure for commits that have no prior successful assessment.
-Dry-run mode previews the selected profile and pinned range.
+Dry-run mode previews the selected reviewer setup and pinned range.
 See [commit review configuration](configuration.md#commit-review).
 
 Seen marks are remembered across bookmarks by commit ID and file change. Marking

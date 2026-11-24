@@ -315,8 +315,9 @@ is the starting value of the launch form's gateway field for `pi`, `opencode` an
 `defaults.gateway` set to `true` without `network.agent_proxy` still loads, so a
 shared project config can offer gateway profiles that only some users' own
 configs can serve. `sbx-tui doctor` warns about it; launches of such a profile
-are refused, and `defaults.gateway` has no effect. A profile with `gateway = true` and another agent is reported by `sbx-tui
-doctor`, and its launches are refused.
+are refused, and `defaults.gateway` has no effect. A profile with
+`gateway = true` and another agent is reported by `sbx-tui doctor`, and its
+launches are refused.
 
 ## Model catalogue and personas
 
@@ -638,7 +639,7 @@ command line:
 prompt = '''
 Tidy up {bookmark}: update the docs and tests for its changes against {main}.
 '''
-agent = "claude"        # optional: agent, model, effort or profile; timeout
+agent = "claude"        # optional: persona, profile, or agent / model / effort; timeout, level
 timeout = 1800
 
 [leader]

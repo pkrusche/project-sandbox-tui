@@ -231,8 +231,10 @@ prompt = "Finish documentation and cleanup for the spec at previous_state.spec_p
 persona = "chore-runner"
 ```
 
-The project includes fuller prompts in its workflow file. Trust it with `sbx-tui --trust-config`; its actions are available as `spec/plan`, `spec/check`, `spec/implement` and `spec/chores`. Import a shared file with `sbx-tui workflow import SOURCE [--name NAME]`.
-[Example project configuration](https://github.com/pkrusche/project-sandbox-tui/blob/main/.project-sandbox-tui.toml)
+The project includes fuller prompts in its
+[spec workflow file](https://github.com/pkrusche/project-sandbox-tui/blob/main/.project-sandbox-tui/workflows/spec.toml).
+Trust it with `sbx-tui --trust-config`; its actions are available as `spec/plan`, `spec/check`, `spec/implement` and `spec/chores`. Import a shared file with `sbx-tui workflow import SOURCE [--name NAME]`.
+See also the [example project configuration](https://github.com/pkrusche/project-sandbox-tui/blob/main/.project-sandbox-tui.toml).
 
 To use the workflow, select an idle feature bookmark and type
 `:workflow spec Add CSV export`. Type `:workflow` to list the
