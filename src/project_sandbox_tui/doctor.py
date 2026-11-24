@@ -557,12 +557,12 @@ def _check_providers(cfg: Config, caps: Capabilities, home: Path | None) -> list
     shown = []
     offered = catalogue.offered_rows(cfg)
     for row in catalogue.ROWS:
-        if row not in offered:
-            shown.append(f"{row.label} hidden by catalogue.providers")
-            continue
         result = capabilities.provider_availability(cfg, caps, row, home=home)
         if result.available is False:
             reasons[row.id] = result.reason
+        if row not in offered:
+            shown.append(f"{row.label} hidden by catalogue.providers")
+        elif result.available is False:
             shown.append(f"{row.label} unavailable: {result.reason}")
         elif result.available is None:
             shown.append(f"{row.label} unknown")

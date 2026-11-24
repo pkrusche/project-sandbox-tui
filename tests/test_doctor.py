@@ -568,6 +568,12 @@ def test_providers_hidden_by_allow_list(egress_policy: Path) -> None:
     assert "Codex hidden by catalogue.providers" in detail
     assert "Gateway/Anthropic hidden by catalogue.providers" in detail
     assert "Gateway/Anthropic unavailable" not in detail
+    cfg.commit_review.provider = "gateway-anthropic"
+    checks = by_name(doctor.check_security(cfg, discovered()))
+    assert checks["commit_review.provider"].status == "fail"
+    assert "no agent gateway is configured" in checks["commit_review.provider"].detail
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    assert "commit_review.provider" not in by_name(doctor.check_security(cfg, discovered()))
 
 
 def test_default_provider_allows_configured_in_sandbox_login(home: Path) -> None:

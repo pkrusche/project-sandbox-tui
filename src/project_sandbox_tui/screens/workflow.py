@@ -112,8 +112,13 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
 
     def compose(self) -> ComposeResult:
         caps = app_capabilities(self)
+        offered = [row.id for row in catalogue.offered_rows(self.cfg)]
         default_provider = next(
-            (s.initial.provider for s in self.stages if s.initial and s.initial.provider),
+            (
+                s.initial.provider
+                for s in self.stages
+                if s.initial and s.initial.provider in offered
+            ),
             caps_mod.default_provider(self.cfg, self.last, caps),
         )
         with Vertical():
@@ -135,8 +140,8 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
                 yield field
                 provider = CycleField(
                     "provider",
-                    [row.id for row in catalogue.offered_rows(self.cfg)],
-                    initial.provider or default_provider,
+                    offered,
+                    initial.provider if initial.provider in offered else default_provider,
                     labels=provider_labels(self.cfg, caps, self._tier(choice)),
                     id=f"stage-provider-{index}",
                 )

@@ -212,6 +212,7 @@ class Editor:
         global_path: Path | None = None,
         *,
         warn: Callable[[str], None] | None = None,
+        require_trusted: bool = False,
     ) -> None:
         if scope == "project" and repo is None:
             raise ConfigError("--project needs a jj repository (-R/--repository)")
@@ -220,6 +221,7 @@ class Editor:
         self.global_path = global_path or global_config_path()
         self.path = project_config_path(repo) if repo and scope == "project" else self.global_path
         self.warn = warn
+        self.require_trusted = require_trusted
 
     def read(self) -> tomlkit.TOMLDocument:
         try:
@@ -237,6 +239,10 @@ class Editor:
             with config_lock():
                 if self.scope == "project" and self.repo is not None:
                     trust = ProjectTrust.check(self.repo)
+                    if self.require_trusted and trust.needs_review:
+                        raise ConfigError(
+                            f"{trust.describe()}; review it with sbx-tui --trust-config first"
+                        )
                     # Parse exactly the bytes whose trust status was checked.
                     try:
                         doc = tomlkit.parse(trust.current or "")

@@ -64,8 +64,8 @@ class Interview:
             offered = ""
         elif self.providers:
             offered = (
-                f"I limited catalogue.providers to {', '.join(self.providers)}; it is saved "
-                "in the project config. Keep it, and choose catalogue.default_provider from it.\n"
+                f"I limited catalogue.providers to {', '.join(self.providers)}. "
+                "Keep it, and choose catalogue.default_provider from it.\n"
             )
         else:
             offered = "I kept every provider row in catalogue.providers ([] = all).\n"
@@ -262,7 +262,7 @@ def save_providers(repo: Path, cfg: Config, providers: list[str] | None) -> None
     the effective value; the edit keeps a trusted file trusted."""
     if providers is None or providers == cfg.catalogue.providers:
         return
-    editor = settings.Editor("project", repo)
+    editor = settings.Editor("project", repo, require_trusted=True)
     editor.set(settings.parse_key("catalogue.providers"), providers)
     print(f"sbx-setup-wizard: saved catalogue.providers in {editor.path}", file=sys.stderr)
 

@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from project_sandbox_tui.app import SandboxTUI
-from project_sandbox_tui.config import Action, Config, LastUsed, Workflow
+from project_sandbox_tui.config import Action, Config, LastUsed, Selection, StepChoice, Workflow
 from project_sandbox_tui.sandbox import LaunchSpec
 from project_sandbox_tui.screens.dialogs import ConfirmScreen, MessageScreen
 from project_sandbox_tui.screens.launch import LaunchScreen
-from project_sandbox_tui.screens.workflow import WorkflowProfilesScreen
+from project_sandbox_tui.screens.workflow import Stage, WorkflowProfilesScreen
 from project_sandbox_tui.widgets import CycleField
 from tests.test_app import run_app, wait_for_screen, wait_until
 
@@ -173,6 +173,31 @@ def test_workflow_on_another_provider_is_snapshotted(
         await pilot.press("r")
         form = await wait_for_screen(app, pilot, LaunchScreen)
         assert form.query_one("#provider", CycleField).value == "codex"
+
+    run_app(repo, cfg, scenario)
+
+
+def test_picker_falls_back_from_hidden_initial_provider(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = persona_cfg(fake_cfg)
+    cfg.catalogue.providers = ["codex", "claude-code"]
+    cfg.catalogue.default_provider = "claude-code"
+    choice = StepChoice("persona", persona="implementer")
+    stage = Stage("implement", cfg.actions["spec-implement"], "queued", Selection(choice, "codex"))
+    hidden = Stage(
+        "check", cfg.actions["spec-check"], "queued", Selection(choice, "gateway-openai")
+    )
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        app.push_screen(WorkflowProfilesScreen("test", cfg, LastUsed(), [hidden]))
+        picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+        assert picker.query_one("#stage-provider-0", CycleField).value == "claude-code"
+        app.pop_screen()
+        await pilot.pause()
+        app.push_screen(WorkflowProfilesScreen("test", cfg, LastUsed(), [stage, hidden]))
+        picker = await wait_for_screen(app, pilot, WorkflowProfilesScreen)
+        assert picker.query_one("#stage-provider-1", CycleField).value == "codex"
 
     run_app(repo, cfg, scenario)
 

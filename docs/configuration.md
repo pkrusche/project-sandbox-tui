@@ -359,7 +359,8 @@ workflow picker offer, kept in catalogue order; an empty list (the default)
 offers every row. A remembered provider that is not listed is replaced by the
 default, and `catalogue.default_provider` must be in the list when both are
 set. Doctor shows the other rows as hidden. `sbx-setup-wizard` writes this key to
-the project config from its provider checklist.
+the project config from its provider checklist. If that file has unreviewed
+changes, review it with `sbx-tui --trust-config` before changing the selection.
 
 ## Security levels
 

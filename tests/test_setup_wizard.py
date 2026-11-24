@@ -230,3 +230,22 @@ def test_save_providers_updates_the_project_config(repo: Path) -> None:
     assert load(repo).catalogue.providers == ["claude-code"]
     wizard.save_providers(repo, load(repo), [])
     assert load(repo).catalogue.providers == []
+
+
+@pytest.mark.parametrize("previously_trusted", [False, True])
+def test_save_providers_refuses_unreviewed_project_config(
+    repo: Path, previously_trusted: bool
+) -> None:
+    from project_sandbox_tui.config import ConfigError, ProjectTrust, load, project_config_path
+
+    path = project_config_path(repo)
+    path.write_text('[catalogue]\nproviders = ["codex"]\n')
+    if previously_trusted:
+        ProjectTrust.check(repo).trust()
+        path.write_text('[catalogue]\nproviders = ["copilot-fusion"]\n')
+    before = path.read_text()
+    cfg = load(repo)
+    with pytest.raises(ConfigError, match="review it with sbx-tui --trust-config"):
+        wizard.save_providers(repo, cfg, ["claude-code"])
+    assert path.read_text() == before
+    assert load(repo).catalogue.providers == cfg.catalogue.providers
