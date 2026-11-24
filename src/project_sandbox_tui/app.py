@@ -3364,8 +3364,12 @@ class SandboxTUI(App[None]):
         self.notify(f"models: {models_mod.describe(store)} -> {path}", timeout=8)
 
     def action_command_line(self) -> None:
-        names = [*commands.BUILTINS, *self.cfg.commands, *self.cfg.actions]
-        screen = CommandScreen(names, self.command_history, self.repo)
+        screen = CommandScreen(
+            self.command_history,
+            self.repo,
+            command_names=self.cfg.commands,
+            action_names=self.cfg.actions,
+        )
 
         def entered(line: str | None) -> None:
             if line:

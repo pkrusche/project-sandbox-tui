@@ -177,7 +177,7 @@ removes the workspace instead.
 
 ## Command line
 
-`:` opens a command line at the bottom of the list, as in vim.
+`:` opens a command prompt at the bottom of the screen with a command reference above it.
 
 | Command | Action |
 |---|---|
@@ -200,6 +200,7 @@ removes the workspace instead.
 | `tab` / `shift+tab` | Complete: command names, programs after `!`, file names for arguments; repeat to cycle |
 | `↑` / `↓` · `ctrl+p` / `ctrl+n` | Older / newer command starting with the typed text |
 | `→` at end | Accept the newest matching command shown as ghost text |
+| `pageup` / `pagedown` | Scroll the command reference |
 | `enter` · `esc` · `backspace` | Run · cancel · delete character (cancel on an empty line) |
 
 ### Choosing how to run a shell command

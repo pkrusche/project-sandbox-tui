@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
 from project_sandbox_tui import config, doctor, models
@@ -409,6 +410,45 @@ def test_default_command_warns_before_running(
         assert ran == ["&abandon-empty", "true", "true"]
 
     run_app(repo, cfg, scenario)
+
+
+def test_command_line_help_keeps_prompt_visible(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.commands = {"test": "true", "tidy": "true"}
+    cfg.actions = {"chores": config.Action(prompt="Do chores")}
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        await type_line(pilot, "t")
+        screen = app.screen
+        assert isinstance(screen, CommandScreen)
+        help_panel = screen.query_one("#command-help", VerticalScroll)
+        help_text = screen.query_one("#command-help-text", Static)
+        matches = screen.query_one("#matches", Static)
+        assert help_panel.region.y == 0
+        assert help_panel.region.height > 1
+        assert help_text.region.y < help_panel.region.bottom
+        assert help_panel.scroll_y == 0
+        for label in ("Enter runs", "Tab / Shift+Tab", ":!CMD", ":test", ":chores", ":help"):
+            assert label in str(help_text.content)
+
+        await pilot.press("pagedown")
+        assert help_panel.scroll_y > 0
+        assert screen.focused is screen.input
+        assert screen.input.value == "t"
+        await pilot.press("pageup")
+        assert help_panel.scroll_y == 0
+        await pilot.press("tab")
+        assert screen.input.value == "test"
+        assert matches.has_class("visible")
+        assert help_panel.region.bottom == matches.region.y
+        assert matches.region.bottom == screen.input.region.y
+        assert screen.input.region.bottom == screen.size.height
+        await pilot.press("escape")
+        assert app.screen is app.main
+
+    run_app(repo, cfg, scenario, size=(52, 12))
 
 
 def test_command_line_completion_and_history(repo: Path, fake_cfg: Callable[..., Config]) -> None:
