@@ -237,7 +237,7 @@ class LaunchScreen(ModalScreen[LaunchSpec | None]):
             persona_mode = self.initial_setup == PERSONA_SETUP
             provider = CycleField(
                 "provider",
-                [row.id for row in catalogue.ROWS],
+                [row.id for row in catalogue.offered_rows(self.cfg)],
                 caps_mod.default_provider(self.cfg, self.last, caps),
                 labels=provider_labels(self.cfg, caps, self._tier(self.initial_persona)),
                 id="provider",

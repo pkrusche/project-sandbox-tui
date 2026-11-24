@@ -126,6 +126,7 @@ class Security:
 class Catalogue:
     default_provider: str = ""  # provider row selections start with ("" = first available)
     gateway_agent: str = "pi"  # agent of the gateway rows: pi | opencode
+    providers: list[str] = field(default_factory=list)  # rows selections offer ([] = all)
     # [catalogue.models.<vendor|row>] tier = "model"; "" disables the tier
     models: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -581,6 +582,18 @@ class Config:
         ):
             if value and value not in catalogue.ROW_BY_ID:
                 raise ConfigError(f"{key}: unknown provider {value!r}; choose one of {rows}")
+        for value in cat.providers:
+            if value not in catalogue.ROW_BY_ID:
+                raise ConfigError(
+                    f"catalogue.providers: unknown provider {value!r}; choose from {rows}"
+                )
+        if len(set(cat.providers)) != len(cat.providers):
+            raise ConfigError("catalogue.providers lists a provider more than once")
+        if cat.providers and cat.default_provider and cat.default_provider not in cat.providers:
+            raise ConfigError(
+                f"catalogue.default_provider {cat.default_provider!r} is not in "
+                "catalogue.providers: add it there or choose another default"
+            )
         if review.provider and review.profile:
             raise ConfigError(
                 "commit_review sets profile and provider: use either a profile or a provider"
@@ -672,9 +685,16 @@ TABLES: dict[str, str] = {
     "workflows": "must be a table of [workflows.NAME] tables",
     "workspace_skills": "must be an array of [[workspace_skills]] tables with source and targets",
     "personas": "must be a table of [personas.NAME] tables",
-    "catalogue": "must be a table with default_provider, gateway_agent and [catalogue.models.*]",
+    "catalogue": (
+        "must be a table with default_provider, gateway_agent, providers and [catalogue.models.*]"
+    ),
 }
-CATALOGUE_KEYS: dict[str, Any] = {"default_provider": "", "gateway_agent": "pi", "models": {}}
+CATALOGUE_KEYS: dict[str, Any] = {
+    "default_provider": "",
+    "gateway_agent": "pi",
+    "providers": [],
+    "models": {},
+}
 
 _SECTIONS: dict[str, type[Any]] = {
     "defaults": Defaults,
@@ -918,6 +938,8 @@ def _build_catalogue(data: dict[str, Any]) -> Catalogue:
     for key in ("default_provider", "gateway_agent"):
         if key in data:
             setattr(out, key, _coerce("catalogue", key, data[key], ""))
+    if "providers" in data:
+        out.providers = _coerce("catalogue", "providers", data["providers"], [])
     models = data.get("models", {})
     if not isinstance(models, dict):
         raise ConfigError("[catalogue.models] must be a table of [catalogue.models.NAME] tables")
@@ -1616,13 +1638,16 @@ def remembered_provider(
     cfg: Config, last: LastUsed, available: Callable[[str], bool] | None = None
 ) -> str:
     """The provider persona selections start with: the remembered one, else
-    ``catalogue.default_provider``, else the first available row."""
+    ``catalogue.default_provider``, else the first available row. Only rows that
+    ``catalogue.providers`` offers are considered."""
+    rows = catalogue.offered_rows(cfg)
+    offered = {row.id for row in rows}
     ok = available or (lambda _row: True)
-    if last.provider in catalogue.ROW_BY_ID and ok(last.provider):
+    if last.provider in offered and ok(last.provider):
         return last.provider
     if cfg.catalogue.default_provider:
         return cfg.catalogue.default_provider
-    return next((row.id for row in catalogue.ROWS if ok(row.id)), catalogue.ROWS[0].id)
+    return next((row.id for row in rows if ok(row.id)), rows[0].id)
 
 
 @dataclass(frozen=True)

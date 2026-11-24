@@ -561,6 +561,15 @@ def test_provider_availability(egress_policy: Path) -> None:
     assert "commit_review.provider" not in checks
 
 
+def test_providers_hidden_by_allow_list(egress_policy: Path) -> None:
+    cfg = Config()
+    cfg.catalogue.providers = ["claude-code"]
+    detail = by_name(doctor.check_security(cfg, discovered()))["providers"].detail
+    assert "Codex hidden by catalogue.providers" in detail
+    assert "Gateway/Anthropic hidden by catalogue.providers" in detail
+    assert "Gateway/Anthropic unavailable" not in detail
+
+
 def test_default_provider_allows_configured_in_sandbox_login(home: Path) -> None:
     cfg = Config()
     cfg.catalogue.default_provider = "codex"

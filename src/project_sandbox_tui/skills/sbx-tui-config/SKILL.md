@@ -108,7 +108,10 @@ Choose `security.level` for the project's normal work. Use level 2 for dependenc
 downloads, level 3 for API-only egress, or levels 4–5 for restricted VCS access.
 See the [security settings and managed flags](https://github.com/pkrusche/project-sandbox-tui/blob/main/docs/configuration.md#security-levels).
 
-Use `sbx-tui doctor` to select an available `catalogue.default_provider`. The
+Use `sbx-tui doctor` to select an available `catalogue.default_provider`.
+`catalogue.providers` lists the rows the forms offer (`[]` offers all); the
+setup wizard saves it from its checklist, so keep it and pick the default from
+it. The
 [provider and persona catalogue](https://github.com/pkrusche/project-sandbox-tui/blob/main/docs/models.md) lists model tiers, effort,
 fast mode and starting level.
 

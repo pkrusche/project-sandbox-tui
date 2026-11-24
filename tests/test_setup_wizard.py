@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Checkbox, Select, SelectionList, TextArea
 
-from project_sandbox_tui import capabilities
+from project_sandbox_tui import capabilities, catalogue
 from project_sandbox_tui import setup_wizard as wizard
 
 
@@ -36,7 +36,7 @@ def test_setup_dialog(home: Path) -> None:
         app = wizard.SetupDialog(["claude", "codex", "copilot"], PROBED, home=home)
         async with app.run_test() as pilot:
             app.query_one(Select).value = "copilot"
-            app.query_one(SelectionList).deselect("claude")
+            app.query_one("#profiles", SelectionList).deselect("claude")
             app.query_one(TextArea).text = "Focus on reviews."
             await pilot.press("ctrl+s")
         result = app.return_value
@@ -109,7 +109,7 @@ def test_profile_agents_combine_sources_with_the_gateway(home: Path) -> None:
     async def interact() -> None:
         app = wizard.SetupDialog(["claude"], PROBED, home=home)
         async with app.run_test() as pilot:
-            profiles = app.query_one(SelectionList)
+            profiles = app.query_one("#profiles", SelectionList)
             values = [profiles.get_option_at_index(i).value for i in range(profiles.option_count)]
             assert values == ["claude", "copilot", "bash"]
             app.query_one(Checkbox).value = True
@@ -133,7 +133,7 @@ def test_gateway_preselected_when_configured(home: Path) -> None:
         app = wizard.SetupDialog(["claude"], PROBED, gateway_configured=True, home=home)
         async with app.run_test():
             assert app.query_one(Checkbox).value
-            assert "pi" in app.query_one(SelectionList).selected
+            assert "pi" in app.query_one("#profiles", SelectionList).selected
 
     asyncio.run(interact())
 
@@ -159,3 +159,74 @@ def test_summary_without_sidecar_egress(home: Path) -> None:
     text = capabilities.setup_summary(caps, home=home, cfg=Config())
     assert 'levels 3 to 5 need security.egress = "firewall" in the global config' in text
     assert "supports with security.egress = 'sidecar': 1 (no firewall), 2 (" in text
+
+
+def test_dialog_chooses_offered_providers(home: Path) -> None:
+    from project_sandbox_tui.config import Config
+
+    async def interact() -> None:
+        app = wizard.SetupDialog(["claude"], PROBED, home=home)
+        async with app.run_test() as pilot:
+            providers = app.query_one("#providers", SelectionList)
+            assert len(providers.selected) == len(catalogue.ROWS)  # [] offers every row
+            prompts = [
+                str(providers.get_option_at_index(i).prompt) for i in range(providers.option_count)
+            ]
+            assert "Gateway/OpenAI — unavailable: no agent gateway is configured" in prompts[2]
+            for row in catalogue.ROWS:
+                if row.id not in ("claude-code", "copilot-fusion"):
+                    providers.deselect(row.id)
+            await pilot.press("ctrl+s")
+        result = app.return_value
+        assert result is not None and result.providers == ["claude-code", "copilot-fusion"]
+        assert "gateway-openai" not in result.summary  # the interview sees only offered rows
+        assert "limited catalogue.providers to claude-code, copilot-fusion" in result.prompt([])
+
+        # An existing allow-list is preselected; keeping every row saves [].
+        cfg = Config()
+        cfg.catalogue.providers = ["codex"]
+        app = wizard.SetupDialog(["claude"], PROBED, home=home, cfg=cfg)
+        async with app.run_test() as pilot:
+            providers = app.query_one("#providers", SelectionList)
+            assert providers.selected == ["codex"]
+            providers.select_all()
+            await pilot.press("ctrl+s")
+        assert app.return_value is not None and app.return_value.providers == []
+        assert "kept every provider row" in app.return_value.prompt([])
+
+    asyncio.run(interact())
+
+
+def test_dialog_refuses_providers_that_would_not_validate(home: Path) -> None:
+    from project_sandbox_tui.config import Config
+
+    async def interact() -> None:
+        cfg = Config()
+        cfg.catalogue.default_provider = "claude-code"
+        app = wizard.SetupDialog(["claude"], PROBED, home=home, cfg=cfg)
+        async with app.run_test() as pilot:
+            providers = app.query_one("#providers", SelectionList)
+            providers.deselect_all()
+            await pilot.press("ctrl+s")
+            assert app.return_value is None and app.is_running  # nothing selected
+            providers.select("codex")
+            await pilot.press("ctrl+s")
+            assert app.return_value is None and app.is_running  # default not offered
+            providers.select("claude-code")
+            await pilot.press("ctrl+s")
+        assert app.return_value is not None
+        assert app.return_value.providers == ["codex", "claude-code"]
+
+    asyncio.run(interact())
+
+
+def test_save_providers_updates_the_project_config(repo: Path) -> None:
+    from project_sandbox_tui.config import Config, load, project_config_path
+
+    wizard.save_providers(repo, Config(), None)
+    wizard.save_providers(repo, Config(), [])  # unchanged: nothing written
+    assert not project_config_path(repo).exists()
+    wizard.save_providers(repo, Config(), ["claude-code"])
+    assert load(repo).catalogue.providers == ["claude-code"]
+    wizard.save_providers(repo, load(repo), [])
+    assert load(repo).catalogue.providers == []

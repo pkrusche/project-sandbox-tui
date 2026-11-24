@@ -135,7 +135,7 @@ class WorkflowProfilesScreen(ModalScreen[list[Selection] | None]):
                 yield field
                 provider = CycleField(
                     "provider",
-                    [row.id for row in catalogue.ROWS],
+                    [row.id for row in catalogue.offered_rows(self.cfg)],
                     initial.provider or default_provider,
                     labels=provider_labels(self.cfg, caps, self._tier(choice)),
                     id=f"stage-provider-{index}",

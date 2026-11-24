@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `catalogue.providers` limits the provider rows that launch forms and the workflow
+  picker offer (`[]`, the default, offers all). `sbx-setup-wizard` has a provider
+  checklist and saves the selection there; doctor shows the other rows as hidden.
+
+### Changed
+
+- Gateway/Gemini tiers now run `gemini-4-neon` at medium and `gemini-4-argon` at
+  high, giving the order hydrogen, neon, argon, carbon from fast to frontier.
+- The Copilot/Fusion provider (`copilot-fusion`) replaces Copilot/Gemini. It
+  launches Copilot with `--model=auto` at every tier so Copilot Fusion picks the
+  model, using the routing profile from your Copilot configuration. Configs that
+  name `copilot-gemini` must switch to another provider.
+
 ## [0.3.2] - 2026-11-24
 
 ### Added

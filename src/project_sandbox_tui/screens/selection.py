@@ -35,7 +35,7 @@ def provider_reason(cfg: Config, caps: Capabilities, row_id: str, tier: str = ""
 
 def provider_labels(cfg: Config, caps: Capabilities, tier: str = "") -> dict[str, str]:
     labels = {}
-    for row in catalogue.ROWS:
+    for row in catalogue.offered_rows(cfg):
         reason = provider_reason(cfg, caps, row.id, tier)
         labels[row.id] = f"{row.label} — unavailable: {reason}" if reason else row.label
     return labels

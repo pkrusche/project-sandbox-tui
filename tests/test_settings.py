@@ -275,6 +275,7 @@ def test_set_catalogue_and_personas(repo: Path, capsys: pytest.CaptureFixture[st
 
     assert set_global("catalogue.default_provider", "claude-code")[0] == 0
     assert set_global("catalogue.gateway_agent", "opencode")[0] == 0
+    assert set_global("catalogue.providers", '["codex", "claude-code"]')[0] == 0
     assert set_global("catalogue.models.gateway-anthropic.high", "claude-opus-5")[0] == 0
     assert set_global("personas.reviewer.tier", "frontier")[0] == 0
     assert set_global("security.level", "3")[0] == 0
@@ -286,6 +287,7 @@ def test_set_catalogue_and_personas(repo: Path, capsys: pytest.CaptureFixture[st
     )
     listed = cli(capsys, "config", "list")[1]
     assert 'catalogue.default_provider = "claude-code"' in listed
+    assert 'catalogue.providers = ["codex", "claude-code"]' in listed
     assert 'catalogue.models.gateway-anthropic.high = "claude-opus-5"' in listed
     assert 'personas.reviewer.tier = "frontier"' in listed
     assert "personas.reviewer.level = 4" in listed  # built-in fields shown merged

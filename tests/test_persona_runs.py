@@ -149,7 +149,7 @@ def test_workflow_on_another_provider_is_snapshotted(
             assert picker.query_one(f"#stage-provider-{index}", CycleField).value == "codex"
             picker.query_one(f"#stage-provider-{index}", CycleField).value = "gateway-gemini"
         await pilot.pause()
-        assert "gemini-4-argon" in text(picker.query_one("#stage-hint-1"))
+        assert "gemini-4-neon" in text(picker.query_one("#stage-hint-1"))
         await pilot.press("enter")
         await wait_until(pilot, lambda: bool(app.queue.get(branch).tasks))
 
@@ -163,7 +163,7 @@ def test_workflow_on_another_provider_is_snapshotted(
             step = steps[name]
             assert (step.agent, step.model, step.gateway, step.level) == (
                 "pi",
-                "gemini-4-argon",
+                "gemini-4-neon",
                 True,
                 2,
             )

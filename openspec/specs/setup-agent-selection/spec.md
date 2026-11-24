@@ -75,6 +75,18 @@ personas with their levels.
 - **WHEN** the wizard starts the interview
 - **THEN** the prompt says that levels 3 to 5 need `security.egress = "firewall"` in the global config
 
+### Requirement: Wizard saves the offered providers
+The wizard SHALL show every provider row with its availability, preselecting
+the rows of the current `catalogue.providers` (all rows when it is empty). On
+start it SHALL refuse an empty selection or one that fails validation, write a
+changed selection to the project config as `catalogue.providers` (`[]` when all
+rows are kept), and list only the selected rows in the setup prompt.
+
+#### Scenario: Deselected providers are hidden later
+- **GIVEN** the user keeps only Claude Code and Copilot/Fusion in the wizard
+- **WHEN** the interview starts
+- **THEN** the project config has `catalogue.providers = ["claude-code", "copilot-fusion"]` and the launch forms offer only those providers
+
 ### Requirement: Setup proposes a level, a default provider and action personas
 When the setup agent follows the `sbx-tui-config` and `sbx-tui-safety` skills,
 it SHALL propose a project `security.level`, a `catalogue.default_provider`, and

@@ -65,7 +65,9 @@ host agent (Claude, Codex, Pi, GitHub Copilot or OpenCode) to conduct the interv
 then select agents for sandbox profiles. The wizard lists agents supported by your
 configured project-sandbox and explains how each can authenticate on this host;
 they do not all need to be installed locally. Select **Use the agent gateway**
-to offer Pi and OpenCode through `network.agent_proxy`. Add any instructions and
+to offer Pi and OpenCode through `network.agent_proxy`. Clear the providers you do
+not use: the wizard saves the rest as `catalogue.providers` in the project
+config, and launch forms offer only those. Add any instructions and
 press **Start interview** (`ctrl+s`) to open the setup agent in the current
 terminal. It receives discovered agents, VCS access modes and runtimes, and uses
 the `sbx-tui-safety` skill to discuss each task's access needs. Run the wizard

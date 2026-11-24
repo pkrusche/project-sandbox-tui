@@ -11,13 +11,13 @@ to what each agent and access route can run.
 sbx-tui SHALL offer one list of providers, each a route plus vendor with a
 fixed agent: `codex` (Codex, agent codex), `claude-code` (Claude Code, agent
 claude), `gateway-openai`, `gateway-anthropic` and `gateway-gemini` (through the
-agent gateway), and `copilot-openai`, `copilot-anthropic` and `copilot-gemini`
+agent gateway), and `copilot-openai`, `copilot-anthropic` and `copilot-fusion`
 (agent copilot). Each row SHALL be shown with a readable label such as
 `Gateway/Anthropic`.
 
 #### Scenario: Provider list
 - **WHEN** the user opens the provider field in a launch form
-- **THEN** it lists Codex, Claude Code, Gateway/OpenAI, Gateway/Anthropic, Gateway/Gemini, Copilot/OpenAI, Copilot/Anthropic and Copilot/Gemini in that order
+- **THEN** it lists Codex, Claude Code, Gateway/OpenAI, Gateway/Anthropic, Gateway/Gemini, Copilot/OpenAI, Copilot/Anthropic and Copilot/Fusion in that order
 
 #### Scenario: Agent follows from the row
 - **WHEN** a launch uses provider `claude-code`
@@ -49,12 +49,20 @@ SHALL use the Copilot CLI IDs `claude-haiku-5.5`, `claude-sonnet-5.5` and
 
 ### Requirement: Built-in Google tiers
 The `gateway-gemini` row SHALL use fast `gemini-4-hydrogen`, medium
-`gemini-4-argon`, high `gemini-4-neon` and frontier `gemini-4-carbon`. The
-`copilot-gemini` row SHALL offer only fast `gemini-4-hydrogen`.
+`gemini-4-neon`, high `gemini-4-argon` and frontier `gemini-4-carbon`.
 
 #### Scenario: Gemini frontier through the gateway
 - **WHEN** a launch uses provider `gateway-gemini` at tier frontier
 - **THEN** the launch uses model `gemini-4-carbon` through the agent gateway
+
+### Requirement: Copilot Fusion
+The `copilot-fusion` row SHALL launch Copilot with model `auto` for every tier,
+so that Copilot Fusion picks the model, and SHALL NOT pass `--effort`. The
+routing profile comes from the user's Copilot configuration.
+
+#### Scenario: Fusion at any tier
+- **WHEN** a launch uses provider `copilot-fusion` with persona planner
+- **THEN** the launcher arguments contain `--agent=copilot` and `--model=auto` and no `--effort`
 
 ### Requirement: Missing tiers are disabled, never substituted
 When a provider row has no model for the requested tier, sbx-tui SHALL show that
@@ -117,6 +125,23 @@ when none is remembered. When unset, the first available row SHALL be used.
 - **GIVEN** `catalogue.default_provider = "claude-code"` and no remembered provider
 - **WHEN** the user opens a launch form in persona mode
 - **THEN** the provider field starts at Claude Code
+
+### Requirement: Provider allow-list
+`catalogue.providers` SHALL list the provider rows that launch forms and the
+workflow picker offer, in catalogue order; an empty list SHALL offer every row.
+A remembered provider that is not listed SHALL NOT be selected. Loading SHALL
+fail for an unknown or repeated row, and when `catalogue.default_provider` is
+set but not listed.
+
+#### Scenario: Hidden remembered provider
+- **GIVEN** `catalogue.providers = ["copilot-fusion", "claude-code"]` and remembered provider Codex
+- **WHEN** the user opens a launch form in persona mode
+- **THEN** the provider field offers Claude Code and Copilot/Fusion and starts at Claude Code
+
+#### Scenario: Default provider outside the allow-list
+- **GIVEN** `catalogue.providers = ["codex"]` and `catalogue.default_provider = "claude-code"`
+- **WHEN** the configuration is loaded
+- **THEN** loading fails with an error naming both keys
 
 ### Requirement: Provider availability follows agent availability
 A provider row SHALL be unavailable, with the reason, when its agent is not

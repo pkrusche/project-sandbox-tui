@@ -326,6 +326,7 @@ the built-in rows, tier models and personas.
 [catalogue]
 default_provider = "claude-code"   # "" = the first available provider
 gateway_agent = "pi"               # agent of the gateway rows: pi | opencode
+providers = ["claude-code", "copilot-fusion"]  # rows the forms offer; [] = all
 
 [catalogue.models.anthropic]       # a vendor: openai | anthropic | google
 frontier = "claude-fable-5-2"
@@ -352,6 +353,13 @@ built-in values for unset fields. Persona names use lowercase letters, digits
 and dashes; `commit-reviewer` is internal and cannot be used by actions.
 `catalogue.default_provider` names the provider a selection starts with when
 none is remembered; `sbx-tui doctor` fails when it names an unavailable provider.
+
+`catalogue.providers` limits the provider rows that launch forms and the
+workflow picker offer, kept in catalogue order; an empty list (the default)
+offers every row. A remembered provider that is not listed is replaced by the
+default, and `catalogue.default_provider` must be in the list when both are
+set. Doctor shows the other rows as hidden. `sbx-setup-wizard` writes this key to
+the project config from its provider checklist.
 
 ## Security levels
 
@@ -497,6 +505,7 @@ egress = "sidecar"      # global config only: sidecar | firewall
 [catalogue]             # see "Model catalogue and personas"
 default_provider = ""
 gateway_agent = "pi"
+providers = []          # provider rows the forms offer; [] = all
 
 [commit_review]
 provider = ""           # "" = codex; or profile = "NAME"

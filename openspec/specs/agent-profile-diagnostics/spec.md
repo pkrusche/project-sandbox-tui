@@ -143,7 +143,8 @@ list the hosts it allows when it can read them. Doctor SHALL NOT change that fil
 - **THEN** doctor reports that the sidecar uses default settings and notes that GitHub Copilot needs its hosts allowed by the sidecar
 
 ### Requirement: Doctor reports provider availability
-Doctor SHALL list each provider row with its availability and reason. It SHALL
+Doctor SHALL list each provider row with its availability and reason, and a row
+that `catalogue.providers` does not list as hidden. It SHALL
 report a failure when `catalogue.default_provider` or `commit_review.provider`
 names a provider that is unavailable on this host.
 

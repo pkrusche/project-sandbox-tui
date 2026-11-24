@@ -22,6 +22,7 @@ TIERS: tuple[str, ...] = ("fast", "medium", "high", "frontier")
 VENDORS: tuple[str, ...] = ("openai", "anthropic", "google")
 GATEWAY_CHOICES: tuple[str, ...] = ("pi", "opencode")
 GATEWAY = "gateway"  # ProviderRow.agent of gateway rows: catalogue.gateway_agent decides
+FUSION = "fusion"  # ProviderRow.vendor of Copilot/Fusion: Copilot picks the model, not a vendor
 
 VENDOR_TIERS: dict[str, dict[str, str]] = {
     "openai": {
@@ -38,8 +39,8 @@ VENDOR_TIERS: dict[str, dict[str, str]] = {
     },
     "google": {
         "fast": "gemini-4-hydrogen",
-        "medium": "gemini-4-argon",
-        "high": "gemini-4-neon",
+        "medium": "gemini-4-neon",
+        "high": "gemini-4-argon",
         "frontier": "gemini-4-carbon",
     },
 }
@@ -78,15 +79,26 @@ ROWS: tuple[ProviderRow, ...] = (
             "frontier": "",
         },
     ),
+    # Copilot Fusion: `--model=auto` lets Copilot route each request, using the
+    # routing profile in the user's Copilot config (project-sandbox cannot pass
+    # --auto-tier), so every tier runs the same model and no --effort is sent.
     ProviderRow(
-        "copilot-gemini",
-        "Copilot/Gemini",
-        "google",
+        "copilot-fusion",
+        "Copilot/Fusion",
+        FUSION,
         "copilot",
-        models={"fast": "gemini-4-hydrogen", "medium": "", "high": "", "frontier": ""},
+        effort=False,
+        models=dict.fromkeys(TIERS, "auto"),
     ),
 )
 ROW_BY_ID: dict[str, ProviderRow] = {row.id: row for row in ROWS}
+
+
+def offered_rows(cfg: Config) -> tuple[ProviderRow, ...]:
+    """The rows selections offer: ``catalogue.providers`` in catalogue order, or
+    every row when that list is empty."""
+    allowed = cfg.catalogue.providers
+    return tuple(row for row in ROWS if row.id in allowed) if allowed else ROWS
 
 
 def row_agent(cfg: Config, row: ProviderRow) -> str:
@@ -101,7 +113,7 @@ def model_for(cfg: Config, row: ProviderRow, tier: str) -> str | None:
     ``[catalogue.models.<row>]``; an empty value disables the tier. Never falls
     back to another tier or row.
     """
-    model = row.models.get(tier, VENDOR_TIERS[row.vendor].get(tier, ""))
+    model = row.models.get(tier, VENDOR_TIERS.get(row.vendor, {}).get(tier, ""))
     overrides = cfg.catalogue.models
     for key in (row.vendor, row.id):
         if tier in overrides.get(key, {}):

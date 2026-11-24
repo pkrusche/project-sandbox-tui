@@ -677,7 +677,7 @@ def _catalogue_summary(cfg: Config, caps: Capabilities, home: Path | None) -> li
     from project_sandbox_tui.security import LEVEL_LABELS
 
     rows = []
-    for row in catalogue.ROWS:
+    for row in catalogue.offered_rows(cfg):
         result = provider_availability(cfg, caps, row, home=home)
         state = "available" if result.available else "unavailable"
         if result.available is None:

@@ -246,6 +246,23 @@ def test_persona_mode_without_profiles(repo: Path, fake_cfg: Callable[..., Confi
     run_app(repo, cfg, scenario)
 
 
+def test_provider_field_offers_only_allowed_providers(
+    repo: Path, fake_cfg: Callable[..., Config]
+) -> None:
+    cfg = fake_cfg()
+    cfg.catalogue.providers = ["copilot-fusion", "claude-code"]
+    LastUsed(profile="", selection="persona", provider="codex", persona="planner").save(repo)
+
+    async def scenario(app: SandboxTUI, pilot: Any) -> None:
+        form, _controls = await open_form(app, pilot)
+        provider = field(form, "provider")
+        assert provider.options == ["claude-code", "copilot-fusion"]
+        assert provider.value == "claude-code"  # the remembered Codex is hidden
+        assert set(provider.labels) == {"claude-code", "copilot-fusion"}
+
+    run_app(repo, cfg, scenario)
+
+
 def test_profile_mode_unchanged(repo: Path, fake_cfg: Callable[..., Config]) -> None:
     cfg = fake_cfg()
     cfg.profiles = {"deep": AgentProfile("codex", "m", "high", True, ["--memory=16g"])}

@@ -90,12 +90,15 @@ def parse_key(text: str) -> Key:
     if section == "catalogue":
         if name in ("default_provider", "gateway_agent"):
             return Key(section, name, "")
+        if name == "providers":
+            return Key(section, name, [])
         table, _, tier = name.removeprefix("models.").partition(".")
         if name.startswith("models.") and table and tier in catalogue.TIERS:
             return Key(section, name, "")
         raise ConfigError(
-            f"unknown key {text!r}: use catalogue.default_provider, catalogue.gateway_agent "
-            f"or catalogue.models.<vendor|provider>.<{'|'.join(catalogue.TIERS)}>"
+            f"unknown key {text!r}: use catalogue.default_provider, catalogue.gateway_agent, "
+            "catalogue.providers or catalogue.models.<vendor|provider>."
+            f"<{'|'.join(catalogue.TIERS)}>"
         )
     if section == "profiles":
         profile, _, field = name.rpartition(".")

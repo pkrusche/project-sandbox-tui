@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from project_sandbox_tui import catalogue
 from project_sandbox_tui import config as c
 from project_sandbox_tui.jobs import JobManager, JobRecord
 from project_sandbox_tui.sandbox import LaunchSpec
@@ -1054,3 +1056,33 @@ def test_review_state_is_not_a_config_warning(tmp_path: Path) -> None:
     write(c.workflow_dir(tmp_path) / "spec.toml", SPEC_FILE)
     write(c.workflow_dir(tmp_path) / "2bad.toml", SPEC_FILE)
     assert c.load(tmp_path).warnings == []
+
+
+def test_provider_allow_list() -> None:
+    cfg = c.from_dict({"catalogue": {"providers": ["copilot-fusion", "claude-code"]}})
+    cfg.validate()
+    assert [row.id for row in catalogue.offered_rows(cfg)] == ["claude-code", "copilot-fusion"]
+    assert [row.id for row in catalogue.offered_rows(c.Config())] == list(catalogue.ROW_BY_ID)
+    # A remembered provider that is no longer offered falls back to an offered row.
+    codex = c.LastUsed(selection="persona", provider="codex", persona="planner")
+    assert c.remembered_provider(cfg, codex) == "claude-code"
+    assert c.remembered_provider(cfg, c.LastUsed(), lambda row: row != "claude-code") == (
+        "copilot-fusion"
+    )
+
+
+@pytest.mark.parametrize(
+    ("catalogue_table", "message"),
+    [
+        ({"providers": ["copilot-gemini"]}, "unknown provider 'copilot-gemini'"),
+        ({"providers": ["codex", "codex"]}, "more than once"),
+        (
+            {"providers": ["codex"], "default_provider": "claude-code"},
+            "catalogue.default_provider 'claude-code' is not in catalogue.providers",
+        ),
+        ({"providers": "codex"}, "catalogue.providers must be a list of strings"),
+    ],
+)
+def test_invalid_provider_allow_list(catalogue_table: dict, message: str) -> None:
+    with pytest.raises(c.ConfigError, match=re.escape(message)):
+        c.from_dict({"catalogue": catalogue_table}).validate()

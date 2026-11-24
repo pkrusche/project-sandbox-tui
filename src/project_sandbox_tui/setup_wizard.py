@@ -7,6 +7,7 @@ what the configured project-sandbox supports and how each can run on this host
 """
 
 import argparse
+import copy
 import os
 import shutil
 import sys
@@ -18,7 +19,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Checkbox, Label, Select, SelectionList, TextArea
 
-from project_sandbox_tui import capabilities
+from project_sandbox_tui import capabilities, catalogue, settings
 from project_sandbox_tui.capabilities import Capabilities
 from project_sandbox_tui.config import SAFETY_SKILL, Config, ConfigError, load
 from project_sandbox_tui.initialization import skill_template
@@ -45,6 +46,8 @@ class Interview:
     gateway: bool = False
     summary: str = ""  # discovered capabilities for the prompt (capabilities.setup_summary)
     sources: dict[str, str] = field(default_factory=dict)  # profile agent -> its sources
+    # catalogue.providers chosen in the dialog ([] = all rows); None = not asked
+    providers: list[str] | None = None
 
     def prompt(self, available: list[str]) -> str:
         chosen = ", ".join(
@@ -57,11 +60,20 @@ class Interview:
             if self.gateway
             else "I do not plan to use the agent gateway."
         )
+        if self.providers is None:
+            offered = ""
+        elif self.providers:
+            offered = (
+                f"I limited catalogue.providers to {', '.join(self.providers)}; it is saved "
+                "in the project config. Keep it, and choose catalogue.default_provider from it.\n"
+            )
+        else:
+            offered = "I kept every provider row in catalogue.providers ([] = all).\n"
         return f"""Help me set up this project for sbx-tui. You are the interactive setup agent.
 You run on the host; the agent profiles you configure run inside the sandbox.
 Detected host agents: {", ".join(available)}. Interview agent: {self.host}.
 Agents chosen for sandbox profiles: {chosen or "discuss during the interview"}.
-{gateway}
+{offered}{gateway}
 
 What the configured project-sandbox supports here:
 {self.summary or "unknown; run sbx-tui doctor to see it."}
@@ -99,7 +111,7 @@ class SetupDialog(App[Interview | None]):
         width: 72; max-width: 100%; height: auto; max-height: 100%; padding: 1 2;
         border: round $primary;
     }
-    SelectionList { height: auto; max-height: 8; }
+    SelectionList { height: auto; max-height: 9; }
     TextArea { height: 4; }
     Horizontal { height: auto; }
     .hint { color: $text-muted; }
@@ -143,6 +155,23 @@ class SetupDialog(App[Interview | None]):
             for agent, sources in self.profile_choices(gateway)
         ]
 
+    def _provider_selection(self) -> list:
+        allowed = set(self.cfg.catalogue.providers)
+        options = []
+        for row in catalogue.ROWS:
+            result = capabilities.provider_availability(self.cfg, self.caps, row, home=self.home)
+            state = "unavailable" if result.available is False else ""
+            detail = result.reason if state else ""
+            label = f"{row.label} — {state}: {detail}" if detail else row.label
+            options.append((label, row.id, not allowed or row.id in allowed))
+        return options
+
+    def chosen_providers(self) -> list[str]:
+        """catalogue.providers for the selection: catalogue order, [] when all are kept."""
+        selected = set(self.query_one("#providers", SelectionList).selected)
+        chosen = [row.id for row in catalogue.ROWS if row.id in selected]
+        return [] if len(chosen) == len(catalogue.ROWS) else chosen
+
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("Setup agent (runs the interview on this host)")
@@ -158,6 +187,8 @@ class SetupDialog(App[Interview | None]):
             )
             yield Label("Sandbox profile agents to consider (Space to toggle)")
             yield SelectionList[str](*self._selection(self.gateway_configured), id="profiles")
+            yield Label("Providers offered in launch forms (Space to toggle; saved now)")
+            yield SelectionList[str](*self._provider_selection(), id="providers")
             if not self.caps.discovered:
                 yield Label(
                     "project-sandbox could not be probed: built-in agent list shown",
@@ -183,6 +214,17 @@ class SetupDialog(App[Interview | None]):
     @on(Button.Pressed, "#start")
     def action_start_interview(self) -> None:
         gateway = self.query_one("#gateway", Checkbox).value
+        if not self.query_one("#providers", SelectionList).selected:
+            self.notify("Select at least one provider", severity="error")
+            return
+        providers = self.chosen_providers()
+        cfg = copy.deepcopy(self.cfg)
+        cfg.catalogue.providers = providers
+        try:
+            cfg.validate()
+        except ConfigError as exc:
+            self.notify(str(exc), severity="error", timeout=10)
+            return
         self.exit(
             Interview(
                 str(self.query_one(Select).value),
@@ -190,9 +232,10 @@ class SetupDialog(App[Interview | None]):
                 self.query_one(TextArea).text,
                 gateway=gateway,
                 summary=capabilities.setup_summary(
-                    self.caps, gateway=gateway, home=self.home, cfg=self.cfg
+                    self.caps, gateway=gateway, home=self.home, cfg=cfg
                 ),
                 sources=dict(self.profile_choices(gateway)),
+                providers=providers,
             )
         )
 
@@ -212,6 +255,16 @@ def discover(repo: Path) -> tuple[Capabilities, Config]:
     except ConfigError:
         return capabilities.fallback(), cfg
     return capabilities.refresh(command, repo), cfg
+
+
+def save_providers(repo: Path, cfg: Config, providers: list[str] | None) -> None:
+    """Write the dialog's catalogue.providers to the project config when it changes
+    the effective value; the edit keeps a trusted file trusted."""
+    if providers is None or providers == cfg.catalogue.providers:
+        return
+    editor = settings.Editor("project", repo)
+    editor.set(settings.parse_key("catalogue.providers"), providers)
+    print(f"sbx-setup-wizard: saved catalogue.providers in {editor.path}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -235,6 +288,11 @@ def main(argv: list[str] | None = None) -> int:
     interview = SetupDialog(list(paths), caps, gateway_configured=gateway_configured, cfg=cfg).run()
     if interview is None:
         return 0
+    try:
+        save_providers(repo, cfg, interview.providers)
+    except ConfigError as exc:
+        print(f"sbx-setup-wizard: could not save catalogue.providers: {exc}", file=sys.stderr)
+        return 1
     executable = paths[interview.host]
     flags = {"copilot": ["-i"], "opencode": ["--prompt"]}.get(interview.host, [])
     try:

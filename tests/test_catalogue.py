@@ -30,7 +30,14 @@ def test_missing_copilot_tiers_are_none_with_a_reason() -> None:
     assert cat.tier_problem(cfg, row("copilot-anthropic"), "frontier") == (
         "Copilot/Anthropic has no frontier model"
     )
-    assert cat.tier_problem(cfg, row("copilot-gemini"), "fast") == ""
+    assert "copilot-gemini" not in cat.ROW_BY_ID
+
+
+def test_copilot_fusion_lets_copilot_pick_at_every_tier() -> None:
+    cfg = c.Config()
+    fusion = row("copilot-fusion")
+    assert (fusion.label, fusion.agent, fusion.effort) == ("Copilot/Fusion", "copilot", False)
+    assert {cat.model_for(cfg, fusion, tier) for tier in cat.TIERS} == {"auto"}
 
 
 def test_catalogue_overrides() -> None:
@@ -149,6 +156,7 @@ GATEWAY = {"network": {"agent_proxy": "http://127.0.0.1:4000/v1"}}
         ("implementer", "copilot-anthropic", "copilot", "claude-sonnet-5.5", "medium", False, 2),
         ("chore-runner", "gateway-openai", "pi", "gpt-6-luna", "medium", False, 2),
         ("debugger", "gateway-gemini", "pi", "gemini-4-carbon", "", False, 2),
+        ("planner", "copilot-fusion", "copilot", "auto", "", False, 3),
         (
             "planner",
             "gateway-anthropic",

@@ -22,7 +22,7 @@ A provider is an access route plus a model vendor, with a fixed agent:
 | Gateway/Gemini (`gateway-gemini`) | as above | Google, through the gateway; no `--effort` |
 | Copilot/OpenAI (`copilot-openai`) | copilot | OpenAI |
 | Copilot/Anthropic (`copilot-anthropic`) | copilot | Copilot's dotted Claude IDs |
-| Copilot/Gemini (`copilot-gemini`) | copilot | Google, fast tier only |
+| Copilot/Fusion (`copilot-fusion`) | copilot | Copilot Fusion picks the model; no `--effort` |
 
 Each persona asks for a *tier*. The built-in tier models are:
 
@@ -31,20 +31,28 @@ Each persona asks for a *tier*. The built-in tier models are:
 | Codex, Gateway/OpenAI, Copilot/OpenAI | `gpt-6-luna` | `gpt-6.1-terra` | `gpt-6.2-sol` | `gpt-6.2-astra` |
 | Claude Code, Gateway/Anthropic | `claude-haiku-5-5` | `claude-sonnet-5-5` | `claude-opus-5-5` | `claude-fable-5-2` |
 | Copilot/Anthropic | `claude-haiku-5.5` | `claude-sonnet-5.5` | `claude-opus-5.5` | — |
-| Gateway/Gemini | `gemini-4-hydrogen` | `gemini-4-argon` | `gemini-4-neon` | `gemini-4-carbon` |
-| Copilot/Gemini | `gemini-4-hydrogen` | — | — | — |
+| Gateway/Gemini | `gemini-4-hydrogen` | `gemini-4-neon` | `gemini-4-argon` | `gemini-4-carbon` |
+| Copilot/Fusion | `auto` | `auto` | `auto` | `auto` |
 
 A provider without the requested tier is shown as unavailable with the reason,
 for example "Copilot/Anthropic has no frontier model", and the form refuses to
 launch. sbx-tui never substitutes another tier or provider. Fast mode is passed
 only on Codex and Claude Code. Gateway/Gemini omits `--effort` and the preview
-says the provider default applies. OpenCode gateway launches name the model as
+says the provider default applies. Copilot/Fusion passes `--model=auto` at
+every tier and no `--effort`: Copilot Fusion routes each request with the
+routing profile and Fusion tier from your Copilot configuration
+(`copilot config autoTier` and `copilot config fusionTier`), because the
+launcher cannot pass `--auto-tier`. OpenCode gateway launches name the model as
 `agent-proxy/<id>`. Copilot launches also allow GitHub hosts.
 
 A provider is also unavailable when the launcher does not support its agent,
 when the agent cannot run on this host (for example without `~/.codex`), or,
 for gateway rows, when no agent gateway is configured. `sbx-tui doctor` lists
 every provider with its availability.
+
+List the rows you use in
+[`catalogue.providers`](configuration.md#model-catalogue-and-personas) to hide
+the others from launch forms and the workflow picker.
 
 Pin or disable models with
 [`[catalogue.models]`](configuration.md#model-catalogue-and-personas). Model

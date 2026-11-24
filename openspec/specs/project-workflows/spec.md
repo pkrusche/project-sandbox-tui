@@ -139,7 +139,7 @@ in red when below the project default.
 #### Scenario: Workflow on another provider
 - **GIVEN** `spec-implement` sets `persona = "implementer"` and `spec-check` sets `persona = "checker"`
 - **WHEN** the user sets both steps' provider to Gateway/Gemini and accepts
-- **THEN** `spec-implement` later runs with `gemini-4-argon` through the gateway at level 2, and `spec-check` with `gemini-4-argon` at level 2
+- **THEN** `spec-implement` later runs with `gemini-4-neon` through the gateway at level 2, and `spec-check` with `gemini-4-neon` at level 2
 
 #### Scenario: Reviewer step level
 - **GIVEN** `security.level = 3` and step action `review` sets `persona = "reviewer"`
