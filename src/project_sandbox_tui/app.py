@@ -2287,7 +2287,7 @@ class SandboxTUI(App[None]):
                 )
                 if task:
                     task.job = job
-            command = job.argv
+            command = launchers.resolve_executable(job.argv)
             if workflow:
                 command = launchers.host_command(
                     command, job.summary_path, intro=self._planning_intro(spec, workflow)

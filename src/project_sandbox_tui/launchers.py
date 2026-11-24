@@ -59,6 +59,20 @@ def host_command(argv: list[str], summary_path: str, *, intro: str = "") -> list
     ]
 
 
+def resolve_executable(
+    argv: list[str], which: Callable[[str], str | None] = shutil.which
+) -> list[str]:
+    """Pin a bare ``argv[0]`` to the executable on sbx-tui's own PATH.
+
+    A multiplexer window starts with the multiplexer server's environment, so
+    its PATH can find a different install (e.g. a global ``project-sandbox``
+    instead of the one in sbx-tui's virtualenv) than an inline session would.
+    """
+    if argv and "/" not in argv[0] and (path := which(argv[0])):
+        return [path, *argv[1:]]
+    return list(argv)
+
+
 def fill_command(template: str, values: Mapping[str, str]) -> list[str]:
     """Split a configured command with shlex, then fill ``{placeholders}`` per token.
 

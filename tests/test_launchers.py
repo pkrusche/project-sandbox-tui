@@ -223,3 +223,17 @@ def test_real_tmux_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         assert "bad" not in windows()
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+def test_resolve_executable_pins_bare_names_to_this_path() -> None:
+    which = {"project-sandbox": "/venv/bin/project-sandbox"}.get
+    assert launchers.resolve_executable(["project-sandbox", "a"], which) == [
+        "/venv/bin/project-sandbox",
+        "a",
+    ]
+    assert launchers.resolve_executable(["./tools/launcher", "a"], which) == [
+        "./tools/launcher",
+        "a",
+    ]
+    assert launchers.resolve_executable(["missing", "a"], which) == ["missing", "a"]
+    assert launchers.resolve_executable([], which) == []
