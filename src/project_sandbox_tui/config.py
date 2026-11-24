@@ -514,11 +514,6 @@ class Config:
         for name, profile in self.profiles.items():
             validate_profile_name(name)
             profile.validate(f"profiles.{name}")
-        uses_gateway = [f"profiles.{n}.gateway" for n, pr in self.profiles.items() if pr.gateway]
-        if d.gateway:
-            uses_gateway.insert(0, "defaults.gateway")
-        if uses_gateway and not self.network.agent_proxy:
-            raise ConfigError(f"{', '.join(uses_gateway)} needs network.agent_proxy")
         if not math.isfinite(self.ui.refresh_seconds) or self.ui.refresh_seconds <= 0:
             raise ConfigError("ui.refresh_seconds must be finite and > 0")
         for name, action in self.actions.items():
@@ -1585,6 +1580,18 @@ def resolve_model(cfg: Config, last: LastUsed, agent: str) -> str:
 
 def resolve_fast(cfg: Config, last: LastUsed, agent: str) -> bool:
     return agent in FAST_AGENTS and last.fast_by_agent.get(agent, cfg.defaults.fast)
+
+
+def unproxied_gateway(cfg: Config) -> list[str]:
+    """Settings that ask for the gateway while ``network.agent_proxy`` is empty.
+
+    Not a load error: a shared project config may offer gateway profiles that
+    only some users' own configs can serve. Their launches are refused instead.
+    """
+    if cfg.network.agent_proxy:
+        return []
+    keys = [f"profiles.{name}.gateway" for name, pr in cfg.profiles.items() if pr.gateway]
+    return ["defaults.gateway", *keys] if cfg.defaults.gateway else keys
 
 
 def resolve_gateway(cfg: Config, last: LastUsed, agent: str) -> bool:

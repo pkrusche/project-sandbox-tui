@@ -172,6 +172,26 @@ def test_warnings_do_not_fail_doctor(
 
 
 @pytest.mark.usefixtures("configured_agent_home")
+def test_gateway_profile_without_agent_proxy_warns(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, egress_policy: Path
+) -> None:
+    from project_sandbox_tui.config import ProjectTrust
+
+    (repo / ".project-sandbox-tui.toml").write_text(
+        '[project]\nbase_image = "img"\n[sandbox]\nruntime = "docker"\n'
+        '[profiles.remote]\nagent = "pi"\nmodel = "m"\ngateway = true\n'
+    )
+    ProjectTrust.check(repo).trust(repo)
+    checks = by_name(doctor.run_checks(repo, runner=runner(HEALTHY), which=lambda c: f"/bin/{c}"))
+    check = checks["agent gateway"]
+    assert check.status == "warn"
+    assert check.detail == "profiles.remote.gateway set but network.agent_proxy is empty"
+
+    monkeypatch.setattr(doctor, "run", runner(HEALTHY))
+    monkeypatch.setattr(doctor.shutil, "which", lambda cmd: f"/bin/{cmd}")
+    assert doctor.main(repo) == 0  # a warning, not a problem
+
+
 def test_unknown_action_profiles_warn(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -652,10 +652,13 @@ def test_newer_launcher_agents_and_runtimes_load(tmp_path: Path, text: str) -> N
         ("[defaults]\ngateway = true\n", "defaults.gateway"),
     ],
 )
-def test_gateway_needs_agent_proxy(tmp_path: Path, text: str, key: str) -> None:
+def test_gateway_without_agent_proxy_loads(tmp_path: Path, text: str, key: str) -> None:
+    """A shared project config may offer gateway profiles; launches are refused instead."""
     write(tmp_path / c.PROJECT_CONFIG_NAME, text)
-    with pytest.raises(c.ConfigError, match=rf"{key}.*needs network.agent_proxy"):
-        candidate(tmp_path)
+    cfg = candidate(tmp_path)
+    assert c.unproxied_gateway(cfg) == [key]
+    cfg.network.agent_proxy = "http://127.0.0.1:4000/v1"
+    assert c.unproxied_gateway(cfg) == []
 
 
 def test_project_profile_uses_gateway_defined_globally(tmp_path: Path) -> None:

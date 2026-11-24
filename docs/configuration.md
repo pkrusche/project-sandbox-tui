@@ -312,8 +312,10 @@ starts. Use the plain model ID for every agent. For OpenCode, sbx-tui passes
 `agent-proxy/<id>`, the provider name project-sandbox generates. `defaults.gateway`
 is the starting value of the launch form's gateway field for `pi`, `opencode` and
 `bash`, and the field is remembered per agent like fast mode. A profile or
-`defaults.gateway` set to `true` without `network.agent_proxy` is a configuration
-error. A profile with `gateway = true` and another agent is reported by `sbx-tui
+`defaults.gateway` set to `true` without `network.agent_proxy` still loads, so a
+shared project config can offer gateway profiles that only some users' own
+configs can serve. `sbx-tui doctor` warns about it; launches of such a profile
+are refused, and `defaults.gateway` has no effect. A profile with `gateway = true` and another agent is reported by `sbx-tui
 doctor`, and its launches are refused.
 
 ## Model catalogue and personas

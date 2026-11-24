@@ -40,6 +40,7 @@ from project_sandbox_tui.config import (
     initial_choice,
     load,
     resolve_selection,
+    unproxied_gateway,
 )
 from project_sandbox_tui.sandbox import runtime_cli
 from project_sandbox_tui.vcs import Branch, VcsError, detect, main_branch
@@ -305,6 +306,16 @@ def check_config(cfg: Config, repo: Path | None) -> list[Check]:
     if notify.notification_argv("", "", cfg.ui.notify_command) is None:
         checks.append(
             Check("notifications", "warn", "no notifier found", "install notify-send (libnotify)")
+        )
+    if unproxied := unproxied_gateway(cfg):
+        checks.append(
+            Check(
+                "agent gateway",
+                "warn",
+                f"{', '.join(unproxied)} set but network.agent_proxy is empty",
+                "set network.agent_proxy (e.g. in your user config); until then gateway "
+                "profiles cannot launch and defaults.gateway has no effect",
+            )
         )
     unknown = [
         (name, action.profile)
